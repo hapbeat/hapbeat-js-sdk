@@ -1,0 +1,37 @@
+{
+  "name": "@hapbeat/sdk",
+  "version": "0.1.0",
+  "description": "Web/Node SDK for driving Hapbeat haptic devices (direct UDP in Node, hapbeat-helper WebSocket in the browser)",
+  "type": "module",
+  "license": "MIT",
+  "author": "Hapbeat",
+  "homepage": "https://devtools.hapbeat.com/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hapbeat/hapbeat-web-sdk.git"
+  },
+  "bugs": "https://github.com/hapbeat/hapbeat-web-sdk/issues",
+  "keywords": ["hapbeat", "haptics", "udp", "osc", "webxr", "three.js", "vr", "creative-coding"],
+  "main": "./dist/node.js",
+  "module": "./dist/node.js",
+  "types": "./dist/node.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/node.d.ts",
+      "node": "./dist/node.js",
+      "browser": "./dist/browser.js",
+      "default": "./dist/browser.js"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test"
+  },
+  "engines": { "node": ">=18" },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5.5"
+  }
+}

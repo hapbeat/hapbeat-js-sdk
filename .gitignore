@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build output (published to npm, not committed)
+dist/
+
+# Logs / misc
+*.log
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Internal dev notes live in the workspace (private) per 2026-05-10 policy:
+#   hapbeat-sdk-workspace/dev-notes/web-sdk/
+dev-notes/

@@ -1,0 +1,41 @@
+<!doctype html>
+<!--
+  Minimal browser example. The browser cannot open raw UDP, so it talks to
+  hapbeat-helper (pip install hapbeat-helper) over WebSocket on localhost:7703.
+
+  In a real project you would bundle the SDK (Vite/webpack/esbuild) and import
+  it normally:
+
+      import { connect } from "@hapbeat/sdk";
+
+  This standalone file uses an import map pointing at the built browser bundle
+  so you can open it directly after `npm run build`.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hapbeat Web SDK — browser example</title>
+    <script type="importmap">
+      { "imports": { "@hapbeat/sdk": "../dist/browser.js" } }
+    </script>
+  </head>
+  <body>
+    <button id="fire">Play impact.hit</button>
+    <pre id="log"></pre>
+    <script type="module">
+      import { connect } from "@hapbeat/sdk";
+      const log = (m) => (document.getElementById("log").textContent += m + "\n");
+
+      let hb;
+      try {
+        hb = await connect({ appName: "BrowserExample" });
+        log("connected to hapbeat-helper");
+        for (const d of await hb.discover(1500)) log(`found ${d.ip} ${d.address ?? ""}`);
+      } catch (e) {
+        log("ERROR: " + e.message);
+      }
+
+      document.getElementById("fire").onclick = () => hb?.play("impact.hit", { gain: 0.5 });
+    </script>
+  </body>
+</html>
