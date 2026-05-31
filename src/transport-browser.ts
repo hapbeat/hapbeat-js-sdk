@@ -121,6 +121,8 @@ export class BrowserWsTransport implements Transport {
   }
 
   async discover(timeoutMs: number): Promise<Device[]> {
+    // helper waits ~250ms after a rescan before pushing device_list, so pass a
+    // timeout of at least ~300ms (the Hapbeat.discover default of 1500ms is fine).
     const before = Date.now();
     this.send("rescan");
     await new Promise((r) => setTimeout(r, Math.max(0, timeoutMs)));
