@@ -1,0 +1,43 @@
+name: Publish to npm
+
+# Publishes @hapbeat/sdk on a version tag. Runs the test suite as a gate, then
+# builds dist/ and publishes. Uses an npm automation token stored as the repo
+# secret NPM_TOKEN.
+#
+# One-time setup (do once, BEFORE the first tag):
+#   1. Create the @hapbeat scope/org on npm (free for public packages), or
+#      switch the package name to unscoped "hapbeat" (also free as of 2026-06-01).
+#   2. Create an npm "Automation" access token and add it to this repo:
+#      Settings -> Secrets and variables -> Actions -> New secret: NPM_TOKEN.
+#   3. (Optional) Once the GitHub repo is PUBLIC, add `--provenance` to the
+#      publish step for supply-chain attestation (provenance needs a public repo).
+#
+# DO NOT tag until the SDK is verified on a real Hapbeat device (Node path) and,
+# for the browser transport, against a running hapbeat-helper.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # reserved for --provenance once the repo is public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+      - name: Build + test (publish gate)
+        run: |
+          npm run build
+          node --test
+      - name: Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
