@@ -40,10 +40,15 @@ function resolveWebSocket(): WSCtor {
 export class BrowserWsTransport implements Transport {
   private readonly url: string;
   private ws?: WSLike;
+  private open = false;
+  private readonly connectTimeoutMs: number;
+  private readonly onConnectionLost?: () => void;
   private readonly devices = new Map<string, Device>();
 
   constructor(options: HapbeatOptions = {}) {
     this.url = options.helperUrl ?? DEFAULT_HELPER_URL;
+    this.connectTimeoutMs = options.connectTimeoutMs ?? 4000;
+    this.onConnectionLost = options.onConnectionLost;
   }
 
   connect(): Promise<void> {
@@ -51,19 +56,46 @@ export class BrowserWsTransport implements Transport {
       let settled = false;
       const WS = resolveWebSocket();
       const ws = new WS(this.url);
+      // A refused/dropped handshake normally fires onerror, but guard against a
+      // socket that stalls in CONNECTING (slow firewall drop) so the caller's
+      // graceful fallback always runs instead of hanging.
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          try {
+            ws.close();
+          } catch {
+            /* ignore */
+          }
+          reject(new Error(`hapbeat-helper did not respond at ${this.url} within ${this.connectTimeoutMs}ms.`));
+        }
+      }, this.connectTimeoutMs);
       ws.onopen = () => {
         settled = true;
+        clearTimeout(timer);
+        this.open = true;
         resolve();
       };
       ws.onerror = () => {
         if (!settled) {
           settled = true;
+          clearTimeout(timer);
           reject(
             new Error(
               `cannot reach hapbeat-helper at ${this.url}. Is it running? ` +
                 "Install with: pip install hapbeat-helper",
             ),
           );
+        }
+      };
+      ws.onclose = () => {
+        clearTimeout(timer);
+        if (!settled) {
+          settled = true; // closed during the opening handshake
+          reject(new Error(`hapbeat-helper connection to ${this.url} closed before it opened.`));
+        } else if (this.open) {
+          this.open = false; // lost an established connection (helper quit/restarted)
+          this.onConnectionLost?.();
         }
       };
       ws.onmessage = (ev) => this.onMessage(ev.data);
@@ -95,8 +127,11 @@ export class BrowserWsTransport implements Transport {
   }
 
   private send(type: string, payload: Record<string, unknown> = {}): void {
-    if (!this.ws) {
-      console.warn("[hapbeat] send before connect()");
+    // readyState 1 === OPEN. Sending on CONNECTING throws InvalidStateError and
+    // on CLOSING/CLOSED is silently dropped — guard both so a stale handle is a
+    // no-op rather than an exception.
+    if (!this.ws || this.ws.readyState !== 1) {
+      console.warn("[hapbeat] send while not connected — dropped");
       return;
     }
     this.ws.send(JSON.stringify({ type, payload }));
@@ -130,6 +165,7 @@ export class BrowserWsTransport implements Transport {
   }
 
   close(): void {
+    this.open = false;
     try {
       this.ws?.close();
     } catch {

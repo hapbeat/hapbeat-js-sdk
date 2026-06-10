@@ -1,0 +1,13 @@
+game,trigger,logical_event,device_event_id,clip,clip_channels,clip_ms,default_gain,runtime_gain,note
+maze,壁に接触,maze_bump,hapbeat-arcade.maze_bump,z5_shot_light.wav,1,94,0.50,0.3-0.9 (接触速度で動的),短い「コツン」。長いと連続接触で潰れる。straight 接触で約0.85
+maze,ゴール到達,maze_goal,hapbeat-arcade.maze_goal,z2_door_unlock.wav,2,479,0.60,0.65 固定,解放感のあるポジティブ。クリア時1発
+maze,壁接触で即死(Expert),maze_fail,hapbeat-arcade.maze_fail,z2_door_slam.wav,1,746,0.70,0.80 固定,はっきり失敗と分かる強め。Expertのみ
+rhythm,各拍のキュー(触覚メトロノーム),rhythm_cue,hapbeat-arcade.rhythm_cue,z4_slider_tick.wav,2,11,0.45,0.45 固定,最重要。テンポを体で取れる明瞭な単発。鋭く短く
+rhythm,判定成功,rhythm_hit,hapbeat-arcade.rhythm_hit,z1_pin_hit.wav,1,50,0.50,0.6=Perfect/0.4=Good,cueと質感を変える(叩いた確認)。Perfectを少し強く
+rhythm,10コンボごと,rhythm_combo,hapbeat-arcade.rhythm_combo,z5_tar_hit_light.wav,1,50,0.55,0.60 固定,ご褒美。節目だけなので少し豪華で可
+hotcold,近接パルス(ガイガー),hot_pulse,hapbeat-arcade.hot_pulse,z1_pin_hit.wav,1,50,0.40,0.15-1.0 (近さで動的)/間隔600-90ms,最重要。遠=弱く疎/近=強く密。空振りクリックは0.12固定
+hotcold,ターゲット発見,hot_found,hapbeat-arcade.hot_found,z5_tar_hit_heavy.wav,2,844,0.60,0.65 固定,当たり!の強い当たり。長め・リッチで可
+hotcold,時間切れ,hot_timeout,hapbeat-arcade.hot_timeout,z2_door_slam.wav,1,746,0.70,0.70 固定,失敗の締め。1発のみ
+reflex,GO合図,reflex_go,hapbeat-arcade.reflex_go,z1_pin_hit.wav,1,50,0.75,0.75 固定,最重要。視覚OFFでも気づける強く鋭い単発。立ち上がりが命
+reflex,お手つき(フライング),reflex_foul,hapbeat-arcade.reflex_foul,z2_door_slam.wav,1,746,0.60,0.60 固定,待ち中に押した否定。GOと異質な質感に
+reflex,全ラウンド完了,reflex_win,hapbeat-arcade.reflex_win,z5_tar_hit_heavy.wav,2,844,0.60,0.60 固定,締めのご褒美。1発のみ

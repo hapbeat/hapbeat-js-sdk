@@ -1,0 +1,36 @@
+<!doctype html>
+<!--
+  Hapbeat Arcade — browser + helper haptic mini-game collection.
+
+  The browser cannot open raw UDP, so it talks to hapbeat-helper
+  (pip install hapbeat-helper) over WebSocket on localhost:7703, which
+  broadcasts the PLAY packets to the Hapbeat device.
+
+  Run it over HTTP (ES modules + the import map below do not work from file://):
+      cd hapbeat-web-sdk
+      npm run build            # produces dist/browser.js
+      npx serve .              # or: python -m http.server 8000
+      # then open  http://localhost:3000/examples/games/
+
+  Before haptics fire, deploy the demo kit (demo-kit/hapbeat-arcade) to the
+  device via Hapbeat Studio + helper. See README.md.
+-->
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hapbeat Arcade — 触覚ミニゲーム集</title>
+    <link rel="stylesheet" href="./shared/style.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "@hapbeat/sdk": "../../dist/browser.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./shared/app.js"></script>
+  </body>
+</html>

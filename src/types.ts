@@ -25,6 +25,10 @@ export interface HapbeatOptions {
   group?: number;
   /** Default device-addressing target; "" = broadcast. */
   defaultTarget?: string;
+  /** Browser transport: called when an *established* helper WS connection drops. */
+  onConnectionLost?: () => void;
+  /** Browser transport: ms to wait for the helper WS to open before giving up. Default 4000. */
+  connectTimeoutMs?: number;
   /** Optional tuning catalog used to resolve default gains by event id. */
   eventMap?: EventMap;
   /** Whether to run the CONNECT_STATUS keep-alive (Node only). Default true. */
