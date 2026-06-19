@@ -4,8 +4,38 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as protocol from "../dist/protocol.js";
-import { EventMap } from "../dist/index.js";
+import { EventMap, Hapbeat, parseWav } from "../dist/index.js";
 import { connect } from "../dist/node.js";
+
+// Build a minimal 16-bit PCM WAV in memory for clip tests.
+function makeWav({ sampleRate = 16000, channels = 1, samples = [] }) {
+  const dataBytes = samples.length * 2;
+  const buf = new ArrayBuffer(44 + dataBytes);
+  const dv = new DataView(buf);
+  const u8 = new Uint8Array(buf);
+  const wr = (off, s) => { for (let i = 0; i < s.length; i++) u8[off + i] = s.charCodeAt(i); };
+  wr(0, "RIFF"); dv.setUint32(4, 36 + dataBytes, true); wr(8, "WAVE");
+  wr(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, channels, true);
+  dv.setUint32(24, sampleRate, true); dv.setUint32(28, sampleRate * channels * 2, true);
+  dv.setUint16(32, channels * 2, true); dv.setUint16(34, 16, true);
+  wr(36, "data"); dv.setUint32(40, dataBytes, true);
+  for (let i = 0; i < samples.length; i++) dv.setInt16(44 + i * 2, samples[i], true);
+  return buf;
+}
+
+class FakeTransport {
+  constructor() { this.calls = []; }
+  async connect() {}
+  play(id, gain, target) { this.calls.push(["play", id, gain, target]); }
+  stop(id, target) { this.calls.push(["stop", id, target]); }
+  stopAll(target) { this.calls.push(["stopAll", target]); }
+  ping() {}
+  async discover() { return []; }
+  close() {}
+  streamBegin(meta) { this.calls.push(["begin", meta]); }
+  streamData(offset, data) { this.calls.push(["data", offset, data.length]); }
+  streamEnd() { this.calls.push(["end"]); }
+}
 
 test("header magic, version, size", () => {
   const h = protocol.buildHeader(protocol.CMD_PING, 1, 0);
@@ -95,4 +125,120 @@ test("Node transport: socket open + broadcast send + close (no device needed)", 
   assert.equal(hb.play("impact.hit", { gain: 0.1 }), undefined); // does not throw
   hb.stopAll();
   await hb.close();
+});
+
+// ── Clip streaming (contracts §0x30–0x32) ──────────────────────────────────
+
+test("STREAM_BEGIN/DATA/END layout", () => {
+  const b = protocol.parsePacket(
+    protocol.buildStreamBegin(1, { sampleRate: 16000, channels: 2, format: 0, totalSamples: 800, gain: 0.5, target: "p1" }),
+  );
+  assert.equal(b.commandType, protocol.CMD_STREAM_BEGIN);
+  const dv = new DataView(b.payload.buffer, b.payload.byteOffset, b.payload.byteLength);
+  assert.equal(dv.getUint16(0, true), 16000);
+  assert.equal(dv.getUint8(2), 2);
+  assert.equal(dv.getUint8(3), 0);
+  assert.equal(dv.getUint32(4, true), 800);
+  assert.ok(Math.abs(dv.getFloat32(8, true) - 0.5) < 1e-6);
+  assert.deepEqual(b.payload.subarray(12), new TextEncoder().encode("p1\0"));
+
+  const d = protocol.parsePacket(protocol.buildStreamData(2, 1024, new Uint8Array([1, 2, 3, 4])));
+  assert.equal(d.commandType, protocol.CMD_STREAM_DATA);
+  assert.equal(new DataView(d.payload.buffer, d.payload.byteOffset, 4).getUint32(0, true), 1024);
+  assert.deepEqual(d.payload.subarray(4), new Uint8Array([1, 2, 3, 4]));
+
+  const e = protocol.parsePacket(protocol.buildStreamEnd(3));
+  assert.equal(e.commandType, protocol.CMD_STREAM_END);
+  assert.equal(e.payload.length, 0);
+});
+
+test("STREAM_DATA uses the 1472-byte stream cap (not 512)", () => {
+  const pkt = protocol.buildStreamData(1, 0, new Uint8Array(1400)); // would throw on the 512 cap
+  assert.ok(pkt.length > 512 && pkt.length <= protocol.MAX_STREAM_PACKET_SIZE);
+});
+
+test("parseWav reads PCM16; rejects non-WAV", () => {
+  const pcm = parseWav(makeWav({ sampleRate: 16000, channels: 1, samples: [0, 100, -100, 32767] }));
+  assert.equal(pcm.sampleRate, 16000);
+  assert.equal(pcm.channels, 1);
+  assert.equal(pcm.data.length, 8);
+  assert.throws(() => parseWav(new ArrayBuffer(4)));
+});
+
+test("EventMap.fromManifest marks stream_events as clip mode", () => {
+  const em = EventMap.fromManifest({
+    schema_version: "2.0.0",
+    events: { "k.hit": { clip: "hit.wav", parameters: { intensity: 0.4 } } },
+    stream_events: { "k.loop": { clip: "loop.wav", parameters: { intensity: 0.6 } } },
+  });
+  assert.equal(em.get("k.hit").streaming, false);
+  assert.equal(em.get("k.loop").streaming, true);
+  assert.equal(em.get("k.loop").clip, "loop.wav");
+});
+
+test("facade play() branches fire vs clip from the manifest", async () => {
+  const eventMap = EventMap.fromManifest({
+    schema_version: "2.0.0",
+    events: { "k.hit": { clip: "hit.wav", parameters: { intensity: 0.4 } } },
+    stream_events: { "k.stream": { clip: "loop.wav", parameters: { intensity: 0.6 } } },
+  });
+  const wav = makeWav({ sampleRate: 16000, channels: 1, samples: new Array(320).fill(1000) }); // 20ms
+  const transport = new FakeTransport();
+  const hb = new Hapbeat(transport, {
+    eventMap,
+    clipBase: "clips/",
+    clipLoader: async (ref) => { assert.equal(ref, "clips/loop.wav"); return wav; },
+    streamSendAheadSec: 0.05,
+  });
+
+  // fire event → PLAY command, no streaming
+  hb.play("k.hit", { gain: 0.3 });
+  assert.deepEqual(transport.calls[0], ["play", "k.hit", 0.3, ""]);
+
+  // clip event → async load then STREAM_BEGIN/DATA*/END
+  hb.play("k.stream");
+  await new Promise((r) => setTimeout(r, 130));
+  const begin = transport.calls.find((c) => c[0] === "begin");
+  assert.ok(begin, "streamBegin called");
+  assert.equal(begin[1].channels, 1);
+  assert.equal(begin[1].sampleRate, 16000);
+  assert.ok(Math.abs(begin[1].gain - 0.6) < 1e-6, "clip gain = manifest intensity");
+  const dataBytes = transport.calls.filter((c) => c[0] === "data").reduce((s, c) => s + c[2], 0);
+  assert.equal(dataBytes, 320 * 2, "all PCM bytes streamed");
+  await new Promise((r) => setTimeout(r, 90));
+  assert.ok(transport.calls.some((c) => c[0] === "end"), "streamEnd called after drain");
+});
+
+test("browser transport: stream_* WS messages match the helper shape", async () => {
+  const sent = [];
+  class FakeWS {
+    constructor() {
+      this.readyState = 1;
+      this.onopen = this.onmessage = this.onerror = this.onclose = null;
+      setTimeout(() => this.onopen && this.onopen({}), 0);
+    }
+    send(s) { sent.push(JSON.parse(s)); }
+    close() { this.readyState = 3; }
+  }
+  globalThis.WebSocket = FakeWS;
+  try {
+    const { BrowserWsTransport } = await import("../dist/transport-browser.js");
+    const t = new BrowserWsTransport({});
+    await t.connect();
+    t.streamBegin({ sampleRate: 16000, channels: 2, format: 0, totalSamples: 800, gain: 0.5 });
+    t.streamData(0, new Uint8Array([1, 2, 3, 4]));
+    t.streamEnd();
+    const begin = sent.find((m) => m.type === "stream_begin");
+    assert.equal(begin.payload.sample_rate, 16000);
+    assert.equal(begin.payload.channels, 2);
+    assert.equal(begin.payload.format, "pcm"); // format 0 → "pcm" for helper
+    assert.equal(begin.payload.total_samples, 800);
+    assert.ok(Math.abs(begin.payload.gain - 0.5) < 1e-6);
+    const data = sent.find((m) => m.type === "stream_data");
+    assert.equal(data.payload.offset, 0);
+    assert.equal(data.payload.data, Buffer.from([1, 2, 3, 4]).toString("base64")); // base64 PCM
+    assert.ok(sent.some((m) => m.type === "stream_end"));
+  } finally {
+    delete globalThis.WebSocket;
+  }
 });

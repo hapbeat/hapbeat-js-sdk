@@ -15,9 +15,9 @@ import { showResult, clearResult } from "../shared/ui.js";
 import { best as bestScore, submit as submitScore } from "../shared/scores.js";
 
 const DIFF = {
-  normal: { rounds: 5, waitMin: 1.4, waitMax: 3.5, showGo: true, target: 350, label: "Normal" },
-  hard: { rounds: 5, waitMin: 1.2, waitMax: 4.5, showGo: false, target: 300, label: "Hard" },
-  expert: { rounds: 6, waitMin: 1.0, waitMax: 5.5, showGo: false, target: 250, label: "Expert" },
+  normal: { rounds: 5, waitMin: 1.4, waitMax: 3.5, target: 350, label: "Normal" },
+  hard: { rounds: 5, waitMin: 1.2, waitMax: 4.5, target: 300, label: "Hard" },
+  expert: { rounds: 6, waitMin: 1.0, waitMax: 5.5, target: 250, label: "Expert" },
 };
 
 const GO_TIMEOUT = 1.5; // s — auto-advance if no press after GO (safety, counts as miss)
@@ -35,14 +35,14 @@ export const game = {
     const bridge = ctx.bridge;
     const toMenu = ctx.toMenu || (() => {});
     let diffKey = "normal";
-    let showGo = DIFF[diffKey].showGo;
+    // GO の画面表示はヘッダーの 👁 映像 マスターに連動（OFF＝触覚だけで反応）。
+    const visualOn = () => bridge.master.visual;
 
     container.innerHTML = `
       <div class="gametoolbar">
         <span class="label">難易度</span>
         <div class="toggle-group" id="diff"></div>
         <span class="spacer"></span>
-        <button id="showgo" aria-pressed="${showGo}">GO を画面表示</button>
         <button id="start" class="primary">スタート</button>
       </div>
       <div class="stagebox">
@@ -56,7 +56,7 @@ export const game = {
         <span id="state"></span>
       </div>
       <p class="note">操作: GO を感じたら最速で <kbd>Space</kbd>（クリックでも可）。待っている間に押すと <b>お手つき</b>。
-      音・触覚はヘッダーの 🔊 / 📳。Hard / Expert は GO 画面表示が既定 OFF＝<b>触覚だけ</b>で反応する勝負。</p>
+      ヘッダーの <b>👁 映像 / 👂 音 / ✋ 触覚</b> で切替。<b>👁 映像 OFF</b>＝<b>触覚だけ</b>で反応する勝負。</p>
     `;
 
     const cv = container.querySelector("#cv");
@@ -69,7 +69,6 @@ export const game = {
     const elBest = container.querySelector("#best");
     const elState = container.querySelector("#state");
     const diffBox = container.querySelector("#diff");
-    const showGoBtn = container.querySelector("#showgo");
 
     function refreshBest() {
       const b = bestScore("reflex", diffKey);
@@ -83,18 +82,12 @@ export const game = {
       b.onclick = () => {
         diffKey = k;
         for (const c of diffBox.children) c.setAttribute("aria-pressed", String(c === b));
-        showGo = DIFF[k].showGo;
-        showGoBtn.setAttribute("aria-pressed", String(showGo));
         elRounds.textContent = String(DIFF[k].rounds);
         refreshBest();
         idle();
       };
       diffBox.appendChild(b);
     }
-    showGoBtn.onclick = () => {
-      showGo = !showGo;
-      showGoBtn.setAttribute("aria-pressed", String(showGo));
-    };
 
     // ── state ────────────────────────────────────────────────
     const fx = new Fx();
@@ -160,14 +153,14 @@ export const game = {
       phase = "go";
       goAt = nowMs();
       bridge.fire("reflex_go", { gain: 0.75 });
-      // shake is a VISUAL cue — gate it on showGo, else it leaks the GO timing
+      // shake is a VISUAL cue — gate it on visualOn(), else it leaks the GO timing
       // and defeats the "react to the buzz alone" point on Hard/Expert.
-      if (showGo) {
+      if (visualOn()) {
         fx.shake(5);
         flash = 1;
         statusText = "！";
       }
-      // if showGo is off, the screen does NOT change — you must feel/hear GO.
+      // if visualOn() is off, the screen does NOT change — you must feel/hear GO.
     }
 
     function press() {
@@ -287,7 +280,7 @@ export const game = {
     function draw() {
       // background by phase
       let bg = "#0a0d12";
-      if (phase === "go" && showGo) bg = "#241f50";
+      if (phase === "go" && visualOn()) bg = "#241f50";
       g.fillStyle = bg;
       g.fillRect(0, 0, cv.width, cv.height);
 
@@ -300,12 +293,12 @@ export const game = {
         g.globalAlpha = 1;
       }
       // central status
-      g.fillStyle = phase === "go" && showGo ? "#ffffff" : "#cdd6e0";
+      g.fillStyle = phase === "go" && visualOn() ? "#ffffff" : "#cdd6e0";
       g.textAlign = "center";
       g.textBaseline = "middle";
-      g.font = phase === "go" && showGo ? "bold 64px system-ui" : "28px system-ui";
+      g.font = phase === "go" && visualOn() ? "bold 64px system-ui" : "28px system-ui";
       g.fillText(statusText, cv.width / 2, cv.height / 2 - 10);
-      if (phase === "go" && !showGo) {
+      if (phase === "go" && !visualOn()) {
         g.font = "13px system-ui";
         g.fillStyle = "#4b5666";
         g.fillText("（GO 表示 OFF：触覚 / 音で反応）", cv.width / 2, cv.height / 2 + 40);

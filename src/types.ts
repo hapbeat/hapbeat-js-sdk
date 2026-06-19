@@ -1,6 +1,7 @@
 /** Shared types for the Hapbeat Web SDK. */
 
 import type { EventMap } from "./eventmap.js";
+import type { StreamMeta } from "./clip.js";
 
 export interface Device {
   ip: string;
@@ -33,6 +34,19 @@ export interface HapbeatOptions {
   eventMap?: EventMap;
   /** Whether to run the CONNECT_STATUS keep-alive (Node only). Default true. */
   keepalive?: boolean;
+  /**
+   * Base location of stream-clip WAVs (clip-mode events). The event's `clip`
+   * filename is resolved against this. Browser: a URL prefix (e.g.
+   * "/demo-kit/stream-clips/"); Node: a directory path. Default "".
+   */
+  clipBase?: string;
+  /**
+   * Loads a clip's bytes by resolved reference. Injected per-environment
+   * (browser = fetch, Node = fs). Override to load from a bundle/cache.
+   */
+  clipLoader?: (ref: string) => Promise<ArrayBuffer | Uint8Array>;
+  /** Clip streaming send-ahead buffer in seconds (< 0.256). Default 0.15. */
+  streamSendAheadSec?: number;
 }
 
 /**
@@ -49,4 +63,8 @@ export interface Transport {
   ping(): void;
   discover(timeoutMs: number): Promise<Device[]>;
   close(): Promise<void> | void;
+  // Clip streaming (UDP audio). The ClipStreamer paces calls to these.
+  streamBegin(meta: StreamMeta): void;
+  streamData(offset: number, data: Uint8Array): void;
+  streamEnd(): void;
 }

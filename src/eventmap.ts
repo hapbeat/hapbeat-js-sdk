@@ -14,7 +14,9 @@ export interface EventDef {
   intensity: number;
   loop: boolean;
   deviceWiper?: number;
-  streaming: boolean; // came from the manifest stream_events bucket
+  streaming: boolean; // came from the manifest stream_events bucket → clip mode
+  /** Clip-mode (streaming) only: WAV filename, resolved against `clipBase`. */
+  clip?: string;
   note: string;
 }
 
@@ -62,6 +64,7 @@ export class EventMap {
           loop: p.loop ?? false,
           deviceWiper: p.device_wiper,
           streaming,
+          clip: streaming ? entry?.clip : undefined,
           note: entry?.note ?? "",
         });
       }

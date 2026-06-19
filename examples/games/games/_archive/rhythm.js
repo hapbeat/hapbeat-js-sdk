@@ -10,9 +10,9 @@
  * count-in lets you lock onto the tempo before scoring starts.
  */
 
-import { Fx } from "../shared/fx.js";
-import { showResult, clearResult } from "../shared/ui.js";
-import { best as bestScore, submit as submitScore } from "../shared/scores.js";
+import { Fx } from "../../shared/fx.js";
+import { showResult, clearResult } from "../../shared/ui.js";
+import { best as bestScore, submit as submitScore } from "../../shared/scores.js";
 
 const DIFF = {
   normal: { bpm: 90, travel: 1.7, notes: 28, label: "Normal" },

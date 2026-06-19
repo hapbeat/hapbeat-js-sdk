@@ -7,10 +7,22 @@
  *   -> { type: "play_event",  payload: { event_id, target, gain } }
  *   -> { type: "stop_event",  payload: { event_id, target } }   // "" id = stop all
  *   -> { type: "ping" } / { type: "rescan" }
+ *   -> { type: "stream_begin", payload: { sample_rate, channels, format, total_samples, gain } }
+ *   -> { type: "stream_data",  payload: { offset, data } }        // data = base64 PCM16
+ *   -> { type: "stream_end",   payload: {} }
  *   <- { type: "device_list", payload: { devices: [...] } }
  */
 
+import type { StreamMeta } from "./clip.js";
+import { STREAM_FORMAT_ADPCM } from "./protocol.js";
 import type { Device, HapbeatOptions, Transport } from "./types.js";
+
+function toBase64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  // btoa is available in browsers and Node ≥16.
+  return btoa(bin);
+}
 
 const DEFAULT_HELPER_URL = "ws://localhost:7703";
 
@@ -153,6 +165,28 @@ export class BrowserWsTransport implements Transport {
 
   ping(): void {
     this.send("ping");
+  }
+
+  streamBegin(meta: StreamMeta): void {
+    // target is omitted: the helper resolves stream targets to known-device IPs
+    // (it treats `target` as an IP, not an address string), so per-device clip
+    // addressing over the browser path is deferred — streams reach all known
+    // devices. Node clip streaming honours the in-packet address target.
+    this.send("stream_begin", {
+      sample_rate: meta.sampleRate,
+      channels: meta.channels,
+      format: meta.format === STREAM_FORMAT_ADPCM ? "adpcm" : "pcm",
+      total_samples: meta.totalSamples ?? 0,
+      gain: meta.gain ?? 1.0,
+    });
+  }
+
+  streamData(offset: number, data: Uint8Array): void {
+    this.send("stream_data", { offset, data: toBase64(data) });
+  }
+
+  streamEnd(): void {
+    this.send("stream_end");
   }
 
   async discover(timeoutMs: number): Promise<Device[]> {

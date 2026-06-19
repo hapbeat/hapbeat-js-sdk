@@ -60,7 +60,60 @@ hb.play("impact.hit", { target: "*/chest" });         // all chest devices
 hb.play("impact.hit");                                 // broadcast (all)
 ```
 
+## Fire vs. clip — two modes, one `play()`
+
+The kit manifest decides how each event is delivered. `play(id)` is the same call
+either way — the manifest branches it:
+
+| Manifest bucket | Mode | What happens on `play(id)` |
+|---|---|---|
+| `events` | **fire** | a PLAY command is sent; the device plays the clip **installed on the device** (via Studio). |
+| `stream_events` | **clip** | the SDK loads the event's **WAV (next to the manifest)** and **UDP-streams** it to the device (STREAM_BEGIN/DATA/END). |
+
+So "fire" keeps content on the device; "clip" streams a WAV from the app side —
+useful for content that changes often or isn't installed on the device.
+
+```ts
+import { connect, EventMap } from "@hapbeat/sdk";
+
+const manifest = await fetch("/my-kit/my-kit-manifest.json").then((r) => r.json());
+const hb = await connect({
+  eventMap: EventMap.fromManifest(manifest),
+  // where the clip-mode WAVs live (the manifest's stream_events `clip` filenames
+  // are resolved against this). Browser: a URL prefix; Node: a directory path.
+  clipBase: "/my-kit/stream-clips/",
+});
+
+await hb.preloadClips();      // optional: decode clip WAVs up front (no first-play latency)
+
+hb.play("impact.hit");        // fire  → device plays its installed clip
+hb.play("rumble.loop");       // clip  → SDK streams stream-clips/rumble_loop.wav over UDP
+hb.stop("rumble.loop");       // stops the active stream
+```
+
+Manifest excerpt:
+
+```jsonc
+{
+  "schema_version": "2.0.0",
+  "events":        { "impact.hit":  { "clip": "hit.wav",  "parameters": { "intensity": 0.5 } } },
+  "stream_events": { "rumble.loop": { "clip": "rumble_loop.wav", "parameters": { "intensity": 0.6 } } }
+}
+```
+
+Clip notes:
+- WAVs must be **16-bit PCM, 16 kHz** (same as the kit-tools normalization). Stereo OK.
+- Streaming is **session-level**: one clip at a time; a new clip cancels the previous.
+- The device ring buffer is ~256 ms, so the SDK paces the stream in real time
+  (tune with `streamSendAheadSec`, default 0.15).
+- **Node** honours per-device `target` for clips (in-packet address). **Browser**
+  clips reach all helper-known devices (the helper routes streams by IP), so run
+  `discover()` first; per-device browser clip targeting is a later addition.
+- Override clip loading with `clipLoader` (e.g. to stream from a bundle or IndexedDB).
+
 ## Notes
 
 - The Node transport is verified end-to-end. The browser transport relays through
   hapbeat-helper; if `connect()` rejects, check that helper is running.
+- Clip streaming over the browser requires devices to be in the helper's registry
+  (call `discover()` after connecting).

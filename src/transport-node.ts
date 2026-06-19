@@ -8,6 +8,7 @@
 import * as dgram from "node:dgram";
 
 import * as protocol from "./protocol.js";
+import type { StreamMeta } from "./clip.js";
 import type { Device, HapbeatOptions, Transport } from "./types.js";
 
 const DEFAULT_PORT = 7700;
@@ -102,6 +103,27 @@ export class NodeUdpTransport implements Transport {
 
   ping(): void {
     this.send(protocol.buildPing(this.nextSeq(), Date.now() * 1000));
+  }
+
+  streamBegin(meta: StreamMeta): void {
+    this.send(
+      protocol.buildStreamBegin(this.nextSeq(), {
+        sampleRate: meta.sampleRate,
+        channels: meta.channels,
+        format: meta.format,
+        totalSamples: meta.totalSamples,
+        gain: meta.gain,
+        target: meta.target, // device self-filters on the in-packet target
+      }),
+    );
+  }
+
+  streamData(offset: number, data: Uint8Array): void {
+    this.send(protocol.buildStreamData(this.nextSeq(), offset, data));
+  }
+
+  streamEnd(): void {
+    this.send(protocol.buildStreamEnd(this.nextSeq()));
   }
 
   private connectStatus(connected: boolean): void {

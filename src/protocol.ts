@@ -113,6 +113,66 @@ export function buildPing(seq: number, timestampUs: number): Uint8Array {
   return buildPacket(CMD_PING, seq, p);
 }
 
+// Audio formats for STREAM_BEGIN (contracts message-format.md §0x30).
+export const STREAM_FORMAT_PCM16 = 0;
+export const STREAM_FORMAT_ADPCM = 1;
+
+/** Assemble a streaming packet, enforcing the larger 1472-byte stream cap. */
+function buildStreamPacket(commandType: number, seq: number, payload: Uint8Array): Uint8Array {
+  const total = HEADER_SIZE + payload.length;
+  if (total > MAX_STREAM_PACKET_SIZE) {
+    throw new Error(`stream packet size ${total} exceeds maximum ${MAX_STREAM_PACKET_SIZE} bytes`);
+  }
+  return concat([buildHeader(commandType, seq, payload.length), payload]);
+}
+
+export interface StreamBeginOptions {
+  sampleRate?: number;
+  channels?: number;
+  /** 0 = PCM16, 1 = IMA ADPCM. */
+  format?: number;
+  totalSamples?: number;
+  gain?: number;
+  target?: string;
+}
+
+/**
+ * STREAM_BEGIN (0x30). Payload (contracts/specs/message-format.md §0x30):
+ *   sample_rate(u16) + channels(u8) + format(u8) + total_samples(u32) + gain(f32)
+ *   + target(null-term, optional). No event_id — a stream is session-level.
+ */
+export function buildStreamBegin(seq: number, opts: StreamBeginOptions = {}): Uint8Array {
+  const {
+    sampleRate = 16000,
+    channels = 1,
+    format = STREAM_FORMAT_PCM16,
+    totalSamples = 0,
+    gain = 1.0,
+    target = "",
+  } = opts;
+  const head = new Uint8Array(12);
+  const dv = new DataView(head.buffer);
+  dv.setUint16(0, sampleRate & 0xffff, true);
+  dv.setUint8(2, channels & 0xff);
+  dv.setUint8(3, format & 0xff);
+  dv.setUint32(4, totalSamples >>> 0, true);
+  dv.setFloat32(8, gain, true);
+  const payload = target ? concat([head, cstr(target)]) : head;
+  return buildStreamPacket(CMD_STREAM_BEGIN, seq, payload);
+}
+
+/** STREAM_DATA (0x31). Payload: offset(u32) + raw audio bytes (PCM16/ADPCM). */
+export function buildStreamData(seq: number, offset: number, data: Uint8Array): Uint8Array {
+  const head = new Uint8Array(4);
+  new DataView(head.buffer).setUint32(0, offset >>> 0, true);
+  return buildStreamPacket(CMD_STREAM_DATA, seq, concat([head, data]));
+}
+
+/** STREAM_END (0x32). No payload. */
+export function buildStreamEnd(seq: number): Uint8Array {
+  return buildStreamPacket(CMD_STREAM_END, seq, new Uint8Array(0));
+}
+
 export interface ConnectStatusOptions {
   connected?: boolean;
   group?: number;

@@ -28,6 +28,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test",
+    "dev": "npm run build && node scripts/dev-server.mjs",
+    "serve": "node scripts/dev-server.mjs --no-watch",
     "prepublishOnly": "npm run build"
   },
   "engines": { "node": ">=18" },

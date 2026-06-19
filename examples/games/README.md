@@ -54,16 +54,30 @@ hapbeat-helper                # ws://localhost:7703 で待受
 
 ### 3. デモを HTTP で配信して開く
 
-ES Modules + import map + WAV fetch は `file://` では動かない。HTTP で配信する:
+ES Modules + import map + WAV fetch は `file://` では動かない。HTTP で配信する。
+
+**おすすめ（ワンコマンド・ホットリロード付き）:**
 
 ```bash
-cd hapbeat-web-sdk
-npm run build          # dist/browser.js を生成（初回 / SDK 変更時）
-npx serve .            # or: python -m http.server 8000
+cd @repos-sdk/hapbeat-web-sdk
+npm run dev            # dist/ をビルド + tsc --watch + 静的配信 + 自動リロード
 ```
 
-ブラウザで開く: `http://localhost:3000/examples/games/`
-（`python -m http.server 8000` なら `http://localhost:8000/examples/games/`）
+ブラウザで開く: **http://localhost:8170/examples/games/**
+（ポート変更は `PORT=8080 npm run dev`）
+
+- `src/*.ts` を編集 → `tsc --watch` が `dist/` を再ビルド → ブラウザ自動リロード
+- `examples/` の HTML/JS/CSS を編集 → 即ブラウザ自動リロード
+
+> ゼロ依存（Node 標準のみ）。Server-Sent Events で reload を通知し、配信 HTML に小さな購読スクリプトを自動注入する。
+
+**手動でやる場合:**
+
+```bash
+npm run serve          # ビルド済み dist/ を静的配信のみ（watch/reload なし）
+# または
+npm run build && npx serve .     # http://localhost:3000/examples/games/
+```
 
 ---
 

@@ -22,8 +22,9 @@ export class ArcadeBridge {
     this.settled = false; // has at least one connect attempt finished?
     this.lastError = "";
     this.devices = [];
-    /** Master modality switches. Visual is owned per-game, not here. */
-    this.master = { haptic: true, audio: true };
+    /** Master modality switches (👁 映像 / 👂 音 / ✋ 触覚). Games read `visual`
+     *  to gate their on-screen hints; `audio`/`haptic` gate fire(). */
+    this.master = { visual: true, audio: true, haptic: true };
     this.audio = new AudioBank();
     this._listeners = new Set();
   }
@@ -100,6 +101,22 @@ export class ArcadeBridge {
     }
     if (wantAudio && this.master.audio) {
       this.audio.play(name, { gain, pan: opts.pan ?? 0, rate: opts.rate ?? 1.0 });
+    }
+  }
+
+  /**
+   * Stream an ad-hoc PCM16 buffer to the device (e.g. a synthesized STEREO
+   * directional cue — see shared/synth.js). Gated by the haptic master.
+   * @param {Uint8Array} pcm
+   * @param {{sampleRate?:number, channels?:number, gain?:number}} opts
+   */
+  streamPcm(pcm, opts = {}) {
+    if (this.master.haptic && this.connected && this.hb) {
+      try {
+        this.hb.streamPcm(pcm, opts);
+      } catch (e) {
+        console.warn(`[arcade] streamPcm failed: ${e?.message ?? e}`);
+      }
     }
   }
 

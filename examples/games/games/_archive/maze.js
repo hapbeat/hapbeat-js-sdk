@@ -6,9 +6,9 @@
  * gold goal. Toggle "壁を表示" to peek, or play Expert where a wall = restart.
  */
 
-import { Fx } from "../shared/fx.js";
-import { showResult, clearResult } from "../shared/ui.js";
-import { best as bestScore, submit as submitScore } from "../shared/scores.js";
+import { Fx } from "../../shared/fx.js";
+import { showResult, clearResult } from "../../shared/ui.js";
+import { best as bestScore, submit as submitScore } from "../../shared/scores.js";
 
 const DIFF = {
   normal: { cols: 8, rows: 6, speed: 150, showWalls: true, deadly: false, label: "Normal" },

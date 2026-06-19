@@ -33,14 +33,12 @@ export const game = {
     const toMenu = ctx.toMenu || (() => {});
     const fx = new Fx();
     let diffKey = "normal";
-    let showHeat = false;
 
     container.innerHTML = `
       <div class="gametoolbar">
         <span class="label">難易度</span>
         <div class="toggle-group" id="diff"></div>
         <span class="spacer"></span>
-        <button id="heat" aria-pressed="false">ヒートを表示</button>
         <button id="start" class="primary">スタート</button>
       </div>
       <div class="stagebox">
@@ -54,7 +52,7 @@ export const game = {
         <span id="state"></span>
       </div>
       <p class="note">操作: マウスで探索 → 当たりと感じたら<kbd>クリック</kbd>。近いほど触覚が強く・速くなる。
-      音・触覚はヘッダーの 🔊 / 📳 で ON/OFF。「ヒートを表示」OFF が本来の純触覚モード。</p>
+      ヘッダーの <b>👁 映像 / 👂 音 / ✋ 触覚</b> で切替。<b>👁 映像 OFF</b> が本来の純触覚モード（ヒート非表示）。</p>
     `;
 
     const cv = container.querySelector("#cv");
@@ -67,7 +65,6 @@ export const game = {
     const elBest = container.querySelector("#best");
     const stagebox = container.querySelector(".stagebox");
     const diffBox = container.querySelector("#diff");
-    const heatBtn = container.querySelector("#heat");
 
     function refreshBest() {
       const b = bestScore("hotcold", diffKey);
@@ -85,10 +82,6 @@ export const game = {
       };
       diffBox.appendChild(b);
     }
-    heatBtn.onclick = () => {
-      showHeat = !showHeat;
-      heatBtn.setAttribute("aria-pressed", String(showHeat));
-    };
 
     // ── state ────────────────────────────────────────────────
     let target = null,
@@ -239,7 +232,7 @@ export const game = {
       fx.apply(g);
 
       // heat aid (optional)
-      if (showHeat && target && running) {
+      if (bridge.master.visual && target && running) {
         const D = DIFF[diffKey];
         const grd = g.createRadialGradient(target.x, target.y, 4, target.x, target.y, D.range);
         grd.addColorStop(0, "rgba(248,81,73,0.42)");

@@ -6,12 +6,18 @@
 
 import { ArcadeBridge } from "./hapbeat-bridge.js";
 import { best as bestScore } from "./scores.js";
-import { game as maze } from "../games/maze.js";
-import { game as rhythm } from "../games/rhythm.js";
+// 実用デモ（楽しい × 便利）
+import { game as heatcursor } from "../games/heatcursor.js";
+import { game as spatialalert } from "../games/spatialalert.js";
+import { game as progress } from "../games/progress.js";
+import { game as walknav } from "../games/walknav.js";
+// 触覚ゲーム（据え置き）
 import { game as hotcold } from "../games/hotcold.js";
 import { game as reflex } from "../games/reflex.js";
 
-const GAMES = [maze, rhythm, hotcold, reflex];
+// 迷路(maze) と リズム(rhythm) は採用見送り → games/_archive/ に退避（メニュー非表示）。
+// 復活させる場合は games/_archive/ から import して GAMES に戻す。
+const GAMES = [heatcursor, spatialalert, progress, walknav, hotcold, reflex];
 
 const app = document.getElementById("app");
 const bridge = new ArcadeBridge();
@@ -21,11 +27,14 @@ let lastPhase = ""; // connection phase, to re-render the menu banner on change
 // ── header ──────────────────────────────────────────────────
 const header = el("header", "bar");
 header.innerHTML = `
-  <h1>🎮 Hapbeat Arcade <span class="sub">触覚ミニゲーム集</span></h1>
+  <h1>🟣 Hapbeat 触覚デモ <span class="sub">楽しい × 便利</span></h1>
   <span class="spacer"></span>
   <span class="pill" id="status"><span class="dot"></span><span id="statusText">接続中…</span></span>
-  <button id="audioBtn" aria-pressed="true">🔊 音</button>
-  <button id="hapticBtn" aria-pressed="true">📳 触覚</button>
+  <span class="toggle-group" title="モダリティ切替（目/耳/手）">
+    <button id="visualBtn" aria-pressed="true" title="映像 (目)">👁 映像</button>
+    <button id="audioBtn" aria-pressed="true" title="音 (耳)">👂 音</button>
+    <button id="hapticBtn" aria-pressed="true" title="触覚 (手)">✋ 触覚</button>
+  </span>
   <button id="testBtn" class="ghost">触覚テスト</button>
   <button id="rescanBtn" class="ghost">再スキャン</button>
   <button id="fsBtn" class="ghost" title="全画面">⛶</button>
@@ -39,9 +48,11 @@ app.appendChild(stage);
 
 const statusPill = header.querySelector("#status");
 const statusText = header.querySelector("#statusText");
+const visualBtn = header.querySelector("#visualBtn");
 const audioBtn = header.querySelector("#audioBtn");
 const hapticBtn = header.querySelector("#hapticBtn");
 
+visualBtn.onclick = () => bridge.setMaster("visual", !bridge.master.visual);
 audioBtn.onclick = () => {
   bridge.unlockAudio();
   bridge.setMaster("audio", !bridge.master.audio);
@@ -61,6 +72,7 @@ header.querySelector("#fsBtn").onclick = () => {
 };
 
 bridge.onChange((b) => {
+  visualBtn.setAttribute("aria-pressed", String(b.master.visual));
   audioBtn.setAttribute("aria-pressed", String(b.master.audio));
   hapticBtn.setAttribute("aria-pressed", String(b.master.haptic));
   if (b.connecting) {
@@ -110,8 +122,8 @@ function showHome() {
 
   const intro = el("p", "note");
   intro.innerHTML =
-    "ブラウザ + Hapbeat 無線版のデモ。各ゲームは 1〜2 分で遊べます。" +
-    "右上の 🔊/📳 でモダリティを切り替えて、触覚の効きを体感してください。" +
+    "ブラウザ + Hapbeat 無線版のデモ集。<b>楽しい × 便利</b>（触覚で Web 操作を補助）の実用デモと、効果が分かりやすい触覚ゲーム。各 1〜2 分。" +
+    "右上の <b>👁 映像 / 👂 音 / ✋ 触覚</b>（目・耳・手）を切り替えて、触覚の効きを A/B で体感してください（<b>👁 OFF</b>＝触覚だけ）。" +
     "<br><b>事前に</b> demo-kit（<code>hapbeat-arcade</code>）をデバイスに配備しておく必要があります（README 参照）。";
   home.appendChild(intro);
 

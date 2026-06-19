@@ -15,10 +15,11 @@ contracts の Layer 1 仕様の上に薄く載る code SDK。Unity SDK と同じ
 
 ## 責務
 
-- Layer 1 protocol の TS 実装（`protocol.ts` — wire 仕様に byte 単位で追従）
-- `Transport` 抽象（意味コマンド層）。`NodeUdpTransport`(dgram) と `BrowserWsTransport`(helper WS)
-- `Hapbeat` facade（transport 非依存）: `connect/play/stop/stopAll/ping/discover`
-- `EventMap`（kit manifest schema 2.0.0 → default gain = 調整側）
+- Layer 1 protocol の TS 実装（`protocol.ts` — wire 仕様に byte 単位で追従。PLAY/STOP/PING/CONNECT_STATUS + STREAM_BEGIN/DATA/END）
+- `Transport` 抽象（意味コマンド層）。`NodeUdpTransport`(dgram) と `BrowserWsTransport`(helper WS)。stream 原語 `streamBegin/Data/End` を含む
+- `Hapbeat` facade（transport 非依存）: `connect/play/stop/stopAll/ping/discover` + `preloadClips`
+- `EventMap`（kit manifest schema 2.0.0 → default gain = 調整側。`events`=fire / `stream_events`=clip）
+- **clip 機能**: `events`=fire（device 内蔵 clip 再生）/ `stream_events`=clip（`clipBase` の WAV を `wav.ts` で読み `ClipStreamer` が UDP ストリーム）。`play(id)` が manifest で fire/clip を自動分岐。device リング 256ms に合わせ `clip.ts` で real-time ペーシング
 
 ## 重要な設計制約
 
@@ -47,8 +48,10 @@ contracts の Layer 1 仕様の上に薄く載る code SDK。Unity SDK と同じ
 ## まだ作らないもの（level-2 以降）
 
 - 高レベル trigger 抽象（DOM event / three.js raycast / collision → 自動 fire）
-- streaming clip 再生（Web Audio からの取り込み）
+- **ライブ** streaming（Web Audio / マイク等のリアルタイム取り込み → 連続ストリーム）。※ファイルベースの clip ストリーミング（`stream_events` の WAV を UDP 送出）は実装済み
+- browser clip の per-device ターゲティング（現状は helper-known 全台。helper が stream を IP 解決するため）。Node clip は in-packet target で対応済み
 - browser transport の device_list 厳密スキーマ追従（現状は defensive parse。helper と実機で要検証）
+- clip streaming の helper + 実機 結合検証（protocol/WAV/facade/WS 形は単体検証済、実機未）
 
 ## テスト
 
