@@ -184,5 +184,8 @@ Target syntax is device-addressing (hapbeat-contracts): `player_1/chest`,
 
 ## More detail
 
-- SDK integration guide: https://devtools.hapbeat.com/docs/sdk-integration/
-- Docs portal: https://devtools.hapbeat.com/
+When this single file is not enough, an agent can fetch:
+
+- **Runnable examples in this repo:** `examples/` (browser demos + Node)
+- **Concepts** (shared by every SDK): event id <-> kit https://devtools.hapbeat.com/docs/concepts/event-id-and-kit/ - command vs clip https://devtools.hapbeat.com/docs/concepts/fire-vs-clip/ - targeting https://devtools.hapbeat.com/docs/concepts/group-player-addressing/
+- Human docs: https://devtools.hapbeat.com/docs/sdk-integration/ - Portal: https://devtools.hapbeat.com/
