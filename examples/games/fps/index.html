@@ -1,0 +1,35 @@
+<!doctype html>
+<!--
+  触覚 FPS — directional-haptic / spatial-audio FPS (PC + best-effort WebXR).
+
+  Standalone Three.js page. Enemies fire from 360°; each shot is localized in
+  AUDIO (HRTF PannerNode = full 3D) and HAPTIC (stereo L/R = lateral) so you can
+  locate threats — playable even with 👁 映像 OFF.
+
+  Needs the helper running (pip install hapbeat-helper) for haptics, and the
+  demo-kit deployed. Serve over HTTP (npm run dev) — open:
+      http://localhost:8170/examples/games/fps/
+-->
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>触覚 FPS — Hapbeat</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #05070a; overflow: hidden; }
+      canvas { display: block; }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "@hapbeat/sdk": "../../../dist/browser.js",
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <script type="module" src="./fps.js"></script>
+  </body>
+</html>
