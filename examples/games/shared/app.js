@@ -6,18 +6,29 @@
 
 import { ArcadeBridge } from "./hapbeat-bridge.js";
 import { best as bestScore } from "./scores.js";
-// 実用デモ（楽しい × 便利）
-import { game as heatcursor } from "../games/heatcursor.js";
-import { game as spatialalert } from "../games/spatialalert.js";
-import { game as progress } from "../games/progress.js";
-import { game as walknav } from "../games/walknav.js";
-// 触覚ゲーム（据え置き）
+// 効果体験ミニゲーム（触覚の効能を“測って”見せる）
+import { game as notice } from "../games/notice.js";
 import { game as hotcold } from "../games/hotcold.js";
 import { game as reflex } from "../games/reflex.js";
 
-// 迷路(maze) と リズム(rhythm) は採用見送り → games/_archive/ に退避（メニュー非表示）。
-// 復活させる場合は games/_archive/ から import して GAMES に戻す。
-const GAMES = [heatcursor, spatialalert, progress, walknav, hotcold, reflex];
+// 非表示にしたデモは games/_archive/ に退避（メニュー非表示・import で復活可）:
+//   maze(見えない壁) / rhythm(触覚リズム) … 存在意義不明で見送り
+//   spatialalert(どっちで鳴った) / progress(進捗をさわる) / walknav(顔を上げて歩くナビ)
+// heatcursor(ヒートカーソル) は hotcold(宝探し) と実質同じため削除（git で復元可）。
+const GAMES = [notice, hotcold, reflex];
+
+// 別ページのデモ（重い依存・XR・ポインタロックを隔離 → リンクで開く）
+const LINK_DEMOS = [
+  {
+    id: "fps",
+    emoji: "🎯",
+    title: "触覚 FPS",
+    en: "Spatial FPS",
+    tag: "音像定位＋触覚で 360° 索敵（PC / WebXR）",
+    desc: "平面フロアで 360° の敵が発砲。発砲音を音(HRTF)＋触覚(左右)で定位し、映像 OFF でも位置が分かる。敵の発砲/被弾/自分の発砲を個別 ON/OFF。",
+    href: "fps/",
+  },
+];
 
 const app = document.getElementById("app");
 const bridge = new ArcadeBridge();
@@ -167,6 +178,24 @@ function showHome() {
       }
     };
     cards.appendChild(c);
+  }
+  // 別ページのデモ（FPS 等）はリンクカードで開く（独自の重い依存を隔離）
+  for (const ld of LINK_DEMOS) {
+    const a = document.createElement("a");
+    a.className = "card";
+    a.href = ld.href;
+    a.target = "_blank"; // 重い依存・ポインタロックを別タブに隔離
+    a.rel = "noopener";
+    a.setAttribute("aria-label", `${ld.title} (${ld.en})`);
+    a.style.textDecoration = "none";
+    a.innerHTML = `
+      <div class="emoji">${ld.emoji}</div>
+      <h3>${ld.title}<span class="en">${ld.en}</span></h3>
+      <div class="tag">${ld.tag}</div>
+      <p>${ld.desc}</p>
+      <div class="card-best">別タブで開く ↗</div>
+    `;
+    cards.appendChild(a);
   }
   home.appendChild(cards);
 }

@@ -13,9 +13,9 @@
  * 100% browser, no extra device, and it can ride on top of any web map.
  */
 
-import { Fx } from "../shared/fx.js";
-import { directionCue, bothSides } from "../shared/synth.js";
-import { showResult, clearResult } from "../shared/ui.js";
+import { Fx } from "../../shared/fx.js";
+import { directionCue, bothSides } from "../../shared/synth.js";
+import { showResult, clearResult } from "../../shared/ui.js";
 
 const DIFF = {
   normal: { segMs: 2600, label: "Normal" }, // seconds per segment (slow stroll)

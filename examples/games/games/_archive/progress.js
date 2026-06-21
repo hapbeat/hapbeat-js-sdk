@@ -17,8 +17,8 @@
  * and press SPACE the instant you think it finishes; we score your guess.
  */
 
-import { Fx } from "../shared/fx.js";
-import { showResult, clearResult } from "../shared/ui.js";
+import { Fx } from "../../shared/fx.js";
+import { showResult, clearResult } from "../../shared/ui.js";
 
 const SCN = {
   progress: { label: "進捗 (アップロード)", dur: 8.0, slow: 0.62, fast: 0.085, curve: 1.4 },

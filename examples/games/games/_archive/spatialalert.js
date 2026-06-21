@@ -11,10 +11,10 @@
  * click — proving Hapbeat can carry *where* something happened, not just *that*.
  */
 
-import { Fx } from "../shared/fx.js";
-import { directionCue } from "../shared/synth.js";
-import { showResult, clearResult } from "../shared/ui.js";
-import { best as bestScore, submit as submitScore } from "../shared/scores.js";
+import { Fx } from "../../shared/fx.js";
+import { directionCue } from "../../shared/synth.js";
+import { showResult, clearResult } from "../../shared/ui.js";
+import { best as bestScore, submit as submitScore } from "../../shared/scores.js";
 
 const DIFF = {
   normal: { cols: 3, rows: 2, rounds: 10, window: 2.6, gap: 1.4, gain: 0.85, label: "Normal" },
