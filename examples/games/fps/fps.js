@@ -130,24 +130,27 @@ root.innerHTML = `
     #hbfps canvas { display: block; position: absolute; inset: 0; }
     #hbfps .panel { position: absolute; top: 12px; left: 12px; z-index: 9; /* above the start/gameover overlay so settings stay editable */
       background: rgba(10,13,18,0.88); border: 1px solid #2a313c; border-radius: 10px;
-      display: flex; align-items: flex-start; backdrop-filter: blur(4px);
-      max-height: calc(100vh - 24px); overflow-y: auto;       /* WHOLE panel scrolls… */
-      scrollbar-width: none; }                                 /* …with the scrollbar hidden (no width shift) */
-    #hbfps .panel::-webkit-scrollbar { width: 0; height: 0; }
+      backdrop-filter: blur(4px); overflow: hidden; max-height: calc(100vh - 24px); }
+    #hbfps .pscroll { display: flex; align-items: flex-start;        /* the two columns scroll together… */
+      max-height: calc(100vh - 24px); overflow-y: auto; scrollbar-width: none; } /* …scrollbar hidden (no width shift) */
+    #hbfps .pscroll::-webkit-scrollbar { width: 0; height: 0; }
+    #hbfps .menu-pin { position: absolute; top: 7px; right: 7px; z-index: 11; } /* ☰ pinned to the panel's top-right (right of 詳細設定); stays put when the panel scrolls */
     #hbfps .pcol { padding: 10px 12px; }
     #hbfps .pcol-main { width: 300px; flex: 0 0 auto; }
     #hbfps .pcol-adv { width: 0; max-height: 0; flex: 0 0 auto; overflow: hidden; padding: 0; transition: width .12s ease; } /* collapsed: no width AND no height (no empty margin) */
     #hbfps .panel.adv-open .pcol-adv { width: 292px; max-height: none; padding: 10px 12px; border-left: 1px solid #2a313c; } /* 詳細設定 = 2nd column */
     #hbfps .panel.collapsed { display: none; }
     #hbfps .panel h2 { margin: 0; font-size: 15px; }
-    #hbfps .phead { display: flex; align-items: center; justify-content: space-between; }
+    #hbfps .phead { display: flex; align-items: center; gap: 8px; padding-right: 30px; } /* room for the pinned ☰ */
     #hbfps .iconbtn { background: #222a35; color: #cdd6e0; border: 1px solid #39424f;
-      border-radius: 7px; width: 26px; height: 24px; cursor: pointer; font-size: 14px; line-height: 1; }
+      border-radius: 7px; width: 28px; height: 26px; cursor: pointer; font-size: 16px; line-height: 1; }
     #hbfps .iconbtn:hover { background: #2c3543; }
+    #hbfps .textbtn { background: #222a35; color: #cdd6e0; border: 1px solid #39424f; border-radius: 7px;
+      padding: 4px 11px; height: 25px; line-height: 1; font-size: 12px; cursor: pointer; white-space: nowrap; }
+    #hbfps .textbtn:hover { background: #2c3543; }
     #hbfps .drawer-open { position: absolute; top: 12px; left: 12px; z-index: 9; display: none;
       background: rgba(10,13,18,0.84); color: #cdd6e0; border: 1px solid #39424f;
       border-radius: 8px; width: 34px; height: 30px; cursor: pointer; font-size: 16px; }
-    #hbfps .sub { font-size: 11px; color: #8b97a6; margin: 6px 0 8px; line-height: 1.45; }
     #hbfps .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 13px; }
     #hbfps .group-title { font-size: 11px; color: #8b97a6; text-transform: uppercase;
       letter-spacing: .06em; margin: 10px 0 2px; }
@@ -239,11 +242,12 @@ root.innerHTML = `
     #hbfps .help-card .primary { margin-top: 14px; }
   </style>
   <div class="panel adv-open" id="panel">
+   <button class="iconbtn menu-pin" id="drawerTab" title="メニュー / HUD を隠す">☰</button>
+   <div class="pscroll">
    <div class="pcol pcol-main">
     <div class="phead">
       <h2>触覚 FPS</h2>
-      <button class="iconbtn" id="helpBtn" title="操作説明" style="margin-left:auto;">？操作</button>
-      <button class="iconbtn" id="drawerTab" title="HUD 表示/非表示 (☰ Menu)">‹</button>
+      <button class="textbtn" id="helpBtn" title="操作説明を開く">？ 操作説明</button>
     </div>
 
     <div class="group-title">モード <span class="kb">⧉</span></div>
@@ -295,8 +299,9 @@ root.innerHTML = `
       </div>
     </div>
    </div>
+   </div>
   </div>
-  <button class="drawer-open" id="drawerOpen" title="HUD を表示">›</button>
+  <button class="drawer-open" id="drawerOpen" title="メニュー / HUD を表示">☰</button>
   <div class="hud">
     HP <b id="hp">5</b><br>撃破 <b id="kills">0/20</b><br>敵 <b id="left">0</b>
   </div>
