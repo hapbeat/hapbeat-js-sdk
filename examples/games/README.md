@@ -104,9 +104,9 @@ npm run build && npx serve .     # http://localhost:3000/examples/games/
 - [`TUNING.md`](./TUNING.md) — 人が読む対応表（ゲーム→event→clip→gain→調整メモ）
 - [`tuning.csv`](./tuning.csv) — スプレッドシート取り込み用
 
-調整の起点（source of truth）は [`shared/events.js`](./shared/events.js) の `EVENTS`。
-clip 差し替えは [`demo-kit/hapbeat-arcade-manifest.json`](./demo-kit/hapbeat-arcade-manifest.json) と
-[`demo-kit/install-clips/`](./demo-kit/install-clips/) で行い、Studio から再配備する。
+触覚・音の調整の起点（source of truth）は [`shared/event-content.js`](./shared/event-content.js) の `CONTENT`。
+各イベントの **haptic（合成 PCM）+ audio（合成トーン）** を 1 ファイルで管理するプレースホルダ。
+ここを書き換えるだけで全ゲームの触覚・音が変わる（WAV/kit 不要）。
 
 ---
 
@@ -118,8 +118,12 @@ examples/games/
   shared/
     app.js                   # シェル（メニュー / ルーティング / ヘッダー / 全画面）
     hapbeat-bridge.js        # @hapbeat/sdk + 音 + モダリティゲート（helper 無しフォールバック / 切断検知）
-    audio.js                 # WebAudio プレースホルダ再生
-    events.js                # ★ イベント定義（チューニングの source of truth）
+    event-content.js         # ★ 触覚+音コンテンツ（eventmap・チューニングの source of truth）
+    audio.js                 # WebAudio 合成（event-content の audio スペックを再生）
+    controls.js              # モダリティ切替 / 名前入力（共有ツールバー部品）
+    ranking.js               # ランキング（複数指標ソート + ポップアウト + JSON）
+    synth.js                 # 触覚 PCM 合成（stereoBlip / stereoTone）
+    gamepad.js               # ゲームパッド入力ヘルパー
     fx.js                    # 画面シェイク + 粒子（演出）
     scores.js                # 自己ベスト永続化（localStorage）
     ui.js                    # 結果オーバーレイ（もう一度 / メニュー）

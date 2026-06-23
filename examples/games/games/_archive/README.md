@@ -20,6 +20,8 @@ import { game as rhythm } from "../games/_archive/rhythm.js";
 const GAMES = [hotcold, reflex, maze, rhythm];
 ```
 
-各 event id（`hapbeat-arcade.maze_*` / `rhythm_*`）は `shared/events.js` と
-`demo-kit/hapbeat-arcade-manifest.json` に残してあるのでそのまま動く。
+> ⚠️ これらのアーカイブは旧 `shared/events.js`（削除済み）時代のもの。現在の触覚/音は
+> `shared/event-content.js` の `CONTENT` に集約されており、`maze_*` / `rhythm_*` の
+> イベントは CONTENT に存在しない。復活させる場合は対応する行を `event-content.js` に
+> 追加すること（`bridge.fire("maze_bump")` 等が CONTENT 参照になっているため）。
 import 深さは `../../shared/...`（このフォルダ基準）に調整済み。

@@ -13,12 +13,12 @@
 import { Fx } from "../shared/fx.js";
 import { showResult, clearResult } from "../shared/ui.js";
 import { best as bestScore, submit as submitScore } from "../shared/scores.js";
+import { Pad, BTN } from "../shared/gamepad.js";
+import { modalityControls, padModality, playerNameField, activeMods } from "../shared/controls.js";
+import { createRanking } from "../shared/ranking.js";
 
-const DIFF = {
-  normal: { rounds: 5, waitMin: 1.4, waitMax: 3.5, target: 350, label: "Normal" },
-  hard: { rounds: 5, waitMin: 1.2, waitMax: 4.5, target: 300, label: "Hard" },
-  expert: { rounds: 6, waitMin: 1.0, waitMax: 5.5, target: 250, label: "Expert" },
-};
+// Single fixed config — 5 rounds, no difficulty selector (kept simple per request).
+const CFG = { rounds: 5, waitMin: 1.4, waitMax: 4.0, target: 300 };
 
 const GO_TIMEOUT = 1.5; // s — auto-advance if no press after GO (safety, counts as miss)
 
@@ -34,16 +34,17 @@ export const game = {
   mount(container, ctx) {
     const bridge = ctx.bridge;
     const toMenu = ctx.toMenu || (() => {});
-    let diffKey = "normal";
     // GO の画面表示はヘッダーの 👁 映像 マスターに連動（OFF＝触覚だけで反応）。
     const visualOn = () => bridge.master.visual;
 
     container.innerHTML = `
       <div class="gametoolbar">
-        <span class="label">難易度</span>
-        <div class="toggle-group" id="diff"></div>
+        <span class="label">反応速度（5回固定）</span>
         <span class="spacer"></span>
-        <button id="start" class="primary">スタート</button>
+        <span id="modslot"></span>
+        <button id="start" class="primary"><span id="startlbl">スタート</span> <span class="padkey k-a">A</span></button>
+        <button id="stop" class="danger">ストップ <span class="padkey k-menu">☰</span></button>
+        <span id="nameslot"></span>
       </div>
       <div class="stagebox">
         <canvas id="cv" width="720" height="420"></canvas>
@@ -55,8 +56,11 @@ export const game = {
         <span>自己ベスト <b id="best">—</b></span>
         <span id="state"></span>
       </div>
-      <p class="note">操作: GO を感じたら最速で <kbd>Space</kbd>（クリックでも可）。待っている間に押すと <b>お手つき</b>。
-      ヘッダーの <b>👁 映像 / 👂 音 / ✋ 触覚</b> で切替。<b>👁 映像 OFF</b>＝<b>触覚だけ</b>で反応する勝負。</p>
+      <p class="note">操作: GO を感じたら最速で <kbd>Space</kbd>（クリック / パッド <b>Ⓐ</b> でも可）。待っている間に押すと <b>お手つき</b>。
+      パッド: <b>Ⓐ</b>=反応 / <b>☰</b>=スタート・ストップ / <b>Ⓥ(View)</b>=メニュー。開始前は <b>Ⓧ/Ⓨ/Ⓑ</b>=映像/音/触覚 切替。
+      <b>👁映像/👂音/✋触覚</b>（上のボタン or パッド）で切替。<b>👁 映像 OFF</b>＝<b>触覚だけ</b>で反応する勝負。
+      映像と触覚は<b>同じ瞬間</b>に発火します（どちらが速く“感じる”かは人による）。</p>
+      <div class="rankpanel" id="rankpanel"></div>
     `;
 
     const cv = container.querySelector("#cv");
@@ -68,29 +72,36 @@ export const game = {
     const elAvg = container.querySelector("#avg");
     const elBest = container.querySelector("#best");
     const elState = container.querySelector("#state");
-    const diffBox = container.querySelector("#diff");
-
-    function refreshBest() {
-      const b = bestScore("reflex", diffKey);
-      elBest.textContent = b == null ? "—" : `${Math.round(b)}ms`;
+    const startBtn = container.querySelector("#start");
+    const startLbl = container.querySelector("#startlbl");
+    const stopBtn = container.querySelector("#stop");
+    const isRunning = () => phase === "wait" || phase === "go" || phase === "between";
+    function updateButtons() {
+      startLbl.textContent = phase === "idle" ? "スタート" : "リスタート";
+      stopBtn.disabled = !isRunning();
+      mods.setLocked(isRunning());
     }
 
-    for (const k of Object.keys(DIFF)) {
-      const b = document.createElement("button");
-      b.textContent = DIFF[k].label;
-      b.setAttribute("aria-pressed", String(k === diffKey));
-      b.onclick = () => {
-        diffKey = k;
-        for (const c of diffBox.children) c.setAttribute("aria-pressed", String(c === b));
-        elRounds.textContent = String(DIFF[k].rounds);
-        refreshBest();
-        idle();
-      };
-      diffBox.appendChild(b);
+    // modality toggles (between 難易度 and start) + persisted player name + ranking
+    const mods = modalityControls(bridge);
+    container.querySelector("#modslot").appendChild(mods.el);
+    const nameField = playerNameField();
+    container.querySelector("#nameslot").appendChild(nameField.el);
+    const rank = createRanking("reflex", {
+      title: "反応速度",
+      columns: [{ key: "ms", label: "平均", unit: "ms", decimals: 0, lowerIsBetter: true, primary: true }],
+    });
+    const rankPanel = container.querySelector("#rankpanel");
+    const disposeRank = rank.mountPanel(rankPanel);
+
+    function refreshBest() {
+      const b = bestScore("reflex", "fixed");
+      elBest.textContent = b == null ? "—" : `${Math.round(b)}ms`;
     }
 
     // ── state ────────────────────────────────────────────────
     const fx = new Fx();
+    const pad = new Pad();
     let phase = "idle"; // idle | wait | go | between | done
     let round = 0,
       times = [],
@@ -117,24 +128,24 @@ export const game = {
       elRound.textContent = "0";
       elLast.textContent = "—";
       elAvg.textContent = "—";
-      elState.textContent = DIFF[diffKey].label;
-      container.querySelector("#start").textContent = "スタート";
+      elState.textContent = "";
+      updateButtons();
     }
 
     function startGame() {
       clearResult(stagebox);
+      nameField.roll(); // fresh random name suggestion for this play
       round = 0;
       times = [];
       fouls = 0;
       misses = 0;
-      container.querySelector("#start").textContent = "リスタート";
       beginRound();
+      updateButtons();
     }
 
     function armRound() {
       phase = "wait";
-      const D = DIFF[diffKey];
-      const d = D.waitMin + Math.random() * (D.waitMax - D.waitMin);
+      const d = CFG.waitMin + Math.random() * (CFG.waitMax - CFG.waitMin);
       waitUntil = nowMs() + d * 1000;
       statusText = "構えて…";
     }
@@ -142,7 +153,7 @@ export const game = {
     function beginRound() {
       round++;
       elRound.textContent = String(round);
-      if (round > DIFF[diffKey].rounds) {
+      if (round > CFG.rounds) {
         finish();
         return;
       }
@@ -203,18 +214,26 @@ export const game = {
     function finish() {
       phase = "done";
       statusText = "";
-      const rounds = DIFF[diffKey].rounds;
+      updateButtons();
+      const rounds = CFG.rounds;
       let sub,
         badge = "";
       if (times.length) {
         const avg = times.reduce((s, x) => s + x, 0) / times.length;
-        // only a fully-clean run (every round reacted to) sets a best,
-        // so a single lucky round among fouls/timeouts can't post a bogus record
+        // only a fully-clean run (every round reacted to) sets a best / posts to
+        // the ranking, so a single lucky round among fouls/timeouts can't post a
+        // bogus record
         let res = { isBest: false };
         const clean = times.length === rounds;
         if (clean) {
-          res = submitScore("reflex", diffKey, avg, true);
+          res = submitScore("reflex", "fixed", avg, true);
           refreshBest();
+          rank.record({
+            name: nameField.get(),
+            metrics: { ms: avg },
+            mods: activeMods(bridge),
+            detail: `最速 ${Math.round(Math.min(...times))}ms ・ お手つき ${fouls}`,
+          });
         }
         bridge.fire("reflex_win", { gain: 0.6 });
         fx.burst(cv.width / 2, cv.height / 2, "#2dd4bf", 40, 300);
@@ -234,13 +253,14 @@ export const game = {
       });
     }
 
-    container.querySelector("#start").onclick = () => {
+    startBtn.onclick = () => {
       bridge.unlockAudio();
       startGame();
     };
+    stopBtn.onclick = () => idle(); // end the run and return to the pre-start state
 
     function ratingColor(ms) {
-      return ms < DIFF[diffKey].target ? "#2dd4bf" : ms < DIFF[diffKey].target + 150 ? "#3fb950" : "#d29922";
+      return ms < CFG.target ? "#2dd4bf" : ms < CFG.target + 150 ? "#3fb950" : "#d29922";
     }
 
     // input
@@ -261,6 +281,20 @@ export const game = {
     function frame(ts) {
       const dt = Math.min(0.05, (ts - tPrev) / 1000);
       tPrev = ts;
+
+      // gamepad: A/RT=react or start, ☰=start/stop, Ⓥ(View)=menu.
+      // Ⓧ/Ⓨ/Ⓑ toggle 映像/音/触覚 but only while NOT running (locked mid-game).
+      const G = pad.poll();
+      if (G.connected) {
+        const running = isRunning();
+        padModality(G, bridge, running); // X/Y/B modality, idle-only
+        if (G.isDown(BTN.A) || G.isDown(BTN.RT)) {
+          if (running) press();
+          else startGame();
+        }
+        if (G.isDown(BTN.MENU)) running ? idle() : startGame(); // ☰ = start / stop
+        if (G.isDown(BTN.VIEW)) toMenu(); // back to menu any time
+      }
 
       if (phase === "wait" && nowMs() >= waitUntil) fireGo();
       else if (phase === "go" && nowMs() - goAt > GO_TIMEOUT * 1000) {
@@ -298,10 +332,16 @@ export const game = {
       g.textBaseline = "middle";
       g.font = phase === "go" && visualOn() ? "bold 64px system-ui" : "28px system-ui";
       g.fillText(statusText, cv.width / 2, cv.height / 2 - 10);
-      if (phase === "go" && !visualOn()) {
-        g.font = "13px system-ui";
-        g.fillStyle = "#4b5666";
-        g.fillText("（GO 表示 OFF：触覚 / 音で反応）", cv.width / 2, cv.height / 2 + 40);
+      // ALWAYS-on operation legend — constant text AND position so its appearance
+      // never cues the GO timing (the old GO-only hint leaked it on Hard/Expert).
+      g.font = "15px system-ui";
+      g.fillStyle = "#8b97a6";
+      g.fillText("通知が来たら クリック / Space / Ⓐ で反応", cv.width / 2, cv.height / 2 + 44);
+      if (!visualOn()) {
+        // a master-switch state (locked mid-run), so it doesn't change on GO either
+        g.font = "12px system-ui";
+        g.fillStyle = "#5a6677";
+        g.fillText("（👁 映像 OFF：触覚 / 音だけで反応）", cv.width / 2, cv.height / 2 + 70);
       }
       fx.restore(g);
       fx.draw(g);
@@ -309,13 +349,13 @@ export const game = {
       // reaction history strip
       g.textAlign = "left";
       g.textBaseline = "alphabetic";
-      const n = DIFF[diffKey].rounds;
+      const n = CFG.rounds;
       const w = cv.width - 80;
       const x0 = 40,
         y0 = cv.height - 26;
       for (let i = 0; i < n; i++) {
         const cx = x0 + (w * (i + 0.5)) / n;
-        g.strokeStyle = "#2a313c";
+        g.strokeStyle = "#4a5564";
         g.beginPath();
         g.arc(cx, y0, 10, 0, Math.PI * 2);
         g.stroke();
@@ -328,7 +368,7 @@ export const game = {
       }
     }
 
-    elRounds.textContent = String(DIFF[diffKey].rounds);
+    elRounds.textContent = String(CFG.rounds);
     refreshBest();
     idle();
     raf = requestAnimationFrame(frame);
@@ -337,6 +377,8 @@ export const game = {
       unmount() {
         cancelAnimationFrame(raf);
         window.removeEventListener("keydown", kd);
+        mods.dispose();
+        disposeRank();
       },
     };
   },

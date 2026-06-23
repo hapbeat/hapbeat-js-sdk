@@ -28,6 +28,15 @@ const LINK_DEMOS = [
     desc: "平面フロアで 360° の敵が発砲。発砲音を音(HRTF)＋触覚(左右)で定位し、映像 OFF でも位置が分かる。敵の発砲/被弾/自分の発砲を個別 ON/OFF。",
     href: "fps/",
   },
+  {
+    id: "gamepad-test",
+    emoji: "🎮",
+    title: "入力確認",
+    en: "Input Check",
+    tag: "Gamepad / キーの検出・押下をライブ確認（診断）",
+    desc: "コントローラやキーがブラウザに検出されるか、どのボタンが押下として取れるかをライブ表示。SDK・helper 不要。コントローラが反応しない時の切り分けに。",
+    href: "gamepad-test/",
+  },
 ];
 
 const app = document.getElementById("app");
@@ -41,7 +50,7 @@ header.innerHTML = `
   <h1>🟣 Hapbeat 触覚デモ <span class="sub">楽しい × 便利</span></h1>
   <span class="spacer"></span>
   <span class="pill" id="status"><span class="dot"></span><span id="statusText">接続中…</span></span>
-  <span class="toggle-group" title="モダリティ切替（目/耳/手）">
+  <span class="toggle-group" id="hdrMods" title="モダリティ切替（目/耳/手）">
     <button id="visualBtn" aria-pressed="true" title="映像 (目)">👁 映像</button>
     <button id="audioBtn" aria-pressed="true" title="音 (耳)">👂 音</button>
     <button id="hapticBtn" aria-pressed="true" title="触覚 (手)">✋ 触覚</button>
@@ -62,6 +71,7 @@ const statusText = header.querySelector("#statusText");
 const visualBtn = header.querySelector("#visualBtn");
 const audioBtn = header.querySelector("#audioBtn");
 const hapticBtn = header.querySelector("#hapticBtn");
+const hdrMods = header.querySelector("#hdrMods"); // hidden in-game (toolbar group takes over)
 
 visualBtn.onclick = () => bridge.setMaster("visual", !bridge.master.visual);
 audioBtn.onclick = () => {
@@ -114,6 +124,7 @@ function showHome() {
   bridge.stopAll();
   stage.innerHTML = "";
   home.innerHTML = "";
+  hdrMods.style.display = ""; // global modality toggles belong to the home screen
 
   if (!bridge.connected) {
     if (bridge.connecting || !bridge.settled) {
@@ -208,6 +219,7 @@ function openGame(gm) {
   bridge.stopAll();
   home.innerHTML = "";
   stage.innerHTML = "";
+  hdrMods.style.display = "none"; // in-game: the toolbar's 👁/👂/✋ group takes over
 
   const head = el("div", "stage-head");
   const back = el("button", "ghost");

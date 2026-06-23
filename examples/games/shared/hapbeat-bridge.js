@@ -9,10 +9,12 @@
  */
 
 import { connect } from "@hapbeat/sdk";
-import { EVENTS } from "./events.js";
+import { CONTENT, buildHaptic } from "./event-content.js";
 import { AudioBank } from "./audio.js";
+import { stereoBlip } from "./synth.js";
 
 const clamp01 = (g) => (g < 0 ? 0 : g > 1 ? 1 : g);
+const clampPan = (p) => (p < -1 ? -1 : p > 1 ? 1 : p);
 
 export class ArcadeBridge {
   constructor() {
@@ -77,30 +79,34 @@ export class ArcadeBridge {
   }
 
   /**
-   * Fire a logical event across modalities.
-   * @param {string} name  key in EVENTS
-   * @param {{gain?:number, pan?:number, rate?:number, haptic?:boolean, audio?:boolean}} opts
-   *   per-call haptic/audio default true; combined (AND) with the master switch.
+   * Fire a logical event across modalities — haptic + audio specs come from the
+   * central event-content map (the single tuning surface; see event-content.js).
+   * @param {string} name  key in CONTENT
+   * @param {{gain?:number, pan?:number, haptic?:boolean, audio?:boolean}} opts
+   *   gain overrides the event's base intensity; per-call haptic/audio default
+   *   true and are AND-ed with the master switch.
    */
   fire(name, opts = {}) {
-    const ev = EVENTS[name];
+    const ev = CONTENT[name];
     if (!ev) {
       console.warn(`[arcade] unknown event "${name}"`);
       return;
     }
-    const gain = clamp01(opts.gain ?? ev.gain);
+    const gain = clamp01(opts.gain ?? ev.haptic?.gain ?? 0.8);
+    const pan = clampPan(opts.pan ?? 0);
     const wantHaptic = opts.haptic !== false;
     const wantAudio = opts.audio !== false;
 
     if (wantHaptic && this.master.haptic && this.connected && this.hb) {
       try {
-        this.hb.play(ev.hapticEvent, { gain });
+        const pcm = buildHaptic(stereoBlip, ev.haptic, { pan, gain });
+        if (pcm) this.hb.streamPcm(pcm, { channels: 2, sampleRate: 16000, gain: 1 });
       } catch (e) {
-        console.warn(`[arcade] play failed: ${e?.message ?? e}`);
+        console.warn(`[arcade] haptic stream failed: ${e?.message ?? e}`);
       }
     }
     if (wantAudio && this.master.audio) {
-      this.audio.play(name, { gain, pan: opts.pan ?? 0, rate: opts.rate ?? 1.0 });
+      this.audio.playSpec(ev.audio, { gain, pan });
     }
   }
 
@@ -120,9 +126,28 @@ export class ArcadeBridge {
     }
   }
 
+  /**
+   * Open a PERSISTENT stream session for continuously-modulated haptics (no
+   * per-chunk teardown — see hapbeat-web-sdk LiveStream). Returns a handle with
+   * write(pcm)/close()/closed, or null if haptics aren't available. The caller
+   * must feed chunks at ~real-time rate and re-open if `closed` (a discrete
+   * fire/streamPcm ends the live stream — 1 session = 1 stream).
+   * @returns {{write:(pcm:Uint8Array)=>void, close:()=>void, closed:boolean}|null}
+   */
+  openStream(opts = {}) {
+    if (this.master.haptic && this.connected && this.hb) {
+      try {
+        return this.hb.openStream(opts);
+      } catch (e) {
+        console.warn(`[arcade] openStream failed: ${e?.message ?? e}`);
+      }
+    }
+    return null;
+  }
+
   /** Quick "is the device alive" tap — fires a known event at moderate gain. */
   testHaptic() {
-    this.fire("rhythm_hit", { gain: 0.6, audio: true });
+    this.fire("reflex_go", { gain: 0.6, audio: true });
   }
 
   stopAll() {

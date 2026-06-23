@@ -10,6 +10,11 @@
 import { Fx } from "../shared/fx.js";
 import { showResult, clearResult } from "../shared/ui.js";
 import { best as bestScore, submit as submitScore } from "../shared/scores.js";
+import { Pad, BTN } from "../shared/gamepad.js";
+import { modalityControls, padModality, playerNameField, activeMods } from "../shared/controls.js";
+import { createRanking } from "../shared/ranking.js";
+
+const DIG_COOLDOWN = 3.0; // s — penalty after a cold (failed) dig, to stop brute-force spam
 
 const DIFF = {
   normal: { catch: 30, range: 360, targets: 3, time: 60, label: "Normal" },
@@ -32,14 +37,17 @@ export const game = {
     const bridge = ctx.bridge;
     const toMenu = ctx.toMenu || (() => {});
     const fx = new Fx();
-    let diffKey = "normal";
+    const pad = new Pad();
+    const diffKey = "hard"; // 宝探しは Hard 固定（難易度選択なし）
 
     container.innerHTML = `
       <div class="gametoolbar">
-        <span class="label">難易度</span>
-        <div class="toggle-group" id="diff"></div>
+        <span class="label">宝探し</span>
         <span class="spacer"></span>
-        <button id="start" class="primary">スタート</button>
+        <span id="modslot"></span>
+        <button id="start" class="primary"><span id="startlbl">スタート</span> <span class="padkey k-a">A</span></button>
+        <button id="stop" class="danger">ストップ <span class="padkey k-menu">☰</span></button>
+        <span id="nameslot"></span>
       </div>
       <div class="stagebox">
         <canvas id="cv" width="720" height="480"></canvas>
@@ -51,8 +59,10 @@ export const game = {
         <span>発見ベスト <b id="best">—</b></span>
         <span id="state"></span>
       </div>
-      <p class="note">操作: マウスで探索 → 当たりと感じたら<kbd>クリック</kbd>。近いほど触覚が強く・速くなる。
-      ヘッダーの <b>👁 映像 / 👂 音 / ✋ 触覚</b> で切替。<b>👁 映像 OFF</b> が本来の純触覚モード（ヒート非表示）。</p>
+      <p class="note">操作: マウスで探索 → 当たりと感じたら<kbd>クリック</kbd>。近いほど触覚が強く・速くなる。外すと <b>${DIG_COOLDOWN}秒クールダウン</b>（連打防止）。
+      パッド: <b>左スティック/十字</b>=移動 / <b>Ⓐ</b>=掘る・スタート / <b>RB</b>=リスタート / <b>☰</b>=ストップ / <b>Ⓥ(View)</b>=メニュー。開始前は <b>Ⓧ/Ⓨ/Ⓑ</b>=映像/音/触覚 切替。
+      <b>👁映像/👂音/✋触覚</b>（上のボタン or パッド）で切替。<b>👁 映像 OFF</b> が本来の純触覚モード（ヒート・脈動・発見演出すべて非表示）。</p>
+      <div class="rankpanel" id="rankpanel"></div>
     `;
 
     const cv = container.querySelector("#cv");
@@ -64,23 +74,33 @@ export const game = {
     const elMsg = container.querySelector("#msg");
     const elBest = container.querySelector("#best");
     const stagebox = container.querySelector(".stagebox");
-    const diffBox = container.querySelector("#diff");
+    const startBtn = container.querySelector("#start");
+    const startLbl = container.querySelector("#startlbl");
+    const stopBtn = container.querySelector("#stop");
+
+    // modality toggles (between label and start) + persisted player name + ranking
+    const mods = modalityControls(bridge);
+    container.querySelector("#modslot").appendChild(mods.el);
+    const nameField = playerNameField();
+    container.querySelector("#nameslot").appendChild(nameField.el);
+    const rank = createRanking("hotcold", {
+      title: "宝探し",
+      columns: [
+        { key: "found", label: "発見", unit: "個", decimals: 0, lowerIsBetter: false, primary: true },
+        { key: "time", label: "タイム", unit: "s", decimals: 1, lowerIsBetter: true },
+      ],
+    });
+    const rankPanel = container.querySelector("#rankpanel");
+    const disposeRank = rank.mountPanel(rankPanel);
+    function updateButtons() {
+      startLbl.textContent = running ? "リスタート" : "スタート";
+      stopBtn.disabled = !running;
+      mods.setLocked(running);
+    }
 
     function refreshBest() {
       const b = bestScore("hotcold", diffKey);
       elBest.textContent = b == null ? "—" : String(Math.round(b));
-    }
-
-    for (const k of Object.keys(DIFF)) {
-      const b = document.createElement("button");
-      b.textContent = DIFF[k].label;
-      b.setAttribute("aria-pressed", String(k === diffKey));
-      b.onclick = () => {
-        diffKey = k;
-        for (const c of diffBox.children) c.setAttribute("aria-pressed", String(c === b));
-        stop();
-      };
-      diffBox.appendChild(b);
     }
 
     // ── state ────────────────────────────────────────────────
@@ -89,7 +109,9 @@ export const game = {
       timeLeft = 0,
       running = false,
       lastPulse = 0,
-      reveal = 0;
+      reveal = 0,
+      revealPos = null, // where the found treasure WAS (so reveal never leaks the NEXT one)
+      cooldownUntil = 0; // performance.now() until which digging is locked after a cold miss
     const mouse = { x: cv.width / 2, y: cv.height / 2, inside: false };
 
     function placeTarget() {
@@ -102,16 +124,19 @@ export const game = {
 
     function start() {
       const D = DIFF[diffKey];
+      nameField.roll(); // fresh random name suggestion for this play
       found = 0;
       timeLeft = D.time;
       running = true;
       reveal = 0;
+      revealPos = null;
+      cooldownUntil = 0;
       elTotal.textContent = String(D.targets);
       elMsg.textContent = "";
       elState.textContent = DIFF[diffKey].label;
       placeTarget();
       clearResult(stagebox);
-      container.querySelector("#start").textContent = "リスタート";
+      updateButtons();
       tPrev = performance.now();
     }
     function stop() {
@@ -122,13 +147,23 @@ export const game = {
       elFound.textContent = "0";
       clearResult(stagebox);
       refreshBest();
-      container.querySelector("#start").textContent = "スタート";
+      updateButtons();
     }
 
     function endGame(title, badgeable) {
       running = false;
+      updateButtons();
       const res = submitScore("hotcold", diffKey, found, false);
       refreshBest();
+      if (found > 0) {
+        const used = DIFF[diffKey].time - timeLeft; // seconds spent (lower = faster)
+        rank.record({
+          name: nameField.get(),
+          metrics: { found, time: used },
+          mods: activeMods(bridge),
+          detail: `${found}/${DIFF[diffKey].targets}個 ・ ${title.replace(/^[^\w\s]+\s*/, "")}`,
+        });
+      }
       showResult(stagebox, {
         title,
         badge: badgeable && res.isBest ? "★ 自己ベスト更新" : "",
@@ -138,10 +173,11 @@ export const game = {
       });
     }
 
-    container.querySelector("#start").onclick = () => {
+    startBtn.onclick = () => {
       bridge.unlockAudio();
       start();
     };
+    stopBtn.onclick = () => stop(); // end the run and return to the pre-start state
 
     function toCanvas(e) {
       const r = cv.getBoundingClientRect();
@@ -157,17 +193,19 @@ export const game = {
       mouse.inside = true;
     };
     const pl = () => (mouse.inside = false);
-    const pd = (e) => {
+
+    function digAt(x, y) {
       if (!running) return;
+      const now = performance.now();
+      if (now < cooldownUntil) return; // locked after a cold miss (anti-spam)
       bridge.unlockAudio();
-      const p = toCanvas(e);
-      const d = Math.hypot(p.x - target.x, p.y - target.y);
+      const d = Math.hypot(x - target.x, y - target.y);
       if (d <= DIFF[diffKey].catch) {
         found++;
         elFound.textContent = String(found);
-        bridge.fire("hot_found", { gain: 0.65 });
-        fx.burst(target.x, target.y, "#d4a017", 30, 260);
-        fx.shake(7);
+        bridge.fire("hot_found", { gain: 0.85 }); // distinct "double-thump" haptic + audio (event-content)
+        if (bridge.master.visual) { fx.burst(target.x, target.y, "#d4a017", 30, 260); fx.shake(7); }
+        revealPos = { x: target.x, y: target.y };
         reveal = 1;
         if (found >= DIFF[diffKey].targets) {
           endGame("🏆 CLEAR", true);
@@ -175,10 +213,13 @@ export const game = {
           placeTarget();
         }
       } else {
-        // cold dig — faint low feedback, no penalty
+        // cold dig — faint low feedback + a cooldown so you can't spam-find by luck
         bridge.fire("hot_pulse", { gain: 0.12, audio: true });
+        if (bridge.master.visual) fx.shake(3);
+        cooldownUntil = now + DIG_COOLDOWN * 1000;
       }
-    };
+    }
+    const pd = (e) => { const p = toCanvas(e); digAt(p.x, p.y); };
     cv.addEventListener("pointermove", pm);
     cv.addEventListener("pointerleave", pl);
     cv.addEventListener("pointerdown", pd);
@@ -189,6 +230,27 @@ export const game = {
     function frame(ts) {
       const dt = Math.min(0.05, (ts - tPrev) / 1000);
       tPrev = ts;
+
+      // gamepad: stick/d-pad move the cursor, Ⓐ=dig (or start when idle),
+      // RB=restart, ☰=stop, Ⓥ(View)=menu. Ⓧ/Ⓨ/Ⓑ toggle 映像/音/触覚 — idle-only.
+      const G = pad.poll();
+      if (G.connected) {
+        padModality(G, bridge, running); // X/Y/B modality, idle-only
+        let mx = G.lx, my = G.ly;
+        if (G.isHeld(BTN.LEFT)) mx = -1; else if (G.isHeld(BTN.RIGHT)) mx = 1;
+        if (G.isHeld(BTN.UP)) my = -1; else if (G.isHeld(BTN.DOWN)) my = 1;
+        if (running && (mx || my)) {
+          const spd = 540; // px/s
+          mouse.x = Math.max(0, Math.min(cv.width, mouse.x + mx * spd * dt));
+          mouse.y = Math.max(0, Math.min(cv.height, mouse.y + my * spd * dt));
+          mouse.inside = true;
+        }
+        if (G.isDown(BTN.A) || G.isDown(BTN.RT)) { bridge.unlockAudio(); if (running) digAt(mouse.x, mouse.y); else start(); }
+        if (G.isDown(BTN.RB)) { bridge.unlockAudio(); start(); } // restart (separate from dig)
+        if (G.isDown(BTN.MENU) && running) stop(); // ☰ = stop
+        if (G.isDown(BTN.VIEW)) toMenu(); // back to menu any time
+      }
+
       if (running) {
         timeLeft -= dt;
         if (timeLeft <= 0) {
@@ -242,19 +304,22 @@ export const game = {
         g.fillRect(0, 0, cv.width, cv.height);
       }
 
-      // revealed target (briefly on find)
-      if (reveal > 0 && target) {
+      // revealed target — drawn at where it WAS (revealPos), and only with 👁 ON.
+      // (Old bug: it drew at `target`, which had already moved to the NEXT one →
+      //  flashing the next treasure's location. Gated off too in pure-haptic mode.)
+      if (reveal > 0 && revealPos && bridge.master.visual) {
         g.globalAlpha = reveal;
         g.fillStyle = "#d4a017";
         g.beginPath();
-        g.arc(target.x, target.y, 10 + (1 - reveal) * 26, 0, Math.PI * 2);
+        g.arc(revealPos.x, revealPos.y, 10 + (1 - reveal) * 26, 0, Math.PI * 2);
         g.fill();
         g.globalAlpha = 1;
       }
 
       // cursor crosshair + pulse ring
       if (mouse.inside) {
-        if (pulseFx > 0) {
+        // proximity pulse ring is a VISUAL aid → 👁 OFF hides it (else it leaks closeness)
+        if (pulseFx > 0 && bridge.master.visual) {
           g.strokeStyle = `rgba(124,92,255,${pulseFx})`;
           g.lineWidth = 2;
           g.beginPath();
@@ -269,16 +334,30 @@ export const game = {
         g.moveTo(mouse.x, mouse.y - 9);
         g.lineTo(mouse.x, mouse.y + 9);
         g.stroke();
+        // dig cooldown (anti-spam) — shown regardless of 👁 (it doesn't leak the target)
+        const cdLeft = (cooldownUntil - performance.now()) / 1000;
+        if (cdLeft > 0 && running) {
+          g.strokeStyle = "rgba(248,81,73,0.85)";
+          g.lineWidth = 3;
+          g.beginPath();
+          g.arc(mouse.x, mouse.y, 16, -Math.PI / 2, -Math.PI / 2 + (cdLeft / DIG_COOLDOWN) * Math.PI * 2);
+          g.stroke();
+          g.fillStyle = "#f85149";
+          g.font = "bold 12px system-ui";
+          g.textAlign = "center";
+          g.fillText(`${cdLeft.toFixed(1)}s`, mouse.x, mouse.y - 22);
+          g.textAlign = "left";
+        }
       }
 
       fx.restore(g);
       fx.draw(g);
 
       if (!running && !elMsg.textContent) {
-        g.fillStyle = "#4b5666";
-        g.font = "13px system-ui";
+        g.fillStyle = "#aeb8c4";
+        g.font = "14px system-ui";
         g.textAlign = "center";
-        g.fillText("スタートを押して、マウスで宝を探す", cv.width / 2, cv.height / 2);
+        g.fillText("スタートを押して、マウス/パッドで宝を探す", cv.width / 2, cv.height / 2);
         g.textAlign = "left";
       }
     }
@@ -292,6 +371,8 @@ export const game = {
         cv.removeEventListener("pointermove", pm);
         cv.removeEventListener("pointerleave", pl);
         cv.removeEventListener("pointerdown", pd);
+        mods.dispose();
+        disposeRank();
       },
     };
   },

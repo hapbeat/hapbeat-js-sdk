@@ -1,9 +1,10 @@
 # Hapbeat Arcade — チューニング対応表
 
-各ゲームが鳴らす触覚イベントの一覧。**clip と gain は studio `showcase-kit` 由来の仮置き**で、最終調整はユーザーが行う前提。
-変更の起点（source of truth）は [`shared/events.js`](./shared/events.js)。clip 差し替えは
-[`demo-kit/hapbeat-arcade-manifest.json`](./demo-kit/hapbeat-arcade-manifest.json) +
-[`demo-kit/install-clips/`](./demo-kit/install-clips/) → Studio で再配備。
+> **2026-06 更新**: 触覚・音は **WAV/kit をやめ、[`shared/event-content.js`](./shared/event-content.js) の `CONTENT` に集約**した
+> （各イベント＝`haptic`合成スペック＋`audio`合成トーンのプレースホルダ）。調整は **このファイル 1 箇所**を編集するだけ。
+> 以下の対応表は旧 WAV 方式の名残で、event 名・狙いの参考用。数値の最新は `event-content.js` を正とする。
+
+各ゲームが鳴らす触覚イベントの一覧。**最終的な触覚・音はユーザーが [`shared/event-content.js`](./shared/event-content.js) で一括調整する前提**（現状はプレースホルダ）。
 
 - **既定 gain** … `events.js` の `gain`（manifest の `intensity` と整合）。`hb.play(id)` の基準値。
 - **実 gain** … ゲーム実行時に渡す値。`固定` か、状況で動的にスケールするもの。

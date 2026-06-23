@@ -1,0 +1,183 @@
+<!doctype html>
+<!--
+  入力確認 (Gamepad / Keyboard) — a zero-dependency diagnostic page.
+
+  Open it directly over HTTP (npm run dev):  http://localhost:8170/examples/games/gamepad-test/
+  No SDK / no helper needed — it only reads the browser's Gamepad + Keyboard APIs,
+  so you can confirm whether your controller is detected and which buttons register.
+
+  Note: some HID devices (USB speakerphones, etc.) are mis-enumerated as
+  non-standard "gamepads". This page auto-prefers a STANDARD-mapping pad and lets
+  you pick one manually if needed.
+-->
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>入力確認 — Gamepad / Keyboard</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: system-ui, sans-serif; background: #0a0d12; color: #e6edf3; padding: 16px; }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      h2 { font-size: 13px; color: #8b97a6; text-transform: uppercase; letter-spacing: .06em; margin: 16px 0 6px; }
+      .sub { color: #8b97a6; font-size: 12px; margin: 0 0 10px; }
+      .card { background: #11151b; border: 1px solid #2a313c; border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+      .badge { display: inline-block; font-size: 12px; padding: 2px 9px; border-radius: 99px; font-weight: 600; }
+      .ok { background: #1d3a2e; color: #3fb950; } .off { background: #3a1d1d; color: #f85149; }
+      .warn { background: #3a331d; color: #d29922; }
+      .big { font-size: 28px; font-weight: 700; margin: 6px 0; min-height: 36px; }
+      .mono { font-family: ui-monospace, monospace; font-size: 12px; color: #9aa4b2; word-break: break-all; }
+      select { background: #1b222c; color: #e6edf3; border: 1px solid #39424f; border-radius: 7px; padding: 5px 8px; font-size: 12px; max-width: 100%; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(86px, 1fr)); gap: 6px; }
+      .btn { background: #1b222c; border: 1px solid #2a313c; border-radius: 8px; padding: 7px 6px; text-align: center; font-size: 12px; transition: background .04s, border-color .04s; }
+      .btn .lbl { color: #cdd6e0; font-weight: 600; }
+      .btn .v { color: #6f7c8c; font-size: 11px; }
+      .btn.on { background: #2f6f4e; border-color: #3fb950; }
+      .btn.on .lbl, .btn.on .v { color: #fff; }
+      .axes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+      .axis { font-size: 12px; }
+      .bar { height: 8px; background: #1b222c; border-radius: 99px; position: relative; margin-top: 3px; overflow: hidden; }
+      .bar i { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #7c5cff; transition: left .03s; }
+      ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: #cdd6e0; }
+      .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 4px 0; }
+    </style>
+  </head>
+  <body>
+    <h1>🎮 入力確認 — Gamepad / Keyboard</h1>
+    <p class="sub">ブラウザの Gamepad / Keyboard API をそのまま読むだけの診断ページ（SDK・helper 不要）。コントローラやキーが「検出されるか」「どのボタンが取れるか」を確認できます。</p>
+
+    <div class="card">
+      <div class="row">
+        <span>状態: <span id="status" class="badge off">未検出</span></span>
+        <span class="mono" id="padcount"></span>
+      </div>
+      <div class="row">読むパッド: <select id="padsel"><option value="auto">自動（標準を優先）</option></select></div>
+      <div class="big" id="lastbtn">最後に押されたボタン: —</div>
+      <div class="mono" id="padid"></div>
+      <div id="nonstd" class="row" style="display:none;"><span class="badge warn">非標準パッド</span><span class="sub" style="margin:0;">スピーカー/HID 機器を誤検出している可能性。↑のプルダウンで STANDARD GAMEPAD を選んでください。</span></div>
+    </div>
+
+    <h2>ボタン（押すと緑に点灯）</h2>
+    <div class="card"><div class="grid" id="buttons"><div class="sub">選択中のパッドのボタンを押すと、ここに番号付きで点灯します。</div></div></div>
+
+    <h2>スティック / トリガー軸</h2>
+    <div class="card"><div class="axes" id="axes"><div class="sub">—</div></div></div>
+
+    <h2>キーボード</h2>
+    <div class="card">最後のキー: <span class="big" id="lastkey" style="display:inline; font-size:22px;">—</span> <span class="mono" id="keyinfo"></span></div>
+
+    <h2>反応しない時のチェック</h2>
+    <div class="card">
+      <ul>
+        <li><b>このページをクリックしてフォーカス</b>し、その状態でコントローラの<b>ボタンを1回押す</b>（ブラウザはボタン押下まで検出しません）。</li>
+        <li><b>複数の「パッド」が検出される</b>ことがあります（USB スピーカーフォン等が誤検出される）。上の<b>プルダウンで本物のコントローラ（STANDARD GAMEPAD）</b>を選べます。ゲーム側は標準パッドを自動優先します。</li>
+        <li><b>Bluetooth 自体は問題ではありません</b>。USB でも BT でも動きます。まず OS 側でコントローラが<b>ペアリング/認識</b>されているか確認。</li>
+        <li>ブラウザは <b>Chrome / Edge</b> 推奨。Firefox はボタン番号(mapping)がずれることがあります。</li>
+        <li>「状態」に id が出て <span class="mono">mapping=standard</span> なら検出 OK。ボタンが点灯すればブラウザ側は正常です。</li>
+      </ul>
+    </div>
+
+    <script>
+      const XBOX = ["A","B","X","Y","LB","RB","LT","RT","View","Menu","L3","R3","↑","↓","←","→","Xbox"];
+      const AXLBL = ["LX","LY","RX","RY"];
+      const $ = (id) => document.getElementById(id);
+      const elStatus = $("status"), elPadCount = $("padcount"), elLastBtn = $("lastbtn");
+      const elPadId = $("padid"), elButtons = $("buttons"), elAxes = $("axes");
+      const elLastKey = $("lastkey"), elKeyInfo = $("keyinfo"), padsel = $("padsel"), elNonStd = $("nonstd");
+
+      let prev = [], built = -1, lastSig = "", userSel = false, selIndex = -1, prevIndex = -1;
+
+      const allPads = () => [...(navigator.getGamepads ? navigator.getGamepads() : [])].filter(Boolean);
+      const autoPad = (pads) => pads.find((p) => p.mapping === "standard") || pads[0] || null;
+      function currentPad(pads) {
+        if (userSel) { const p = pads.find((q) => q.index === selIndex); if (p) return p; }
+        return autoPad(pads);
+      }
+      function syncSelect(pads) {
+        const sig = pads.map((p) => `${p.index}:${p.id}`).join("|");
+        if (sig === lastSig) return;
+        lastSig = sig;
+        padsel.innerHTML = '<option value="auto">自動（標準を優先）</option>' +
+          pads.map((p) => `<option value="${p.index}">#${p.index} ${p.id.slice(0, 44)} [${p.mapping || "非標準"}]</option>`).join("");
+        padsel.value = userSel ? String(selIndex) : "auto";
+      }
+      padsel.onchange = () => {
+        if (padsel.value === "auto") { userSel = false; }
+        else { userSel = true; selIndex = parseInt(padsel.value, 10); }
+        built = -1; prev = []; // rebuild grid for the newly selected pad
+      };
+
+      function buildCells(n) {
+        elButtons.innerHTML = "";
+        for (let i = 0; i < n; i++) {
+          const c = document.createElement("div");
+          c.className = "btn"; c.id = "bcell" + i;
+          c.innerHTML = `<div class="lbl">${i} ${XBOX[i] || ""}</div><div class="v" id="bval${i}">0.00</div>`;
+          elButtons.appendChild(c);
+        }
+        elAxes.innerHTML = "";
+        // axes rebuilt alongside (count comes from the pad in the loop)
+        built = n;
+      }
+      function buildAxes(n) {
+        elAxes.innerHTML = "";
+        for (let i = 0; i < n; i++) {
+          const a = document.createElement("div");
+          a.className = "axis";
+          a.innerHTML = `<div>軸${i} ${AXLBL[i] || ""} <span class="v" id="aval${i}">0.00</span></div><div class="bar"><i id="abar${i}"></i></div>`;
+          elAxes.appendChild(a);
+        }
+      }
+
+      function loop() {
+        const pads = allPads();
+        syncSelect(pads);
+        const gp = currentPad(pads);
+        elPadCount.textContent = pads.length ? `検出 ${pads.length} 台` : "";
+        if (!gp) {
+          elStatus.className = "badge off"; elStatus.textContent = "未検出";
+          elPadId.textContent = ""; elNonStd.style.display = "none";
+          // Gamepad API exposes pads only after a button press (esp. after a reload),
+          // so tell the user exactly what to do instead of silently showing 未検出.
+          elLastBtn.textContent = "← ページをクリックして、コントローラのボタンを1回押すと検出されます";
+          prev = []; built = -1; prevIndex = -1;
+          requestAnimationFrame(loop);
+          return;
+        }
+        const std = gp.mapping === "standard";
+        elStatus.className = "badge " + (std ? "ok" : "warn");
+        elStatus.textContent = std ? "検出OK" : "検出(非標準)";
+        elPadId.textContent = `読込中: #${gp.index} ${gp.id}  |  mapping=${gp.mapping || "(non-standard)"}  |  ボタン ${gp.buttons.length} ・ 軸 ${gp.axes.length}`;
+        elNonStd.style.display = (!std && pads.some((p) => p.mapping === "standard")) ? "flex" : "none";
+
+        if (gp.index !== prevIndex) { prevIndex = gp.index; built = -1; prev = []; }
+        if (built !== gp.buttons.length) { buildCells(gp.buttons.length); buildAxes(gp.axes.length); }
+
+        for (let i = 0; i < gp.buttons.length; i++) {
+          const b = gp.buttons[i];
+          const pressed = !!(b && (b.pressed || b.value > 0.5));
+          const cell = $("bcell" + i); if (cell) cell.classList.toggle("on", pressed);
+          const v = $("bval" + i); if (v) v.textContent = (b ? b.value : 0).toFixed(2);
+          if (pressed && !prev[i]) elLastBtn.textContent = `最後に押されたボタン: btn${i}${XBOX[i] ? " (" + XBOX[i] + ")" : ""}`;
+          prev[i] = pressed;
+        }
+        for (let i = 0; i < gp.axes.length; i++) {
+          const val = gp.axes[i] || 0;
+          const vv = $("aval" + i); if (vv) vv.textContent = val.toFixed(2);
+          const bar = $("abar" + i); if (bar) bar.style.left = `calc(${((val + 1) / 2) * 100}% - 1px)`;
+        }
+        requestAnimationFrame(loop);
+      }
+
+      window.addEventListener("gamepadconnected", (e) => { elLastBtn.textContent = `接続: ${e.gamepad.id}`; });
+      window.addEventListener("gamepaddisconnected", () => { lastSig = ""; });
+      window.addEventListener("keydown", (e) => {
+        elLastKey.textContent = e.key === " " ? "Space" : e.key;
+        elKeyInfo.textContent = `code=${e.code}  keyCode=${e.keyCode}`;
+      });
+
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>

@@ -19,7 +19,10 @@
 import * as THREE from "three";
 import { VRButton } from "three/addons/webxr/VRButton.js";
 import { ArcadeBridge } from "../shared/hapbeat-bridge.js";
-import { stereoBlip } from "../shared/synth.js";
+import { stereoBlip, stereoTone, phaseAdvance } from "../shared/synth.js";
+import { playerNameField, activeMods } from "../shared/controls.js";
+import { createRanking } from "../shared/ranking.js";
+import { CONTENT } from "../shared/event-content.js"; // central haptic/audio tuning
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const ARENA = 30;            // arena radius (circular)
@@ -45,6 +48,10 @@ const DEFAULTS = {
   maxHp: 5,           // 最大HP (1ヒット1ダメージ)
   infiniteHp: false,  // HP無限 (デモ用)
   shieldArc: 26,      // 盾の半角° (固定モード)
+  sensitivity: 1.5,   // カメラ感度 (マウス/スティック視点の倍率)
+  continuousHaptic: false, // 連続モード: 最接近弾の方向/距離を ~100Hz 振動で連続提示 (ToH2022)
+  walkFeedback: true, // 歩行の上下動 + 足音振動 (敵銃撃の触覚をマスク)
+  preset: "normal",   // 選択中の難易度プリセット (常にどれか 1 つを表示するため保持)
 };
 const settings = { ...DEFAULTS };
 const LS_KEY = "hbfps.settings.v2";
@@ -71,12 +78,13 @@ const SLIDER_META = {
   playerSpeed: { label: "移動速度", min: 3, max: 12, step: 0.5 },
   maxHp: { label: "最大HP", min: 1, max: 30, step: 1 },
   shieldArc: { label: "盾の幅°", min: 10, max: 45, step: 1 },
+  sensitivity: { label: "カメラ感度", min: 0.5, max: 3.5, step: 0.1 },
 };
 const ALL_IDS = Object.keys(SLIDER_META);
 // grouped layout; `jitter` pairs a random-width slider BESIDE its base setting,
 // `hp` appends the ♾ HP-infinite checkbox right under that row.
 const SETTING_GROUPS = [
-  { title: "ゲーム", rows: [{ id: "killGoal" }, { id: "maxHp", hp: true }, { id: "playerSpeed" }] },
+  { title: "ゲーム", rows: [{ id: "killGoal" }, { id: "maxHp", hp: true }, { id: "playerSpeed" }, { id: "sensitivity" }] },
   { title: "敵", rows: [{ id: "enemyCount" }, { id: "enemySpeed" }, { id: "enemyRange", jitter: "rangeJitter" }] },
   { title: "弾・発砲", rows: [{ id: "bulletSpeed", jitter: "speedJitter" }, { id: "fireGap", jitter: "fireJitter" }, { id: "minShotGap" }] },
   { title: "固定モード（盾）", rows: [{ id: "shieldArc" }] },
@@ -141,7 +149,14 @@ root.innerHTML = `
     #hbfps canvas { display: block; position: absolute; inset: 0; }
     #hbfps .panel { position: absolute; top: 12px; left: 12px; z-index: 9; /* above the start/gameover overlay so settings stay editable */
       background: rgba(10,13,18,0.88); border: 1px solid #2a313c; border-radius: 10px;
-      padding: 10px 12px; width: 300px; backdrop-filter: blur(4px); }
+      display: flex; align-items: flex-start; backdrop-filter: blur(4px);
+      max-height: calc(100vh - 24px); overflow-y: auto;       /* WHOLE panel scrolls… */
+      scrollbar-width: none; }                                 /* …with the scrollbar hidden (no width shift) */
+    #hbfps .panel::-webkit-scrollbar { width: 0; height: 0; }
+    #hbfps .pcol { padding: 10px 12px; }
+    #hbfps .pcol-main { width: 300px; flex: 0 0 auto; }
+    #hbfps .pcol-adv { width: 0; max-height: 0; flex: 0 0 auto; overflow: hidden; padding: 0; transition: width .12s ease; } /* collapsed: no width AND no height (no empty margin) */
+    #hbfps .panel.adv-open .pcol-adv { width: 292px; max-height: none; padding: 10px 12px; border-left: 1px solid #2a313c; } /* 詳細設定 = 2nd column */
     #hbfps .panel.collapsed { display: none; }
     #hbfps .panel h2 { margin: 0; font-size: 15px; }
     #hbfps .phead { display: flex; align-items: center; justify-content: space-between; }
@@ -153,8 +168,17 @@ root.innerHTML = `
       border-radius: 8px; width: 34px; height: 30px; cursor: pointer; font-size: 16px; }
     #hbfps .sub { font-size: 11px; color: #8b97a6; margin: 6px 0 8px; line-height: 1.45; }
     #hbfps .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 13px; }
-    #hbfps .group-title { font-size: 11px; color: #6f7c8c; text-transform: uppercase;
+    #hbfps .group-title { font-size: 11px; color: #8b97a6; text-transform: uppercase;
       letter-spacing: .06em; margin: 10px 0 2px; }
+    #hbfps .kb { display: inline-block; min-width: 17px; padding: 0 5px; margin-left: 5px; font-size: 11px;
+      font-weight: 800; line-height: 16px; text-align: center; border-radius: 5px; background: #2f3a48;
+      color: #dbe2ea; border: 1px solid #45515f; vertical-align: middle; text-transform: none; letter-spacing: 0; }
+    #hbfps .kb.a { background: #2f7d56; border-color: #45b07e; color: #eafff2; }
+    #hbfps .kb.b { background: #9b3d3d; border-color: #cc5f5f; color: #ffecec; }
+    #hbfps .kb.x { background: #3a64a0; border-color: #5e8acd; color: #eaf2ff; }
+    #hbfps .kb.y { background: #9b8636; border-color: #cdb255; color: #fff9e8; }
+    #hbfps .kb.a, #hbfps .kb.b, #hbfps .kb.x, #hbfps .kb.y { border-radius: 50%; width: 19px; min-width: 19px; height: 19px; padding: 0; line-height: 17px; }
+    #hbfps .row .kb { margin-left: auto; }
     #hbfps input[type=checkbox] { width: 16px; height: 16px; accent-color: #7c5cff; }
     #hbfps .modes { display: flex; gap: 6px; margin: 4px 0; }
     #hbfps .modes button { flex: 1; padding: 7px; font-size: 12px; border: 1px solid #39424f;
@@ -162,8 +186,7 @@ root.innerHTML = `
     #hbfps .modes button[aria-pressed=true] { background: #7c5cff; color: #fff; border-color: #7c5cff; }
     #hbfps .settings-head { cursor: pointer; user-select: none; display: flex; justify-content: space-between; align-items: center; }
     #hbfps .settings-head .tg { color: #7c5cff; font-size: 11px; }
-    #hbfps #advanced { max-height: 46vh; overflow-y: auto; } /* scrollbar lives ONLY here */
-    #hbfps #advanced.collapsed { display: none; }
+    #hbfps #advanced { padding: 0; } /* no inner scroll — the whole panel scrolls */
     #hbfps .srow-group { font-size: 11px; color: #8b97a6; font-weight: 600; margin: 9px 0 1px; }
     #hbfps .srow.pair { grid-template-columns: 58px 1fr 24px 14px 0.85fr 20px; }
     #hbfps .srow .pm { text-align: center; color: #6f7c8c; font-size: 12px; }
@@ -171,12 +194,26 @@ root.innerHTML = `
       font-weight: 600; color: #fff; background: #7c5cff; border: 0; border-radius: 8px; cursor: pointer; }
     #hbfps button.primary:hover { background: #8f72ff; }
     #hbfps .srow { display: grid; grid-template-columns: 78px 1fr 34px; align-items: center;
-      gap: 6px; font-size: 12px; margin: 3px 0; }
+      gap: 8px; font-size: 12px; margin: 6px 0; }
     #hbfps .srow input[type=range] { width: 100%; accent-color: #7c5cff; }
     #hbfps .srow b { text-align: right; color: #cdd6e0; font-variant-numeric: tabular-nums; }
     #hbfps .iorow { display: flex; gap: 6px; margin-top: 6px; }
     #hbfps .iorow button { flex: 1; padding: 6px; font-size: 11px; border: 1px solid #39424f;
       background: #1b222c; color: #cdd6e0; border-radius: 7px; cursor: pointer; }
+    #hbfps .rankrow { justify-content: space-between; margin-top: 8px; }
+    #hbfps .namefield { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #8b97a6; }
+    #hbfps .namefield input { font: inherit; font-size: 13px; color: #e6edf3; background: #1b222c;
+      border: 1px solid #39424f; border-radius: 7px; padding: 5px 8px; width: 88px; }
+    #hbfps .namefield input:focus { outline: none; border-color: #7c5cff; }
+    #hbfps .namefield .namedice { font-size: 12px; padding: 4px 6px; line-height: 1; border: 1px solid #39424f;
+      background: #1b222c; color: #cdd6e0; border-radius: 7px; cursor: pointer; }
+    #hbfps #rankbtn { padding: 6px 10px; font-size: 12px; border: 1px solid #39424f;
+      background: #1b222c; color: #cdd6e0; border-radius: 7px; cursor: pointer; }
+    #hbfps #rankbtn:hover { background: #2c3543; }
+    #hbfps .wide-stop { width: 100%; margin-top: 6px; padding: 8px; font-size: 12px;
+      border: 1px solid #6f3a4a; background: #3a2330; color: #ffd9e4; border-radius: 8px; cursor: pointer; }
+    #hbfps .wide-stop:hover { background: #4a2c3d; }
+    #hbfps .wide-stop:disabled { opacity: .45; cursor: default; }
     #hbfps .hud { position: absolute; top: 12px; right: 12px; z-index: 5; text-align: right;
       background: rgba(10,13,18,0.66); border: 1px solid #2a313c; border-radius: 10px;
       padding: 10px 14px; font-size: 13px; line-height: 1.7; }
@@ -209,37 +246,57 @@ root.innerHTML = `
       font-weight: 600; color: #fff; background: #7c5cff; border: 0; border-radius: 8px; cursor: pointer; }
   </style>
   <div class="panel" id="panel">
+   <div class="pcol pcol-main">
     <div class="phead">
       <h2>触覚 FPS</h2>
-      <button class="iconbtn" id="drawerTab" title="HUD を隠す">‹</button>
+      <span style="margin-left:auto;margin-right:6px;font-size:10px;color:#8b97a6;">HUD <span class="kb">☰</span></span>
+      <button class="iconbtn" id="drawerTab" title="HUD 表示/非表示 (☰ Menu)">‹</button>
     </div>
-    <p class="sub">敵の銃声を <b>音(HRTF)</b> と <b>触覚(L/R)</b> で方向化。<b>👁 OFF</b> は敵だけ消え、耳と触覚で対処。</p>
+    <p class="sub">敵の銃声を <b>音(HRTF)</b> と <b>触覚(L/R)</b> で方向化。<b>👁 OFF</b> は敵だけ消え、弾は見える＋耳と触覚で対処。</p>
 
-    <div class="group-title">モード</div>
+    <div class="group-title">モード <span class="kb">⧉</span></div>
     <div class="modes" id="modes">
       <button data-mode="move" title="WASD+マウスで動いて撃つ">移動</button>
       <button data-mode="fixed" title="その場で向くだけ・盾で防ぐ">固定（盾）</button>
     </div>
 
-    <div class="group-title">難易度</div>
+    <div class="group-title">難易度 <span class="kb">LB / RB</span></div>
     <div class="modes" id="presets">
       <button data-preset="easy">Easy</button>
       <button data-preset="normal">Normal</button>
       <button data-preset="hard">Hard</button>
     </div>
 
-    <div class="group-title">モダリティ</div>
-    <label class="row"><input type="checkbox" id="m_visual" checked> 👁 映像（敵）</label>
-    <label class="row"><input type="checkbox" id="m_audio" checked> 👂 音</label>
-    <label class="row"><input type="checkbox" id="m_haptic" checked> ✋ 触覚</label>
+    <div class="group-title">モダリティ <span style="text-transform:none;font-size:9px;color:#6f7c8c;letter-spacing:0;">（パッドは開始前のみ）</span></div>
+    <label class="row"><input type="checkbox" id="m_visual" checked> 👁 映像（敵）<span class="kb x">X</span></label>
+    <label class="row"><input type="checkbox" id="m_audio" checked> 👂 音<span class="kb y">Y</span></label>
+    <label class="row"><input type="checkbox" id="m_haptic" checked> ✋ 触覚<span class="kb b">B</span></label>
 
     <div class="group-title">フィードバック対象</div>
     <label class="row"><input type="checkbox" id="e_fire" checked> ① 敵の発砲（方向）</label>
     <label class="row"><input type="checkbox" id="e_hit" checked> ② 被弾</label>
     <label class="row"><input type="checkbox" id="e_own"> ③ 自分の発砲</label>
+    <label class="row" title="最接近の敵弾の方向と距離を ~100Hz の連続振動で提示（左右バランス＋接近で増大）。映像OFF時の索敵に。発射時の定位はそのまま。"><input type="checkbox" id="contHaptic"> 〜 連続モード（弾の方向を触覚で）</label>
+    <label class="row" title="移動中に画面が上下し、足音の振動が出る。歩くと敵の銃撃の触覚が分かりにくくなる（止まると気づきやすい / 動くと避けやすい）。"><input type="checkbox" id="walkFb"> 🚶 歩行フィードバック（移動）</label>
 
     <div class="group-title settings-head" id="advHead"><span>⚙ 詳細設定</span><span class="tg" id="advTg">▸ 開く</span></div>
-    <div id="advanced" class="collapsed">
+    <input type="file" id="fileInput" accept="application/json,.json" style="display:none">
+
+    <div class="row" style="margin-top:10px; font-size:11px; color:#8b97a6;">
+      Helper: <span id="conn" class="badge off">未接続</span>
+      ・ 🎮 <span id="gpstat" class="badge off">未検出</span>
+    </div>
+    <div class="row rankrow">
+      <span id="nameslot"></span>
+      <button id="rankbtn" title="ランキングを別ウィンドウで開く（展示用）">🏆 ランキング</button>
+    </div>
+    <button class="primary" id="startbtn">スタート / リスタート <span class="kb a">A</span></button>
+    <button id="stopbtn" class="wide-stop">ストップ（タイトルに戻る）</button>
+    <p class="sub" style="margin-top:8px;" id="ctrlhint"></p>
+   </div>
+   <div class="pcol pcol-adv" id="advCol">
+    <div id="advanced">
+      <div class="group-title">⚙ 詳細設定</div>
       <p class="sub" style="margin:2px 0 6px;">プリセットで大まかに、ここで細かく。±幅は 0 でランダムなし。</p>
       <div id="settings"></div>
       <div class="iorow">
@@ -247,14 +304,7 @@ root.innerHTML = `
         <button id="loadJson">JSON読込</button>
       </div>
     </div>
-    <input type="file" id="fileInput" accept="application/json,.json" style="display:none">
-
-    <div class="row" style="margin-top:10px; font-size:11px; color:#8b97a6;">
-      Helper: <span id="conn" class="badge off">未接続</span>
-      ・ 🎮 <span id="gpstat" class="badge off">未検出</span>
-    </div>
-    <button class="primary" id="startbtn">スタート / リスタート</button>
-    <p class="sub" style="margin-top:8px;" id="ctrlhint"></p>
+   </div>
   </div>
   <button class="drawer-open" id="drawerOpen" title="HUD を表示">›</button>
   <div class="hud">
@@ -287,6 +337,27 @@ const ctrlHint = root.querySelector("#ctrlhint");
 const elGpStat = root.querySelector("#gpstat");
 let infhpEl; // built dynamically inside the grouped settings (assigned after build)
 
+// ── ranking board (booth: pop out to a second monitor, accumulates until reset) ─
+const rank = createRanking("fps", {
+  title: "触覚 FPS",
+  columns: [
+    { key: "score", label: "スコア", unit: "pt", decimals: 0, lowerIsBetter: false, primary: true },
+    { key: "kills", label: "撃破", unit: "", decimals: 0, lowerIsBetter: false },
+  ],
+});
+const nameField = playerNameField(); // empty input + random placeholder, re-rolled each play
+root.querySelector("#nameslot").appendChild(nameField.el);
+root.querySelector("#rankbtn").onclick = () => rank.openPopout();
+function recordRun(result) {
+  if (score <= 0) return; // skip an instant 0-kill death (keeps the booth board clean)
+  rank.record({
+    name: nameField.get(),
+    metrics: { score, kills },
+    mods: activeMods(bridge),
+    detail: `${settings.mode === "fixed" ? "固定" : "移動"} ・ ${result}`,
+  });
+}
+
 function syncConnBadge() {
   const ok = bridgeReady && bridge.connected;
   elConn.className = "badge " + (ok ? "on" : "off");
@@ -294,24 +365,44 @@ function syncConnBadge() {
 }
 bridge.onChange(syncConnBadge);
 
-root.querySelector("#drawerTab").onclick = () => { panelEl.classList.add("collapsed"); drawerOpen.style.display = "block"; };
-drawerOpen.onclick = () => { panelEl.classList.remove("collapsed"); drawerOpen.style.display = "none"; };
+function setDrawer(open) { // collapse/expand the HUD panel; the › button shows when collapsed
+  panelEl.classList.toggle("collapsed", !open);
+  drawerOpen.style.display = open ? "none" : "block";
+}
+// HUD ⟺ pause: opening the panel pauses the game, closing it resumes — you don't
+// play with the HUD open. While not playing, it just toggles visibility.
+function toggleDrawer() {
+  const willOpen = panelEl.classList.contains("collapsed");
+  if (playing) setPaused(willOpen);
+  else setDrawer(willOpen);
+}
+root.querySelector("#drawerTab").onclick = toggleDrawer;
+drawerOpen.onclick = toggleDrawer;
 
-root.querySelector("#m_visual").onchange = (e) => bridge.setMaster("visual", e.target.checked);
-root.querySelector("#m_audio").onchange = (e) => bridge.setMaster("audio", e.target.checked);
-root.querySelector("#m_haptic").onchange = (e) => bridge.setMaster("haptic", e.target.checked);
+const mVisual = root.querySelector("#m_visual"), mAudio = root.querySelector("#m_audio"), mHaptic = root.querySelector("#m_haptic");
+mVisual.onchange = (e) => bridge.setMaster("visual", e.target.checked);
+mAudio.onchange = (e) => bridge.setMaster("audio", e.target.checked);
+mHaptic.onchange = (e) => bridge.setMaster("haptic", e.target.checked);
+function toggleMaster(key, el) { const v = !bridge.master[key]; bridge.setMaster(key, v); el.checked = v; } // for gamepad Ⓧ/Ⓨ/Ⓑ
 root.querySelector("#e_fire").onchange = (e) => (events.enemyFire = e.target.checked);
 root.querySelector("#e_hit").onchange = (e) => (events.playerHit = e.target.checked);
 root.querySelector("#e_own").onchange = (e) => (events.ownShot = e.target.checked);
+const contHapticEl = root.querySelector("#contHaptic");
+contHapticEl.checked = settings.continuousHaptic;
+contHapticEl.onchange = (e) => { settings.continuousHaptic = e.target.checked; saveSettings(); if (!e.target.checked) stopContinuousHaptic(); };
+const walkFbEl = root.querySelector("#walkFb");
+walkFbEl.checked = settings.walkFeedback;
+walkFbEl.onchange = (e) => { settings.walkFeedback = e.target.checked; saveSettings(); if (!e.target.checked) { walkBob = 0; camera.position.y = 1.6; } };
 
 // mode toggle (移動 / 固定)
 const modeBtns = [...root.querySelectorAll("#modes button")];
 function refreshModeButtons() {
   for (const b of modeBtns) b.setAttribute("aria-pressed", String(b.dataset.mode === settings.mode));
+  const gpHint = "<br>🎮 Ⓐ=開始/射撃 ・ スティック=移動/視点 ・ LB/RB=難易度 ・ ☰(Menu)=HUD表示 ・ Ⓧ/Ⓨ/Ⓑ=映像/音/触覚(開始前) ・ ⧉(View)=モード(開始前) ・ Esc=一時停止";
   ctrlHint.innerHTML =
-    settings.mode === "move"
+    (settings.mode === "move"
       ? "WASD 移動 ・ マウス/右スティックで水平回転 ・ <b>クリック/RTで射撃</b> ・ Esc で一時停止"
-      : "マウス/スティックで<b>その場で回転</b>し、銃声の方向へ正面を向け、<b>正面の盾</b>で弾を受けて跳ね返す（動けません）・ Esc で一時停止";
+      : "マウス/スティックで<b>その場で回転</b>し、銃声の方向へ正面を向け、<b>正面の盾</b>で弾を受けて跳ね返す（動けません）・ Esc で一時停止") + gpHint;
 }
 function setMode(m) {
   settings.mode = m; saveSettings();
@@ -327,29 +418,31 @@ const PRESETS = {
   hard:   { killGoal: 30, enemyCount: 6, enemySpeed: 3.2, enemyRange: 20, rangeJitter: 5, bulletSpeed: 30, speedJitter: 8, fireGap: 1.8, fireJitter: 1.4, minShotGap: 0.5, maxHp: 3,  shieldArc: 18 },
 };
 const presetBtns = [...root.querySelectorAll("#presets button")];
-function matchPreset() {
-  for (const name of Object.keys(PRESETS)) {
-    const p = PRESETS[name];
-    if (Object.keys(p).every((k) => settings[k] === p[k])) return name;
-  }
-  return "custom"; // user hand-tuned a slider
-}
+if (!PRESETS[settings.preset]) settings.preset = "normal"; // never leave it unselected
+// The selected preset is STICKY (settings.preset) so a difficulty is ALWAYS lit —
+// tweaking a slider keeps "based on Normal" highlighted instead of clearing it.
 function refreshPresetButtons() {
-  const cur = matchPreset();
-  for (const b of presetBtns) b.setAttribute("aria-pressed", String(b.dataset.preset === cur));
+  for (const b of presetBtns) b.setAttribute("aria-pressed", String(b.dataset.preset === settings.preset));
 }
 function applyPreset(name) {
   Object.assign(settings, PRESETS[name]);
+  settings.preset = name;
   saveSettings(); syncSliderUI(); refreshPresetButtons();
   if (playing) { hp = settings.infiniteHp ? Infinity : settings.maxHp; topUpEnemies(); updateHud(); }
 }
 for (const b of presetBtns) b.onclick = () => applyPreset(b.dataset.preset);
+const PRESET_ORDER = ["easy", "normal", "hard"];
+function cyclePreset(dir) { // LB/RB on the gamepad
+  let i = PRESET_ORDER.indexOf(settings.preset);
+  if (i < 0) i = 1;
+  applyPreset(PRESET_ORDER[(i + dir + PRESET_ORDER.length) % PRESET_ORDER.length]);
+}
 
-// 詳細設定 collapse (closed by default — the sliders only matter to tuners)
-const advanced = root.querySelector("#advanced");
+// 詳細設定 = a 2nd column that flies out to the right (closed by default — the
+// sliders only matter to tuners; opening doesn't change the base panel width).
 root.querySelector("#advHead").onclick = () => {
-  const hidden = advanced.classList.toggle("collapsed");
-  root.querySelector("#advTg").textContent = hidden ? "▸ 開く" : "▾ 閉じる";
+  const open = panelEl.classList.toggle("adv-open");
+  root.querySelector("#advTg").textContent = open ? "▾ 閉じる" : "▸ 開く";
 };
 
 // ⚙ sliders — built grouped, with each random "ばらつき" beside its base setting
@@ -396,7 +489,7 @@ for (const id of ALL_IDS) {
     settings[id] = parseFloat(el.value);
     root.querySelector("#v_" + id).textContent = el.value;
     saveSettings();
-    refreshPresetButtons(); // hand-tuning a slider clears the preset highlight (→ custom)
+    // (the selected preset stays lit even after a manual tweak — see refreshPresetButtons)
     if ((id === "enemyCount" || id === "enemyRange" || id === "rangeJitter" || id === "killGoal") && playing) topUpEnemies();
     if (id === "maxHp" && playing && !settings.infiniteHp) { hp = Math.min(hp, settings.maxHp); updateHud(); }
   };
@@ -427,6 +520,9 @@ fileInput.onchange = () => {
       for (const id of ALL_IDS) if (id in obj) settings[id] = clamp(parseFloat(obj[id]), SLIDER_META[id].min, SLIDER_META[id].max);
       if (obj.mode === "move" || obj.mode === "fixed") settings.mode = obj.mode;
       if (typeof obj.infiniteHp === "boolean") settings.infiniteHp = obj.infiniteHp;
+      if (typeof obj.continuousHaptic === "boolean") { settings.continuousHaptic = obj.continuousHaptic; contHapticEl.checked = obj.continuousHaptic; }
+      if (typeof obj.walkFeedback === "boolean") { settings.walkFeedback = obj.walkFeedback; walkFbEl.checked = obj.walkFeedback; }
+      settings.preset = PRESETS[obj.preset] ? obj.preset : "normal"; // keep a difficulty selected
       saveSettings(); syncSliderUI(); refreshModeButtons(); refreshPresetButtons(); applyModeVisibility();
       if (playing) topUpEnemies();
     } catch { /* bad file → ignore */ }
@@ -474,7 +570,10 @@ muzzle.position.set(0, 0.025, -0.58); muzzle.visible = false; gun.add(muzzle);
 const GUN_REST = new THREE.Vector3(0.2, -0.18, -0.32);
 gun.position.copy(GUN_REST);
 camera.add(gun);
-let gunKick = 0, muzzleT = 0;
+let gunKick = 0;
+let walkPhase = 0, walkStepMark = 0, walkBob = 0; // walking head-bob + footstep cadence (move mode)
+const WALK_RATE = 9;   // rad/s phase advance while moving (~3 steps/s)
+const BOB_AMP = 0.06;  // m vertical camera bob
 
 // frontal shield (fixed mode) — green so it stands out from the blue sky
 const shieldMesh = new THREE.Mesh(
@@ -512,7 +611,7 @@ const EGEO = {
   egun: new THREE.BoxGeometry(0.12, 0.12, 0.5),
   head: new THREE.BoxGeometry(0.42, 0.38, 0.4),
   eye: new THREE.BoxGeometry(0.34, 0.1, 0.06),
-  hitbox: new THREE.BoxGeometry(0.95, 1.5, 0.7), // generous torso-height target
+  hitbox: new THREE.BoxGeometry(1.2, 2.2, 0.9), // big body-height target, centred at eye level
 };
 const enemyBodyMat = new THREE.MeshStandardMaterial({ color: 0xe8553a, metalness: 0.35, roughness: 0.5 });
 const enemyDarkMat = new THREE.MeshStandardMaterial({ color: 0x2b2320, metalness: 0.4, roughness: 0.6 });
@@ -533,7 +632,7 @@ function makeEnemyMesh() {
   add(EGEO.egun, enemyDarkMat, 0.48, 0.95, 0.3);
   add(EGEO.head, enemyBodyMat, 0, 1.62, 0);
   add(EGEO.eye, eyeMat, 0, 1.64, 0.21);
-  const hitbox = add(EGEO.hitbox, hbMat, 0, 1.15, 0); // wide aim target (spans ~0.4..1.9)
+  const hitbox = add(EGEO.hitbox, hbMat, 0, 1.4, 0); // wide aim target (spans ~0.3..2.5; eye-level 1.6 ≈ centre)
   return { group: g, eyeMat, hitbox };
 }
 
@@ -593,8 +692,9 @@ function spawnProjectile(e) {
   const trail = new THREE.Mesh(projTrailGeo, projTrailMat);
   trail.quaternion.setFromUnitVectors(Y_AXIS, dir); // orient along travel
   trail.scale.y = STREAK;
-  const vis = bridge.master.visual;
-  head.visible = vis; trail.visible = vis;
+  // enemy BULLETS stay visible even with 👁 OFF — only the enemies themselves hide
+  // (so "映像オフ" still lets you see incoming fire). See applyVisualMode().
+  head.visible = true; trail.visible = true;
   worldGroup.add(head); worldGroup.add(trail);
   projectiles.push({ head, trail, dir, from, to, src: e.mesh.position.clone(), enemy: e, t: 0, dur, speed });
 }
@@ -639,23 +739,51 @@ function takeHit(srcPos) {
   updateHud();
 }
 
-// ── player tracers (your own / reflected shots) — ALWAYS visible ─────────────
-const ptGeo = new THREE.SphereGeometry(0.12, 10, 10);
+// ── player tracers (your own / reflected shots) — slower + streak, ALWAYS visible ─
+const PLAYER_BULLET_SPEED = 70; // m/s — was near-instant; slower so you SEE it travel
+const PLAYER_STREAK = 2.2;      // trail length floor (units)
+const ptHeadGeo = new THREE.SphereGeometry(0.13, 10, 10);
+const ptTrailGeo = new THREE.CylinderGeometry(0.06, 0.015, 1, 8); // unit along +Y
 let playerTracers = [];
-function clearPlayerTracers() { for (const t of playerTracers) { worldGroup.remove(t.mesh); t.mesh.material.dispose(); } playerTracers = []; }
-function spawnPlayerTracer(from, to, color = 0x9af0ff) {
-  const mesh = new THREE.Mesh(ptGeo, new THREE.MeshBasicMaterial({ color }));
-  mesh.position.copy(from);
-  worldGroup.add(mesh);
-  playerTracers.push({ mesh, from: from.clone(), to: to.clone(), t: 0, dur: 0.12 });
+function clearPlayerTracers() {
+  for (const t of playerTracers) {
+    worldGroup.remove(t.head); worldGroup.remove(t.trail);
+    t.head.material.dispose(); t.trail.material.dispose();
+  }
+  playerTracers = [];
+}
+const _ptDir = new THREE.Vector3();
+function spawnPlayerTracer(from, to, color = 0xffd23a, enemy = null) {
+  const dir = to.clone().sub(from);
+  const dist = Math.max(0.3, dir.length());
+  dir.normalize();
+  const head = new THREE.Mesh(ptHeadGeo, new THREE.MeshBasicMaterial({ color }));
+  head.position.copy(from);
+  const trail = new THREE.Mesh(ptTrailGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5 }));
+  trail.quaternion.setFromUnitVectors(Y_AXIS, dir);
+  worldGroup.add(head); worldGroup.add(trail);
+  // `enemy` (if set) is killed when the bullet ARRIVES; the bullet homes to its
+  // live position so it visually connects even if the target strafes.
+  playerTracers.push({ head, trail, from: from.clone(), to: to.clone(), dir, dist, t: 0, dur: Math.max(0.18, dist / PLAYER_BULLET_SPEED), enemy });
 }
 function updatePlayerTracers(dt) {
   for (let i = playerTracers.length - 1; i >= 0; i--) {
     const t = playerTracers[i];
     t.t += dt;
     const k = Math.min(1, t.t / t.dur);
-    t.mesh.position.lerpVectors(t.from, t.to, k);
-    if (k >= 1) { worldGroup.remove(t.mesh); t.mesh.material.dispose(); playerTracers.splice(i, 1); }
+    const aimAt = t.enemy && t.enemy.alive ? t.enemy.mesh.position : t.to;
+    t.head.position.lerpVectors(t.from, aimAt, k);
+    _ptDir.copy(aimAt).sub(t.from); // re-orient the streak toward the (possibly moving) target
+    if (_ptDir.lengthSq() > 1e-6) { _ptDir.normalize(); t.trail.quaternion.setFromUnitVectors(Y_AXIS, _ptDir); }
+    const len = Math.max(PLAYER_STREAK, (t.dist / t.dur) * dt * 1.3); // bridge inter-frame gap
+    t.trail.scale.y = len;
+    t.trail.position.copy(t.head.position).addScaledVector(_ptDir, -len / 2);
+    if (k >= 1) {
+      if (t.enemy && t.enemy.alive) killEnemy(t.enemy, false); // hit registers on ARRIVAL
+      worldGroup.remove(t.head); worldGroup.remove(t.trail);
+      t.head.material.dispose(); t.trail.material.dispose();
+      playerTracers.splice(i, 1);
+    }
   }
 }
 
@@ -682,18 +810,28 @@ function updateDeathFx(dt) {
 // ── game state ─────────────────────────────────────────────────────────────
 let hp = 5, score = 0, kills = 0, playing = false, paused = false;
 let lastHapticT = 0, lastShotT = 0;
-let gpFirePrev = false, gpStartPrev = false, gpStatText = "";
+let gpFirePrev = false, gpStartPrev = false, gpStatText = "", gpLbPrev = false, gpRbPrev = false;
+let gpXPrev = false, gpYPrev = false, gpBPrev = false, gpVwPrev = false; // Ⓧ/Ⓨ/Ⓑ modality, View=mode
 const keys = Object.create(null);
 const playerPos = new THREE.Vector3(0, 1.6, 0);
 
-function setPaused(b) { paused = b && playing; pauseEl.style.display = paused ? "flex" : "none"; }
+function setPaused(b) {
+  paused = b && playing;
+  pauseEl.style.display = paused ? "flex" : "none";
+  setDrawer(paused || !playing); // HUD open while paused or on the title; collapsed while actively playing
+  // release the OS cursor when the HUD opens so the revealed panel is clickable
+  // (e.g. pausing via the gamepad ☰, where the browser hasn't freed pointer-lock for us)
+  if (paused && document.pointerLockElement === renderer.domElement) document.exitPointerLock();
+}
 
 function startGame() {
+  nameField.roll(); // fresh random name suggestion for this play
   hp = settings.infiniteHp ? Infinity : settings.maxHp;
   score = 0; kills = 0; playing = true; paused = false; pauseEl.style.display = "none";
   yaw = 0;
   rig.position.set(0, 0, 0);
   playerPos.set(0, 1.6, 0);
+  walkPhase = 0; walkStepMark = 0; walkBob = 0; camera.position.y = 1.6; // reset head-bob
   lastShotT = 0;
   clearProjectiles(); clearPlayerTracers(); clearDeathFx();
   for (const e of enemies) { worldGroup.remove(e.mesh); e.eyeMat.dispose(); }
@@ -702,21 +840,37 @@ function startGame() {
   topUpEnemies();
   updateHud();
   overlay.classList.add("hidden");
+  setDrawer(false); // HUD auto-hidden during play (pause / ☰ to show)
   if (actx.state === "suspended") actx.resume();
   bridge.unlockAudio();
 }
 
 function endGame(title, text) {
   playing = false; paused = false; pauseEl.style.display = "none";
+  stopContinuousHaptic();
   clearProjectiles(); clearPlayerTracers();
+  setDrawer(true); // bring the HUD back so settings are editable on the title screen
   if (document.pointerLockElement === renderer.domElement) document.exitPointerLock();
   overlay.querySelector("h1").textContent = title;
   overlayText.textContent = text;
   overlay.querySelector("button").textContent = "もう一度";
   overlay.classList.remove("hidden");
 }
-function gameOver() { endGame(score > 0 ? "💥 GAME OVER" : "GAME OVER", `撃破 ${kills}/${settings.killGoal}・スコア ${score}。クリックで再挑戦。`); }
-function win() { endGame("🎉 CLEAR!", `${settings.killGoal} 体撃破！スコア ${score}。クリックでもう一度。`); }
+function gameOver() { recordRun("敗北"); endGame(score > 0 ? "💥 GAME OVER" : "GAME OVER", `撃破 ${kills}/${settings.killGoal}・スコア ${score}。クリックで再挑戦。`); }
+function win() { recordRun("CLEAR"); endGame("🎉 CLEAR!", `${settings.killGoal} 体撃破！スコア ${score}。クリックでもう一度。`); }
+// Stop = abandon the current match WITHOUT recording, back to the title overlay.
+function stopGame() {
+  playing = false; paused = false; pauseEl.style.display = "none";
+  stopContinuousHaptic();
+  clearProjectiles(); clearPlayerTracers();
+  setDrawer(true);
+  if (document.pointerLockElement === renderer.domElement) document.exitPointerLock();
+  overlay.querySelector("h1").textContent = "触覚 FPS";
+  overlayText.textContent = "停止しました。クリック / Ⓐ で開始。";
+  overlay.querySelector("button").textContent = "クリックして開始";
+  overlay.classList.remove("hidden");
+}
+root.querySelector("#stopbtn").onclick = stopGame;
 
 function updateHud() {
   elHp.textContent = settings.infiniteHp ? "∞" : String(Math.max(0, hp));
@@ -732,7 +886,13 @@ function killEnemy(e, reflected) {
   e.eyeMat.dispose();
   kills += 1; score += 100;
   spawnDeathFx(pos);
-  playShot(pos, { gain: 0.6, freq: reflected ? 360 : 480, durMs: 90, noise: false });
+  const ev = CONTENT.fps_kill;
+  playShot(pos, { gain: ev.audio.vol, freq: reflected ? ev.audio.freq * 0.75 : ev.audio.freq, durMs: ev.audio.durMs, noise: false });
+  const tk = performance.now() / 1000;
+  if (bridge.master.haptic && tk - lastHapticT >= HAPTIC_MIN_GAP) {
+    lastHapticT = tk;
+    bridge.streamPcm(stereoBlip(0, { gain: ev.haptic.gain, durMs: ev.haptic.durMs, freq: ev.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
+  }
   hitmarker();
   updateHud();
   if (kills >= settings.killGoal) { win(); return; }
@@ -756,26 +916,92 @@ function lateralPan(enemyWorldPos) {
   return { pan: clamp(Math.sin(theta), -1, 1), dist, theta };
 }
 function directionalCue(worldPos, { strong = false } = {}) {
+  const ev = strong ? CONTENT.fps_player_hit : CONTENT.fps_enemy_fire; // central tuning
   const { pan, dist } = lateralPan(worldPos);
   const closeness = clamp(1 - dist / (settings.enemyRange * 1.6), 0.12, 1);
-  const gain = (strong ? 1.0 : 0.55) * (0.45 + 0.55 * closeness);
-  playShot(worldPos, { gain: strong ? 1.0 : 0.8, freq: strong ? 150 : 230, durMs: strong ? 220 : 150 });
+  playShot(worldPos, { gain: ev.audio.vol, freq: ev.audio.freq, durMs: ev.audio.durMs });
   const t = performance.now() / 1000;
   if (t - lastHapticT >= HAPTIC_MIN_GAP) {
     lastHapticT = t;
-    bridge.streamPcm(
-      stereoBlip(pan, { gain: clamp(gain, 0.1, 1), durMs: strong ? 150 : 95, freq: strong ? 120 : 170 }),
-      { channels: 2, sampleRate: 16000, gain: 1 }
-    );
+    const gain = clamp(ev.haptic.gain * (0.45 + 0.55 * closeness), 0.1, 1); // scale by closeness
+    bridge.streamPcm(stereoBlip(pan, { gain, durMs: ev.haptic.durMs, freq: ev.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
   }
 }
+// 固定モード: shield BLOCK (success) — deliberately a clean low "pokon", distinct
+// from the body-HIT cue (fps_player_hit, via directionalCue) so the two are obvious.
 function blockFeedback(srcPos) {
-  playShot(playerPos, { gain: 0.75, freq: 520, durMs: 120, noise: false });
+  const ev = CONTENT.fps_block;
+  playShot(playerPos, { gain: ev.audio.vol, freq: ev.audio.freq, durMs: ev.audio.durMs, noise: false });
   const t = performance.now() / 1000;
   if (t - lastHapticT >= HAPTIC_MIN_GAP) {
     lastHapticT = t;
-    bridge.streamPcm(stereoBlip(0, { gain: 0.95, durMs: 120, freq: 90 }), { channels: 2, sampleRate: 16000, gain: 1 });
+    bridge.streamPcm(stereoBlip(0, { gain: ev.haptic.gain, durMs: ev.haptic.durMs, freq: ev.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
   }
+}
+
+// ── continuous directional haptic (opt-in 連続モード) ─────────────────────────
+// Modulate a ~100Hz tone by the NEAREST incoming bullet: stereo L/R balance by
+// azimuth + total amplitude by distance (closer = stronger), per the ToH2022
+// "musical-vibration navigation" algorithm (Eqs. 1–4). Independent of, and on top
+// of, the per-shot localization — a continuous "radar" you can feel with 👁 OFF.
+let lastContT = 0, contPhase = 0, contStream = null;
+// One PERSISTENT stream (LiveStream): STREAM_BEGIN once, then chunks pushed every
+// ~real-time period — no per-chunk teardown, so the device ring stays fed and the
+// tone is continuous (root-fix for the "gata-gata"). The sine PHASE is carried
+// across chunks (contPhase) so there's no boundary click. A discrete fire/footstep
+// ends the live stream (1 session = 1 stream); we transparently re-open it.
+const CONT_FREQ = CONTENT.fps_continuous.haptic.freq;     // Hz carrier   ← central tuning
+const CONT_DUR_MS = CONTENT.fps_continuous.haptic.durMs;  // chunk length ← central tuning
+const CONT_GAIN = CONTENT.fps_continuous.haptic.gain;     // overall scale ← central tuning
+const CONT_FLOOR = CONTENT.fps_continuous.haptic.floor;   // A(r) floor (wide dynamic range) ← central tuning
+const CONT_PERIOD = CONT_DUR_MS / 1000; // feed ≈ real-time (one chunk per chunk-length)
+const CONT_RMAX_K = 1.6;    // A(r) reaches the floor at enemyRange * this
+function closeContStream() {
+  if (contStream && !contStream.closed) contStream.close();
+  contStream = null;
+}
+function nearestBullet() {
+  let best = null, bestD = Infinity;
+  for (const p of projectiles) {
+    if (p.t >= p.dur) continue;
+    const d = p.head.position.distanceTo(playerPos);
+    if (d < bestD) { bestD = d; best = p; }
+  }
+  return best;
+}
+function updateContinuousHaptic() {
+  if (!settings.continuousHaptic || !playing || paused || !bridge.master.haptic) { closeContStream(); return; }
+  const t = performance.now() / 1000;
+  if (t - lastContT < CONT_PERIOD) return;
+  const p = nearestBullet();
+  if (!p) { closeContStream(); contPhase = 0; return; } // no threat → drop the stream
+  lastContT = t;
+  const { theta, dist } = lateralPan(p.head.position);
+  const deg = (theta * 180) / Math.PI;                      // +deg = bullet to the right
+  const AR = clamp((90 + deg) / 180, 0, 1);                 // right-stronger when on the right (Eqs. 2–3,
+  const AL = clamp((90 - deg) / 180, 0, 1);                 //   sign-matched to our forward frame)
+  const Rmax = settings.enemyRange * CONT_RMAX_K;
+  const closeness = clamp(1 - dist / Rmax, 0, 1);
+  const Ar = (CONT_FLOOR + (1 - CONT_FLOOR) * closeness * closeness) * CONT_GAIN; // squared → strong contrast (Eq. 4)
+  // (re)open the persistent stream — a discrete fire/footstep may have ended it
+  if (!contStream || contStream.closed) {
+    contStream = bridge.openStream({ channels: 2, sampleRate: 16000, gain: 1 });
+    contPhase = 0;
+  }
+  if (contStream) {
+    contStream.write(stereoTone(AL * Ar, AR * Ar, { freq: CONT_FREQ, durMs: CONT_DUR_MS, edgeMs: 0, startPhase: contPhase }));
+    contPhase = (contPhase + phaseAdvance(CONT_FREQ, CONT_DUR_MS)) % (2 * Math.PI); // carry phase → seamless
+  }
+}
+function stopContinuousHaptic() { lastContT = 0; contPhase = 0; closeContStream(); }
+
+// Footstep buzz (move mode). Each step streams a short low pulse — which (by the
+// SDK's 1-stream rule) interrupts any in-flight enemy-fire haptic, so WALKING
+// MASKS the gunfire cue. Stand still to feel threats clearly; move to dodge.
+function footstepHaptic() {
+  if (!bridge.master.haptic) return;
+  const h = CONTENT.fps_walk.haptic;
+  bridge.streamPcm(stereoBlip(0, { gain: h.gain, durMs: h.durMs, freq: h.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
 }
 
 function enemyShoot(e) {
@@ -788,29 +1014,31 @@ function enemyShoot(e) {
 const raycaster = new THREE.Raycaster();
 function playerFire() {
   if (!playing || paused || settings.mode !== "move") return;
-  gunKick = 1; muzzleT = 0.05;
+  gunKick = 1; // recoil only — muzzle FLASH removed per request
   camera.getWorldDirection(fwd);
   const muzzleWorld = new THREE.Vector3();
   muzzle.getWorldPosition(muzzleWorld);
   if (events.ownShot) {
-    playShot(muzzleWorld, { gain: 0.7, freq: 320, durMs: 110 });
+    const a = CONTENT.fps_own_shot;
+    playShot(muzzleWorld, { gain: a.audio.vol, freq: a.audio.freq, durMs: a.audio.durMs });
     const t = performance.now() / 1000;
     if (t - lastHapticT >= HAPTIC_MIN_GAP) {
       lastHapticT = t;
-      bridge.streamPcm(stereoBlip(0, { gain: 0.7, durMs: 70, freq: 220 }), { channels: 2, sampleRate: 16000, gain: 1 });
+      bridge.streamPcm(stereoBlip(0, { gain: a.haptic.gain, durMs: a.haptic.durMs, freq: a.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
     }
   }
   raycaster.setFromCamera({ x: 0, y: 0 }, camera);
   const targets = enemies.filter((e) => e.alive).map((e) => e.hitbox);
   const hits = raycaster.intersectObjects(targets, false);
   let hitPoint = playerPos.clone().add(fwd.clone().multiplyScalar(60));
+  let hitEnemy = null;
   if (hits.length) {
     hitPoint = hits[0].point.clone();
-    const box = hits[0].object;
-    const e = enemies.find((en) => en.hitbox === box);
-    if (e && e.alive) killEnemy(e, false);
+    hitEnemy = enemies.find((en) => en.hitbox === hits[0].object) || null;
   }
-  spawnPlayerTracer(muzzleWorld, hitPoint, 0x9af0ff);
+  // the kill is deferred to when the BULLET REACHES the enemy (updatePlayerTracers),
+  // not at click time — so a fast strafing target can be missed if it moves clear.
+  spawnPlayerTracer(muzzleWorld, hitPoint, 0xffd23a, hitEnemy);
 }
 
 let hitmarkerT = null;
@@ -829,7 +1057,7 @@ function flashDamage() {
 // ── pointer lock + mouse look (yaw only) + Esc pause ─────────────────────────
 function onMouseMove(e) {
   if (paused || document.pointerLockElement !== renderer.domElement) return;
-  yaw -= e.movementX * 0.0024; // horizontal only (no pitch/roll), frozen while paused
+  yaw -= e.movementX * 0.0024 * settings.sensitivity; // horizontal only (no pitch/roll), frozen while paused
 }
 document.addEventListener("mousemove", onMouseMove);
 document.addEventListener("pointerlockchange", () => {
@@ -864,28 +1092,40 @@ window.addEventListener("gamepadconnected", () => setGpStat("接続", true));
 window.addEventListener("gamepaddisconnected", () => setGpStat("未検出", false));
 function pollGamepad(dt) {
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  // prefer a STANDARD-mapping pad: some HID devices (e.g. USB speakerphones) are
+  // mis-enumerated as non-standard "gamepads" and would otherwise be picked first.
   let gp = null;
-  for (const p of pads) if (p) { gp = p; break; }
-  if (!gp) { gpFirePrev = false; gpStartPrev = false; setGpStat("未検出", false); return; }
+  for (const p of pads) { if (!p) continue; if (!gp) gp = p; if (p.mapping === "standard") { gp = p; break; } }
+  if (!gp) { gpFirePrev = false; gpStartPrev = false; gpLbPrev = false; gpRbPrev = false; gpXPrev = gpYPrev = gpBPrev = gpVwPrev = false; setGpStat("未検出", false); return; }
   let pressedBtn = -1;
   for (let i = 0; i < gp.buttons.length; i++) if (gp.buttons[i]?.pressed) { pressedBtn = i; break; }
-  setGpStat(pressedBtn >= 0 ? `接続 btn${pressedBtn}` : "接続", true);
+  const tag = gp.mapping === "standard" ? "接続" : "接続(非標準)";
+  setGpStat(pressedBtn >= 0 ? `${tag} btn${pressedBtn}` : tag, true);
   const dz = (v) => (Math.abs(v) < 0.18 ? 0 : v);
   const fire = !!(gp.buttons[7]?.pressed || gp.buttons[0]?.pressed); // RT or A
   const fireEdge = fire && !gpFirePrev; gpFirePrev = fire;
   const startBtn = !!gp.buttons[9]?.pressed; // Start/Menu
   const startEdge = startBtn && !gpStartPrev; gpStartPrev = startBtn;
-  if (!playing) { if (fireEdge) startGame(); return; } // a button can start the game
-  if (startEdge) {
-    // keep pause in lock-step with pointer lock so mouse-look is live exactly when
-    // unpaused (pause → release lock; resume → best-effort re-lock for mouse users).
-    const willPause = !paused;
-    setPaused(willPause);
-    if (willPause) { if (document.pointerLockElement === renderer.domElement) document.exitPointerLock(); }
-    else if (!renderer.xr.isPresenting) { try { renderer.domElement.requestPointerLock(); } catch { /* gamepad may lack user-activation */ } }
+  const lb = !!gp.buttons[4]?.pressed, rb = !!gp.buttons[5]?.pressed; // bumpers → difficulty
+  const lbEdge = lb && !gpLbPrev, rbEdge = rb && !gpRbPrev; gpLbPrev = lb; gpRbPrev = rb;
+  if (lbEdge) cyclePreset(-1);
+  if (rbEdge) cyclePreset(1);
+  // Ⓧ/Ⓨ/Ⓑ toggle 映像/音/触覚 and View=モード切替 — only while NOT playing (locked
+  // mid-game). ☰ Menu = HUD/パネルの表示非表示 (any time). Pause stays on Esc.
+  const gx = !!gp.buttons[2]?.pressed, gy = !!gp.buttons[3]?.pressed, gbb = !!gp.buttons[1]?.pressed, gvw = !!gp.buttons[8]?.pressed;
+  const xEdge = gx && !gpXPrev, yEdge = gy && !gpYPrev, bEdge = gbb && !gpBPrev, vwEdge = gvw && !gpVwPrev;
+  gpXPrev = gx; gpYPrev = gy; gpBPrev = gbb; gpVwPrev = gvw; // track edges every frame
+  if (startEdge) toggleDrawer(); // ☰ = HUD 表示/非表示
+  if (!playing) {
+    if (xEdge) toggleMaster("visual", mVisual);
+    if (yEdge) toggleMaster("audio", mAudio);
+    if (bEdge) toggleMaster("haptic", mHaptic);
+    if (vwEdge) setMode(settings.mode === "move" ? "fixed" : "move");
+    if (fireEdge) startGame();
+    return;
   }
   if (paused || renderer.xr.isPresenting) return;
-  yaw -= dz(gp.axes[2] || 0) * 2.4 * dt; // right stick X → yaw
+  yaw -= dz(gp.axes[2] || 0) * 2.4 * dt * settings.sensitivity; // right stick X → yaw
   if (settings.mode === "move") {
     const lx = dz(gp.axes[0] || 0), ly = dz(gp.axes[1] || 0);
     if (lx || ly) {
@@ -911,8 +1151,8 @@ function applyModeVisibility() {
 }
 function applyVisualMode() {
   const v = bridge.master.visual;
-  for (const e of enemies) e.mesh.visible = v;
-  for (const p of projectiles) { p.head.visible = v; p.trail.visible = v; }
+  for (const e of enemies) e.mesh.visible = v; // 👁 OFF hides ONLY the enemies…
+  for (const p of projectiles) { p.head.visible = true; p.trail.visible = true; } // …bullets stay visible
 }
 
 // ── main loop ────────────────────────────────────────────────────────────────
@@ -924,14 +1164,13 @@ function update(dt) {
   gunKick = Math.max(0, gunKick - dt * 7);
   gun.position.z = GUN_REST.z + gunKick * 0.07;
   gun.rotation.x = gunKick * 0.18;
-  muzzleT -= dt;
-  muzzle.visible = muzzleT > 0;
   shieldFlash = Math.max(0, shieldFlash - dt * 3);
   shieldMesh.material.opacity = 0.24 + shieldFlash * 0.5;
   shieldMesh.scale.x = settings.shieldArc / 26;
 
   const active = playing && !paused && !renderer.xr.isPresenting;
   if (active) {
+    let moving = false;
     if (settings.mode === "move") {
       let mx = 0, mz = 0;
       if (keys.KeyW) mz -= 1;
@@ -944,8 +1183,20 @@ function update(dt) {
         rig.position.x += (mx * cos + mz * sin) * settings.playerSpeed * dt;
         rig.position.z += (-mx * sin + mz * cos) * settings.playerSpeed * dt;
         clampToArena();
+        moving = true;
       }
     }
+    // walking head-bob + footstep haptic (move mode, opt-in). The footstep buzz
+    // masks the enemy-fire cue → stand still to detect, move to dodge.
+    if (settings.walkFeedback && moving && settings.mode === "move") {
+      walkPhase += WALK_RATE * dt;
+      if (walkPhase - walkStepMark >= Math.PI) { walkStepMark += Math.PI; footstepHaptic(); }
+    } else {
+      walkStepMark = walkPhase; // don't bank a pending step while stopped
+    }
+    const bobTarget = (settings.walkFeedback && moving && settings.mode === "move") ? Math.sin(walkPhase) * BOB_AMP : 0;
+    walkBob += (bobTarget - walkBob) * Math.min(1, dt * 14);
+    camera.position.y = 1.6 + walkBob;
     rig.rotation.y = yaw;
     playerPos.set(rig.position.x, 1.6, rig.position.z);
 
@@ -971,6 +1222,7 @@ function update(dt) {
       }
     }
     updateProjectiles(dt);
+    updateContinuousHaptic(); // 連続モード: feel the nearest incoming bullet
   }
   updatePlayerTracers(dt);
   updateDeathFx(dt);

@@ -128,6 +128,61 @@ button[aria-pressed="true"] { border-color: var(--accent); color: #fff; backgrou
 }
 .gametoolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .gametoolbar .label { font-size: 12px; color: var(--ink-dim); margin-right: 2px; }
+
+/* gamepad badge shown on a button (which pad button triggers it) */
+.padkey {
+  display: inline-block; font-size: 10px; font-weight: 800; line-height: 1;
+  padding: 2px 5px; border-radius: 999px; margin-left: 4px; vertical-align: middle;
+  background: #2f3a48; color: #dbe2ea; border: 1px solid #45515f;
+}
+.padkey.k-a { background: #1d4a34; color: #d7ffe9; border-color: #45b07e; }
+.padkey.k-b { background: #4a2424; color: #ffd9d9; border-color: #b06a6a; }
+.padkey.k-x { background: #1f3a5c; color: #d6e8ff; border-color: #4a78c0; }
+.padkey.k-y { background: #4a4220; color: #fff0c2; border-color: #b0a04a; }
+.padkey.k-menu { background: #2b3340; color: #e8eef6; border-color: #56627a; }
+/* modality group inside the toolbar */
+.modality-group .modbtn { display: inline-flex; align-items: center; }
+
+/* stop button — distinct from the purple primary start */
+button.danger { background: #3a2330; border-color: #6f3a4a; color: #ffd9e4; }
+button.danger:hover { background: #4a2c3d; }
+button:disabled { opacity: 0.45; cursor: default; }
+button:disabled:hover { background: var(--panel-2); }
+
+/* name field in a toolbar */
+.namefield { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-dim); }
+.namefield input {
+  font: inherit; font-size: 13px; color: var(--ink); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; width: 108px;
+}
+.namefield input:focus { outline: none; border-color: var(--accent); }
+
+/* ── Ranking panel (inline, below a game) ───────────────── */
+.rankpanel {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.rankpanel .rank-head { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.rankpanel .rank-count { font-size: 12px; color: var(--ink-dim); }
+.rankpanel .rank-head .ghost { font-size: 12px; padding: 5px 9px; }
+.rank-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.rank-table th, .rank-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--line); }
+.rank-table th { font-size: 11px; color: var(--ink-dim); font-weight: 600; }
+.rank-table th.r-sort { cursor: pointer; user-select: none; white-space: nowrap; }
+.rank-table th.r-sort:hover { color: var(--ink); }
+.rank-table th.r-sort.on { color: var(--ink); }
+.rank-table td.r-rank { width: 40px; font-weight: 800; text-align: center; }
+.rank-table td.r-name { font-weight: 600; }
+.rank-table td.r-num { font-weight: 700; color: var(--ink-dim); white-space: nowrap; }
+.rank-table td.r-num.on { font-weight: 800; color: var(--accent-2); }
+.rank-table tr.top td.r-num.on { color: var(--accent); }
+.rank-table td.r-mods .rm { font-size: 13px; margin-right: 1px; }
+.rank-table td.r-mods .none { color: #5a6677; }
+.rank-table td.r-at { font-size: 11px; color: #5a6677; white-space: nowrap; }
+.rank-empty { font-size: 12px; color: var(--ink-dim); margin: 4px 2px; }
+
+/* name field dice */
+.namefield .namedice { font-size: 12px; padding: 4px 6px; line-height: 1; border-radius: 7px; }
 canvas { display: block; width: 100%; background: #0a0d12; border-radius: 10px; touch-action: none; }
 
 .hud { display: flex; gap: 18px; flex-wrap: wrap; font-size: 14px; }
