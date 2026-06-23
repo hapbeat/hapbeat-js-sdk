@@ -21,10 +21,23 @@ import { showResult, clearResult } from "../shared/ui.js";
 import { modalityControls, playerNameField, activeMods } from "../shared/controls.js";
 import { createRanking } from "../shared/ranking.js";
 
-const N_TASKS = 14; // shorter run (was 24) — ~½–⅔ length per request
-const ISI_MIN = 1400, ISI_MAX = 3000;
-const NOTICE_WINDOW = 1300;
-const GAP_MIN = 250, GAP_MAX = 550;
+const RUN_SEC = 20;          // fixed run length (s) — everyone gets the same notices
+const N_NOTICES = 8;         // FIXED notices per run, fired at random well-spaced times
+const NOTICE_WINDOW = 1300;  // ms to react before a notice counts as a miss
+const NOTICE_MIN_GAP = 1800; // ms minimum spacing between scheduled notices (> window)
+const GAP_MIN = 250, GAP_MAX = 550; // ms gap between consecutive tasks
+
+/** Pick N sorted notice times (ms from run start) within [lo, hi], spaced ≥ minGap. */
+function scheduleNoticeTimes(n, lo, hi, minGap) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const ts = Array.from({ length: n }, () => lo + Math.random() * (hi - lo)).sort((a, b) => a - b);
+    let ok = true;
+    for (let i = 1; i < ts.length; i++) if (ts[i] - ts[i - 1] < minGap) { ok = false; break; }
+    if (ok) return ts;
+  }
+  // fallback: evenly spaced
+  return Array.from({ length: n }, (_, i) => lo + ((hi - lo) * (i + 0.5)) / n);
+}
 
 // The 8 task targets. Each maps a keyboard key (WASD left / IJKL right) ⇄ a pad
 // button (D-pad ⇄ WASD, face buttons ⇄ IJKL by diamond position: Y↑I, X←J, B→L, A↓K).
@@ -41,22 +54,26 @@ const TASKS = [
 const byCode = Object.fromEntries(TASKS.map((t) => [t.code, t]));
 const byPad = Object.fromEntries(TASKS.map((t) => [t.pad, t]));
 
-// Xbox-style controller, decluttered to ONLY the 8 task buttons: ABXY (right) +
-// D-pad (left). Triggers/bumpers/sticks/View/Menu are intentionally omitted.
+// Xbox-style controller: ABXY (right) + D-pad (left) = the 8 task buttons, plus
+// the LT/RT triggers at the top (the NOTICE response — pressed together). The
+// bumpers/sticks/View/Menu are omitted.
 const CONTROLLER_SVG = `
-<svg class="gp-svg" viewBox="0 0 360 210" xmlns="http://www.w3.org/2000/svg">
-  <path d="M92 26 H268 C305 26 327 46 333 82 C339 110 331 130 315 142 C300 154 295 184 278 200 C264 212 240 214 226 200 C212 186 200 158 180 158 C160 158 148 186 134 200 C120 214 96 212 82 200 C65 184 60 154 45 142 C29 130 21 110 27 82 C33 46 55 26 92 26 Z"
+<svg class="gp-svg" viewBox="0 0 360 214" xmlns="http://www.w3.org/2000/svg">
+  <rect class="btn trig" id="t-l" x="80" y="4" width="56" height="16" rx="8"/>
+  <rect class="btn trig" id="t-r" x="224" y="4" width="56" height="16" rx="8"/>
+  <text class="cap" x="108" y="13">LT</text><text class="cap" x="252" y="13">RT</text>
+  <path d="M92 28 H268 C305 28 327 48 333 84 C339 112 331 132 315 144 C300 156 295 186 278 202 C264 214 240 216 226 202 C212 188 200 160 180 160 C160 160 148 188 134 202 C120 216 96 214 82 202 C65 186 60 156 45 144 C29 132 21 112 27 84 C33 48 55 28 92 28 Z"
         fill="#232b37" stroke="#0c0f14" stroke-width="2.5"/>
-  <rect class="btn" id="d-up" x="104" y="74" width="22" height="24" rx="5"/>
-  <rect class="btn" id="d-down" x="104" y="108" width="22" height="24" rx="5"/>
-  <rect class="btn" id="d-left" x="80" y="98" width="24" height="22" rx="5"/>
-  <rect class="btn" id="d-right" x="126" y="98" width="24" height="22" rx="5"/>
-  <circle class="btn yc" id="b-y" cx="268" cy="74" r="17"/>
-  <circle class="btn xc" id="b-x" cx="240" cy="102" r="17"/>
-  <circle class="btn bc" id="b-b" cx="296" cy="102" r="17"/>
-  <circle class="btn ac" id="b-a" cx="268" cy="130" r="17"/>
-  <text x="268" y="74">Y</text><text x="240" y="102">X</text><text x="296" y="102">B</text><text x="268" y="130">A</text>
-  <text class="dp" x="115" y="86">↑</text><text class="dp" x="115" y="120">↓</text><text class="dp" x="92" y="109">←</text><text class="dp" x="138" y="109">→</text>
+  <rect class="btn" id="d-up" x="104" y="90" width="22" height="24" rx="5"/>
+  <rect class="btn" id="d-down" x="104" y="124" width="22" height="24" rx="5"/>
+  <rect class="btn" id="d-left" x="80" y="114" width="24" height="22" rx="5"/>
+  <rect class="btn" id="d-right" x="126" y="114" width="24" height="22" rx="5"/>
+  <circle class="btn yc" id="b-y" cx="268" cy="76" r="17"/>
+  <circle class="btn xc" id="b-x" cx="240" cy="104" r="17"/>
+  <circle class="btn bc" id="b-b" cx="296" cy="104" r="17"/>
+  <circle class="btn ac" id="b-a" cx="268" cy="132" r="17"/>
+  <text x="268" y="76">Y</text><text x="240" y="104">X</text><text x="296" y="104">B</text><text x="268" y="132">A</text>
+  <text class="dp" x="115" y="102">↑</text><text class="dp" x="115" y="136">↓</text><text class="dp" x="92" y="125">←</text><text class="dp" x="138" y="125">→</text>
 </svg>`;
 
 export const game = {
@@ -85,12 +102,16 @@ export const game = {
         .gp-svg .btn { fill: #3a414c; stroke: #0c0f14; stroke-width: 1.5; transition: fill .04s; }
         .gp-svg .btn.ac { fill: #2f7d56; } .gp-svg .btn.bc { fill: #9b3d3d; }
         .gp-svg .btn.xc { fill: #3a64a0; } .gp-svg .btn.yc { fill: #9b8636; }
+        .gp-svg .btn.trig { fill: #2b3340; }
         .gp-svg .btn.target { fill: #ffd23a !important; stroke: #fff; stroke-width: 3; }
         .gp-svg .btn.pressed { fill: #3fb950 !important; }
         .gp-svg .btn.target.pressed { fill: #2dd4bf !important; }
+        /* notice fired → light the LT/RT triggers (part of the 👁 visual cue) */
+        .gp-svg .btn.gp-notice { fill: #ff5147 !important; stroke: #fff; stroke-width: 2.5; filter: drop-shadow(0 0 5px #ff5147); }
         .gp-svg text { fill: #f0f4f8; font: bold 15px system-ui; text-anchor: middle; dominant-baseline: middle;
           pointer-events: none; paint-order: stroke; stroke: #0c0f14; stroke-width: 0.8px; }
         .gp-svg text.dp { font-size: 15px; }
+        .gp-svg text.cap { font-size: 11px; fill: #c4cdd8; }
         .gp-stat { text-align: center; font-size: 12px; color: #cdd6e0;
           background: rgba(10,13,18,0.72); padding: 2px 9px; border-radius: 6px; }
         .gp-stat b { color: #fff; }
@@ -157,15 +178,16 @@ export const game = {
         <div class="notice-flash" id="nflash"><span class="nf-ring"></span><span class="nf-text"></span></div>
       </div>
       <div class="hud">
-        <span>課題 <b id="prog">0</b>/${N_TASKS}</span>
+        <span>残り <b id="time">${RUN_SEC}</b>s</span>
+        <span>こなした課題 <b id="prog">0</b></span>
         <span>通知RT平均 <b id="mean">—</b></span>
-        <span>気付き <b id="rate">—</b></span>
+        <span>気付き <b id="rate">—</b>/${N_NOTICES}</span>
         <span>見逃し <b id="miss">0</b></span>
         <span id="state"></span>
       </div>
       <p class="note"><b>狙い</b>：目や手がふさがった「ながら」で通知に気づけるか、を反応時間で測る二重課題。
-      <b>課題(task)</b>＝<span id="taskhelp"></span>（押さないと進まない・全${N_TASKS}問）。
-      <b>通知(notice)</b>＝作業中ランダムに通知（👁画面端／👂チャイム／✋ブザー）。気づいたら最速で反応（キーボード=<b>Space</b>／パッド=<b>LT+RT 両押し</b>）。
+      <b>課題(task)</b>＝<span id="taskhelp"></span>（<b>${RUN_SEC}秒間にできるだけ多く</b>）。
+      <b>通知(notice)</b>＝作業中ランダムな時刻に<b>全員同じ ${N_NOTICES} 回</b>（👁画面端／👂チャイム／✋ブザー）。気づいたら最速で反応（キーボード=<b>Space</b>／パッド=<b>LT+RT 両押し</b>）。
       パッド: <b>Ⓐ</b>=スタート / <b>RB</b>=リスタート / <b>☰</b>=ストップ / <b>Ⓥ(View)</b>=メニュー。開始前は <b>Ⓧ/Ⓨ/Ⓑ</b>=映像/音/触覚。
       通知は<b>上の 👁/👂/✋ で ON の感覚すべて</b>から。<b>✋ だけ</b>にして比べると、目手がふさがっても触覚は速く確実。</p>
       <div class="rankpanel" id="rankpanel"></div>
@@ -175,6 +197,7 @@ export const game = {
     const g = cv.getContext("2d");
     const stagebox = container.querySelector(".stagebox");
     const elProg = container.querySelector("#prog");
+    const elTime = container.querySelector("#time");
     const elMean = container.querySelector("#mean");
     const elRate = container.querySelector("#rate");
     const elMiss = container.querySelector("#miss");
@@ -189,9 +212,10 @@ export const game = {
     const startBtn = container.querySelector("#start");
     const startLbl = container.querySelector("#startlbl");
     const stopBtn = container.querySelector("#stop");
-    // map task svg button ids + keyboard key codes → elements (scoped to this container)
+    // map task svg button ids + the LT/RT triggers + keyboard key codes → elements
     const svgEls = {};
     for (const t of TASKS) { const el = container.querySelector("#" + t.id); if (el) svgEls[t.id] = el; }
+    for (const id of ["t-l", "t-r"]) { const el = container.querySelector("#" + id); if (el) svgEls[id] = el; }
     const kbEls = {};
     for (const el of container.querySelectorAll(".kbkey")) kbEls[el.dataset.code] = el;
 
@@ -206,7 +230,7 @@ export const game = {
         { key: "points", label: "総合", unit: "pt", decimals: 0, lowerIsBetter: false, primary: true },
         { key: "rt", label: "通知平均", unit: "ms", decimals: 0, lowerIsBetter: true },
         { key: "rate", label: "気付き率", unit: "%", decimals: 0, lowerIsBetter: false },
-        { key: "clear", label: "時間", unit: "s", decimals: 1, lowerIsBetter: true },
+        { key: "tasks", label: "課題数", unit: "個", decimals: 0, lowerIsBetter: false },
       ],
     });
     const rankPanel = container.querySelector("#rankpanel");
@@ -244,6 +268,12 @@ export const game = {
         kbEls[TASKS[slot].code]?.classList.add("target");
       }
     }
+    // light the LT/RT triggers on the controller while a notice is pending (part of
+    // the 👁 visual cue → off in haptic-only mode so it doesn't leak the timing)
+    function setTriggerNotice(on) {
+      svgEls["t-l"]?.classList.toggle("gp-notice", on);
+      svgEls["t-r"]?.classList.toggle("gp-notice", on);
+    }
 
     // big flashy notice feedback ON TOP (restart the CSS animation via reflow)
     function noticeFlash(text, ok) {
@@ -260,8 +290,8 @@ export const game = {
     // ── state ────────────────────────────────────────────────────────────────
     let phase = "idle"; // idle | run | done
     let taskDone, taskWrong, taskRTs, taskActive, taskShownAt, taskNextAt, taskSlot;
-    let noticeActive, noticeFiredAt, noticeNextAt, noticeRTs, noticeMiss, noticeCount;
-    let runStart, lastMs, lastMissed, edgeFlash, taskFlash, wrongFlash, hintUntil;
+    let noticeActive, noticeFiredAt, noticeTimes, noticeIdx, noticeRTs, noticeMiss, noticeCount;
+    let runStart, runEndAt, lastMs, lastMissed, edgeFlash, taskFlash, wrongFlash, hintUntil;
     let gpPrev = [], gpBothPrev = false;
     let gpAprev = false, gpRBprev = false, gpMenuPrev = false, gpViewPrev = false, gpXprev = false, gpYprev = false, gpBprev = false;
 
@@ -276,11 +306,12 @@ export const game = {
       phase = "idle";
       taskDone = 0; taskWrong = 0; taskRTs = [];
       taskActive = false; taskShownAt = 0; taskNextAt = 0; taskSlot = -1;
-      noticeActive = false; noticeFiredAt = 0; noticeNextAt = 0; noticeRTs = []; noticeMiss = 0; noticeCount = 0;
-      lastMs = 0; lastMissed = false; edgeFlash = 0; taskFlash = 0; wrongFlash = 0; hintUntil = 0;
-      elProg.textContent = "0"; elMean.textContent = "—"; elRate.textContent = "—"; elMiss.textContent = "0";
+      noticeActive = false; noticeFiredAt = 0; noticeTimes = []; noticeIdx = 0; noticeRTs = []; noticeMiss = 0; noticeCount = 0;
+      runEndAt = 0; lastMs = 0; lastMissed = false; edgeFlash = 0; taskFlash = 0; wrongFlash = 0; hintUntil = 0;
+      elProg.textContent = "0"; elTime.textContent = String(RUN_SEC); elMean.textContent = "—"; elRate.textContent = "—"; elMiss.textContent = "0";
       elState.textContent = version === "keyboard" ? "キーボード版" : "ゲームパッド版";
       setTargetHighlight(-1);
+      setTriggerNotice(false);
       updateButtons();
     }
 
@@ -289,8 +320,13 @@ export const game = {
       nameField.roll(); // fresh random name suggestion for this play
       phase = "run";
       runStart = performance.now();
+      runEndAt = runStart + RUN_SEC * 1000;
       taskNextAt = runStart + 500;
-      noticeNextAt = runStart + rnd(ISI_MIN, ISI_MAX);
+      // FIXED notices at random times — same count for everyone; keep the last
+      // notice's full reaction window inside the run so it's never an unfair miss.
+      noticeTimes = scheduleNoticeTimes(N_NOTICES, 1500, RUN_SEC * 1000 - NOTICE_WINDOW - 300, NOTICE_MIN_GAP)
+        .map((t) => runStart + t);
+      noticeIdx = 0;
       updateButtons();
       bridge.unlockAudio();
     }
@@ -305,21 +341,17 @@ export const game = {
       taskActive = false; setTargetHighlight(-1);
       taskDone++; elProg.textContent = String(taskDone);
       taskFlash = 0.5;
-      if (taskDone >= N_TASKS) return finish();
-      taskNextAt = now + rnd(GAP_MIN, GAP_MAX);
+      taskNextAt = now + rnd(GAP_MIN, GAP_MAX); // tasks run continuously for the full RUN_SEC
     }
     function wrongTask() { wrongFlash = 0.5; taskWrong++; }
 
     function fireNotice(now) {
       noticeCount++;
-      if (bridge.master.visual) edgeFlash = 1;
+      if (bridge.master.visual) { edgeFlash = 1; setTriggerNotice(true); } // LT/RT light = visual cue
       bridge.fire("notice_alert"); // haptic buzz + rising chime (gated by 👂/✋ masters)
       noticeActive = true; noticeFiredAt = now;
     }
-    function scheduleNotice(now) { noticeNextAt = now + rnd(ISI_MIN, ISI_MAX); }
-    function updateRate() {
-      elRate.textContent = noticeCount ? `${Math.round((noticeRTs.length / noticeCount) * 100)}%` : "—";
-    }
+    function updateRate() { elRate.textContent = String(noticeRTs.length); } // caught count (HUD shows /N_NOTICES)
     function pressNotice() {
       if (phase !== "run") return;
       bridge.unlockAudio();
@@ -331,43 +363,41 @@ export const game = {
       updateRate();
       noticeFlash(`✓ ${Math.round(ms)}ms`, true);
       fx.shake(5);
-      noticeActive = false; scheduleNotice(now);
+      noticeActive = false; setTriggerNotice(false);
     }
-    function noticeMissNow(now) {
+    function noticeMissNow() {
       noticeMiss++; elMiss.textContent = String(noticeMiss);
       lastMissed = true; lastMs = NOTICE_WINDOW;
-      updateRate();
+      noticeActive = false; setTriggerNotice(false);
       noticeFlash("見逃し", false);
-      noticeActive = false; scheduleNotice(now);
     }
 
     function finish() {
       phase = "done";
-      if (noticeActive) { noticeCount--; noticeActive = false; }
+      if (noticeActive) { noticeActive = false; } // a notice still pending at time-up is left unresolved (rare; it's already in noticeCount so the catch-rate denominator stays correct)
       setTargetHighlight(-1);
+      setTriggerNotice(false);
       updateButtons();
+      elTime.textContent = "0";
       bridge.fire("notice_win", { gain: 0.55 });
       fx.burst(cv.width / 2, cv.height / 2, "#7c5cff", 36, 300);
       const mean = meanOf(noticeRTs);
       const sum = noticeRTs.reduce((a, b) => a + b, 0);
-      const clearS = (performance.now() - runStart) / 1000;
       const rate = noticeCount ? noticeRTs.length / noticeCount : 0;
-      if (mean != null) {
-        // notice-heavy composite: speed (0.5) + catch-rate (0.35) dominate, clear time (0.15).
-        const rtPts = Math.max(0, Math.min(1, 1 - mean / 1500));
-        const timePts = Math.max(0, Math.min(1, 1 - clearS / 120));
-        const points = Math.round(1000 * (0.5 * rtPts + 0.35 * rate + 0.15 * timePts));
-        rank.record({
-          name: nameField.get(),
-          metrics: { points, rt: mean, rate: rate * 100, clear: clearS },
-          mods: activeMods(bridge),
-          detail: `気づき ${noticeRTs.length}/${noticeCount} ・ ${version === "keyboard" ? "KB" : "Pad"}`,
-        });
-      }
+      // tasks-done is the headline; notice speed + catch rate dominate the composite.
+      const rtPts = mean == null ? 0 : Math.max(0, Math.min(1, 1 - mean / 1500));
+      const taskPts = Math.max(0, Math.min(1, taskDone / 35));
+      const points = Math.round(1000 * (0.45 * rtPts + 0.35 * rate + 0.2 * taskPts));
+      rank.record({
+        name: nameField.get(),
+        metrics: { points, rt: mean == null ? NaN : mean, rate: rate * 100, tasks: taskDone },
+        mods: activeMods(bridge),
+        detail: `課題 ${taskDone} ・ 気づき ${noticeRTs.length}/${noticeCount} ・ ${version === "keyboard" ? "KB" : "Pad"}`,
+      });
       const sub =
         `入力:${version === "keyboard" ? "キーボード" : "ゲームパッド"} ／ 通知ch:${activeModsText()}\n` +
-        `通知 反応 平均 ${mean == null ? "—" : Math.round(mean) + "ms"} ・ 合計 ${Math.round(sum)}ms ・ ` +
-        `気づき ${noticeRTs.length}/${noticeCount} (${Math.round(rate * 100)}% ・ 見逃し ${noticeMiss}) ／ 課題クリア ${clearS.toFixed(1)}s` +
+        `こなした課題 ${taskDone} 個 ・ 通知 反応 平均 ${mean == null ? "—" : Math.round(mean) + "ms"} ・ ` +
+        `気づき ${noticeRTs.length}/${noticeCount} (${Math.round(rate * 100)}% ・ 見逃し ${noticeMiss})` +
         (taskWrong ? ` ・ 誤入力 ${taskWrong}` : "");
       showResult(stagebox, { title: "🔔 結果", badge: "通知を ✋ だけにして比べてみよう", sub, onRetry: startRun, onMenu: toMenu });
     }
@@ -437,6 +467,9 @@ export const game = {
       }
       gpAprev = a; gpRBprev = rb; gpMenuPrev = menu; gpViewPrev = view; gpXprev = x; gpYprev = y; gpBprev = b;
 
+      // live highlight of the LT/RT triggers (the notice-response buttons)
+      svgEls["t-l"]?.classList.toggle("pressed", pressed(6));
+      svgEls["t-r"]?.classList.toggle("pressed", pressed(7));
       // NOTICE = both triggers held
       const both = pressed(6) && pressed(7);
       if (sys && both && !gpBothPrev) pressNotice();
@@ -458,9 +491,11 @@ export const game = {
       const now = performance.now();
       pollGamepad();
       if (phase === "run") {
-        if (!taskActive && taskDone < N_TASKS && now >= taskNextAt) showTask(now);
-        if (!noticeActive && now >= noticeNextAt) fireNotice(now);
-        if (noticeActive && now - noticeFiredAt > NOTICE_WINDOW) noticeMissNow(now);
+        if (!taskActive && now >= taskNextAt) showTask(now); // tasks run for the whole RUN_SEC
+        if (!noticeActive && noticeIdx < N_NOTICES && now >= noticeTimes[noticeIdx]) { fireNotice(now); noticeIdx++; }
+        if (noticeActive && now - noticeFiredAt > NOTICE_WINDOW) noticeMissNow();
+        elTime.textContent = String(Math.max(0, Math.ceil((runEndAt - now) / 1000)));
+        if (now >= runEndAt) finish();
       }
       fx.update(dt);
       edgeFlash = Math.max(0, edgeFlash - dt * 1.6);

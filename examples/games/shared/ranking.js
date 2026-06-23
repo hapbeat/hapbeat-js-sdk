@@ -15,10 +15,10 @@
  *       { key: "points", label: "総合", unit: "pt", decimals: 0, lowerIsBetter: false, primary: true },
  *       { key: "rt",     label: "通知平均", unit: "ms", decimals: 0, lowerIsBetter: true },
  *       { key: "rate",   label: "気付き率", unit: "%", decimals: 0, lowerIsBetter: false },
- *       { key: "clear",  label: "時間", unit: "s", decimals: 1, lowerIsBetter: true },
+ *       { key: "tasks",  label: "課題数", unit: "個", decimals: 0, lowerIsBetter: false },
  *     ],
  *   });
- *   rank.record({ name, metrics: { points, rt, rate, clear }, mods: ["visual","haptic"] });
+ *   rank.record({ name, metrics: { points, rt, rate, tasks }, mods: ["visual","haptic"] });
  *   rank.mountPanel(el);   // inline sortable table (auto-refresh)
  *   rank.openPopout();     // booth window (live, sortable, JSON, reset)
  */

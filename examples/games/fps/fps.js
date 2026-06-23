@@ -392,7 +392,7 @@ contHapticEl.checked = settings.continuousHaptic;
 contHapticEl.onchange = (e) => { settings.continuousHaptic = e.target.checked; saveSettings(); if (!e.target.checked) stopContinuousHaptic(); };
 const walkFbEl = root.querySelector("#walkFb");
 walkFbEl.checked = settings.walkFeedback;
-walkFbEl.onchange = (e) => { settings.walkFeedback = e.target.checked; saveSettings(); if (!e.target.checked) { walkBob = 0; camera.position.y = 1.6; } };
+walkFbEl.onchange = (e) => { settings.walkFeedback = e.target.checked; saveSettings(); if (!e.target.checked) { walkBob = 0; walkSway = 0; camera.position.set(0, 1.6, 0); } };
 
 // mode toggle (移動 / 固定)
 const modeBtns = [...root.querySelectorAll("#modes button")];
@@ -571,9 +571,10 @@ const GUN_REST = new THREE.Vector3(0.2, -0.18, -0.32);
 gun.position.copy(GUN_REST);
 camera.add(gun);
 let gunKick = 0;
-let walkPhase = 0, walkStepMark = 0, walkBob = 0; // walking head-bob + footstep cadence (move mode)
+let walkPhase = 0, walkStepMark = 0, walkBob = 0, walkSway = 0; // walking head-bob + footstep cadence (move mode)
 const WALK_RATE = 9;   // rad/s phase advance while moving (~3 steps/s)
-const BOB_AMP = 0.06;  // m vertical camera bob
+const BOB_AMP = 0.09;  // m vertical camera bob (clearly visible)
+const SWAY_AMP = 0.045; // m side-to-side sway (half cadence) for a natural gait
 
 // frontal shield (fixed mode) — green so it stands out from the blue sky
 const shieldMesh = new THREE.Mesh(
@@ -611,8 +612,9 @@ const EGEO = {
   egun: new THREE.BoxGeometry(0.12, 0.12, 0.5),
   head: new THREE.BoxGeometry(0.42, 0.38, 0.4),
   eye: new THREE.BoxGeometry(0.34, 0.1, 0.06),
-  hitbox: new THREE.BoxGeometry(1.2, 2.2, 0.9), // big body-height target, centred at eye level
+  hitbox: new THREE.BoxGeometry(0.95, 1.5, 0.7), // body-covering; the whole enemy is scaled up (ENEMY_SCALE)
 };
+const ENEMY_SCALE = 1.5; // bigger enemy → torso rises to eye level (1.6) so straight aim hits the body
 const enemyBodyMat = new THREE.MeshStandardMaterial({ color: 0xe8553a, metalness: 0.35, roughness: 0.5 });
 const enemyDarkMat = new THREE.MeshStandardMaterial({ color: 0x2b2320, metalness: 0.4, roughness: 0.6 });
 const hbMat = new THREE.MeshBasicMaterial({ visible: false }); // never rendered, still raycastable
@@ -632,7 +634,8 @@ function makeEnemyMesh() {
   add(EGEO.egun, enemyDarkMat, 0.48, 0.95, 0.3);
   add(EGEO.head, enemyBodyMat, 0, 1.62, 0);
   add(EGEO.eye, eyeMat, 0, 1.64, 0.21);
-  const hitbox = add(EGEO.hitbox, hbMat, 0, 1.4, 0); // wide aim target (spans ~0.3..2.5; eye-level 1.6 ≈ centre)
+  const hitbox = add(EGEO.hitbox, hbMat, 0, 1.15, 0); // covers the body (local)
+  g.scale.setScalar(ENEMY_SCALE); // scale the WHOLE enemy up → torso ≈ eye level (1.05·1.5≈1.6)
   return { group: g, eyeMat, hitbox };
 }
 
@@ -831,7 +834,7 @@ function startGame() {
   yaw = 0;
   rig.position.set(0, 0, 0);
   playerPos.set(0, 1.6, 0);
-  walkPhase = 0; walkStepMark = 0; walkBob = 0; camera.position.y = 1.6; // reset head-bob
+  walkPhase = 0; walkStepMark = 0; walkBob = 0; walkSway = 0; camera.position.set(0, 1.6, 0); // reset head-bob/sway
   lastShotT = 0;
   clearProjectiles(); clearPlayerTracers(); clearDeathFx();
   for (const e of enemies) { worldGroup.remove(e.mesh); e.eyeMat.dispose(); }
@@ -1186,17 +1189,23 @@ function update(dt) {
         moving = true;
       }
     }
-    // walking head-bob + footstep haptic (move mode, opt-in). The footstep buzz
-    // masks the enemy-fire cue → stand still to detect, move to dodge.
-    if (settings.walkFeedback && moving && settings.mode === "move") {
+    // walking head-bob + sway + footstep haptic (move mode, opt-in). The footstep
+    // buzz masks the enemy-fire cue → stand still to detect, move to dodge.
+    const walking = settings.walkFeedback && moving && settings.mode === "move";
+    if (walking) {
       walkPhase += WALK_RATE * dt;
       if (walkPhase - walkStepMark >= Math.PI) { walkStepMark += Math.PI; footstepHaptic(); }
+      // DRIVE the bob directly (full amplitude) — easing toward an oscillating
+      // target just low-passes it away, which is why it looked like nothing moved.
+      walkBob = Math.sin(walkPhase) * BOB_AMP;        // 2 dips per stride (each footfall)
+      walkSway = Math.sin(walkPhase * 0.5) * SWAY_AMP; // 1 sway per stride
     } else {
-      walkStepMark = walkPhase; // don't bank a pending step while stopped
+      walkStepMark = walkPhase;
+      walkBob += (0 - walkBob) * Math.min(1, dt * 10); // ease back to level when stopped
+      walkSway += (0 - walkSway) * Math.min(1, dt * 10);
     }
-    const bobTarget = (settings.walkFeedback && moving && settings.mode === "move") ? Math.sin(walkPhase) * BOB_AMP : 0;
-    walkBob += (bobTarget - walkBob) * Math.min(1, dt * 14);
     camera.position.y = 1.6 + walkBob;
+    camera.position.x = walkSway;
     rig.rotation.y = yaw;
     playerPos.set(rig.position.x, 1.6, rig.position.z);
 
