@@ -8,9 +8,9 @@
   "homepage": "https://devtools.hapbeat.com/",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hapbeat/hapbeat-web-sdk.git"
+    "url": "git+https://github.com/hapbeat/hapbeat-js-sdk.git"
   },
-  "bugs": "https://github.com/hapbeat/hapbeat-web-sdk/issues",
+  "bugs": "https://github.com/hapbeat/hapbeat-js-sdk/issues",
   "keywords": ["hapbeat", "haptics", "udp", "osc", "webxr", "three.js", "vr", "creative-coding"],
   "main": "./dist/node.js",
   "module": "./dist/node.js",

@@ -209,6 +209,66 @@ test("facade play() branches fire vs clip from the manifest", async () => {
   assert.ok(transport.calls.some((c) => c[0] === "end"), "streamEnd called after drain");
 });
 
+// ── Persistent stream (openStream / LiveStream) ────────────────────────────
+
+test("openStream: BEGIN once, write() streams DATA with running offset, close() ENDs", () => {
+  const transport = new FakeTransport();
+  const hb = new Hapbeat(transport);
+  const s = hb.openStream({ sampleRate: 16000, channels: 2, gain: 0.7, target: "p1" });
+  const begin = transport.calls.find((c) => c[0] === "begin");
+  assert.ok(begin, "STREAM_BEGIN sent on open");
+  assert.equal(begin[1].channels, 2);
+  assert.equal(begin[1].sampleRate, 16000);
+  assert.ok(Math.abs(begin[1].gain - 0.7) < 1e-6);
+  assert.equal(begin[1].totalSamples, 0, "open-ended (totalSamples 0)");
+  assert.equal(begin[1].target, "p1");
+
+  s.write(new Uint8Array(8));
+  s.write(new Uint8Array(12));
+  const data = transport.calls.filter((c) => c[0] === "data");
+  assert.deepEqual(data.map((c) => [c[1], c[2]]), [[0, 8], [8, 12]], "running offset");
+
+  s.close();
+  assert.equal(transport.calls.filter((c) => c[0] === "end").length, 1);
+  assert.equal(s.closed, true);
+  s.write(new Uint8Array(4)); // no-op after close
+  assert.equal(transport.calls.filter((c) => c[0] === "data").length, 2);
+  s.close(); // idempotent
+  assert.equal(transport.calls.filter((c) => c[0] === "end").length, 1);
+});
+
+test("openStream chunks large writes to <=1024 frame-aligned DATA packets", () => {
+  const transport = new FakeTransport();
+  const hb = new Hapbeat(transport);
+  const s = hb.openStream({ channels: 2 }); // bytesPerFrame = 4
+  s.write(new Uint8Array(3000)); // → 1024 + 1024 + 952
+  const data = transport.calls.filter((c) => c[0] === "data");
+  assert.deepEqual(data.map((c) => c[2]), [1024, 1024, 952]);
+  assert.ok(data.every((c) => c[2] % 4 === 0), "frame-aligned");
+  assert.deepEqual(data.map((c) => c[1]), [0, 1024, 2048], "contiguous offsets");
+  s.close();
+});
+
+test("a new openStream / streamPcm / stopAll ends the previous live stream (1 session = 1 stream)", () => {
+  const transport = new FakeTransport();
+  const hb = new Hapbeat(transport);
+  const s1 = hb.openStream({ channels: 1 });
+  transport.calls.length = 0;
+  const s2 = hb.openStream({ channels: 1 }); // ends s1, begins s2
+  assert.equal(s1.closed, true);
+  assert.equal(transport.calls[0][0], "end");
+  assert.equal(transport.calls[1][0], "begin");
+
+  transport.calls.length = 0;
+  hb.streamPcm(new Uint8Array(8), { channels: 1 }); // a clip ends the live stream
+  assert.equal(s2.closed, true);
+  assert.ok(transport.calls.some((c) => c[0] === "end"));
+
+  const s3 = hb.openStream({ channels: 1 });
+  hb.stopAll();
+  assert.equal(s3.closed, true);
+});
+
 test("browser transport: stream_* WS messages match the helper shape", async () => {
   const sent = [];
   class FakeWS {

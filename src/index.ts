@@ -12,5 +12,7 @@ export { parseWav } from "./wav.js";
 export type { WavPcm } from "./wav.js";
 export { ClipStreamer } from "./clip.js";
 export type { StreamMeta, StreamSink, ClipPlayOpts, ClipHandle } from "./clip.js";
+export { LiveStream } from "./live-stream.js";
+export type { LiveStreamHandle } from "./live-stream.js";
 export type { Device, HapbeatOptions, Transport } from "./types.js";
 export * as protocol from "./protocol.js";

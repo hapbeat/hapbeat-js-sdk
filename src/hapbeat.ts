@@ -14,6 +14,7 @@
  */
 
 import { ClipStreamer } from "./clip.js";
+import { LiveStream, type LiveStreamHandle } from "./live-stream.js";
 import type { EventDef, EventMap } from "./eventmap.js";
 import { parseWav, type WavPcm } from "./wav.js";
 import type { Device, HapbeatOptions, Transport } from "./types.js";
@@ -32,6 +33,7 @@ export class Hapbeat {
   private readonly defaultTarget: string;
 
   private readonly clipStreamer: ClipStreamer;
+  private liveStream: LiveStream | null = null;
   private readonly clipBase: string;
   private readonly clipLoader?: (ref: string) => Promise<ArrayBuffer | Uint8Array>;
   private readonly clipCache = new Map<string, WavPcm>();
@@ -78,6 +80,7 @@ export class Hapbeat {
     pcm: Uint8Array,
     opts: { sampleRate?: number; channels?: number; gain?: number; target?: string } = {},
   ): void {
+    this.endLiveStream(); // a one-shot clip replaces any persistent stream (1 session = 1 stream)
     this.clipStreamer.play(pcm, {
       sampleRate: opts.sampleRate ?? 16000,
       channels: opts.channels ?? 1,
@@ -86,7 +89,36 @@ export class Hapbeat {
     });
   }
 
+  /**
+   * Open a PERSISTENT stream session for continuously-modulated haptics. Send
+   * STREAM_BEGIN once, then push chunks via `handle.write(pcm)` in real time, and
+   * `handle.close()` when done. Unlike repeated `streamPcm()` (which tears the
+   * stream down and back up each call → per-chunk gaps), this keeps ONE stream
+   * open so a continuous directional tone has no underrun/re-buffer choppiness.
+   *
+   * Only one active stream exists at a time (1 session = 1 stream): opening a new
+   * one — or any `streamPcm()` / clip `play()` — ends the previous live stream.
+   * The caller must feed chunks at ~real-time rate (the device ring is ~256 ms).
+   */
+  openStream(opts: { sampleRate?: number; channels?: number; gain?: number; target?: string } = {}): LiveStreamHandle {
+    this.clipStreamer.stop();
+    this.endLiveStream();
+    this.liveStream = new LiveStream(this.transport, {
+      sampleRate: opts.sampleRate ?? 16000,
+      channels: opts.channels ?? 1,
+      gain: clamp01(opts.gain ?? 1.0),
+      target: opts.target ?? this.defaultTarget,
+    });
+    return this.liveStream;
+  }
+
+  private endLiveStream(): void {
+    if (this.liveStream && !this.liveStream.closed) this.liveStream.close();
+    this.liveStream = null;
+  }
+
   private playClip(eventId: string, def: EventDef, gain: number, target: string): void {
+    this.endLiveStream(); // a clip replaces any persistent stream (1 session = 1 stream)
     const cached = this.clipCache.get(eventId);
     if (cached) {
       this.clipStreamer.play(cached.data, {
@@ -161,6 +193,7 @@ export class Hapbeat {
   }
 
   stopAll(target?: string): void {
+    this.endLiveStream();
     this.clipStreamer.stop();
     this.transport.stopAll(target ?? this.defaultTarget);
   }
@@ -175,6 +208,7 @@ export class Hapbeat {
   }
 
   async close(): Promise<void> {
+    this.endLiveStream();
     this.clipStreamer.stop();
     await this.transport.close();
   }
