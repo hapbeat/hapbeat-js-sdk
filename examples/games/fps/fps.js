@@ -23,6 +23,7 @@ import { stereoBlip, stereoTone, phaseAdvance } from "../shared/synth.js";
 import { playerNameField, activeMods } from "../shared/controls.js";
 import { createRanking } from "../shared/ranking.js";
 import { CONTENT } from "../shared/event-content.js"; // central haptic/audio tuning
+import { DEFAULTS, PRESETS, CONTINUOUS, WALK, ENEMY, PLAYER_BULLET } from "./tuning.js"; // single gameplay-tuning file
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const ARENA = 30;            // arena radius (circular)
@@ -31,28 +32,7 @@ const HAPTIC_MIN_GAP = 0.15;
 const DEG = Math.PI / 180;
 const jit = (w) => (Math.random() * 2 - 1) * w; // ±w uniform random
 
-// ── persistent, in-page-tunable settings ─────────────────────────────────────
-const DEFAULTS = {
-  mode: "move",       // "move" | "fixed"
-  killGoal: 20,
-  enemyCount: 4,      // simultaneous CAP (ramps up to this)
-  enemySpeed: 2.2,    // 敵の周回速度 m/s (move only)
-  enemyRange: 18,     // 敵の距離(基準) m
-  rangeJitter: 3,     // 敵の距離ランダム幅 ±m (0=固定)
-  bulletSpeed: 20,    // 弾速 m/s (距離で到達時間が変わる)
-  speedJitter: 4,     // 弾速ランダム幅 ±m/s (0=固定)
-  fireGap: 3.0,       // 発射間隔(平均) s
-  fireJitter: 1.0,    // 発射間隔ランダム幅 ±s (0=固定)
-  minShotGap: 0.8,    // 固定モードの全体最低発射間隔 s (0=同時許可)
-  playerSpeed: 7,     // 移動速度 m/s
-  maxHp: 5,           // 最大HP (1ヒット1ダメージ)
-  infiniteHp: false,  // HP無限 (デモ用)
-  shieldArc: 26,      // 盾の半角° (固定モード)
-  sensitivity: 1.5,   // カメラ感度 (マウス/スティック視点の倍率)
-  continuousHaptic: false, // 連続モード: 最接近弾の方向/距離を ~100Hz 振動で連続提示 (ToH2022)
-  walkFeedback: true, // 歩行の上下動 + 足音振動 (敵銃撃の触覚をマスク)
-  preset: "normal",   // 選択中の難易度プリセット (常にどれか 1 つを表示するため保持)
-};
+// ── persistent settings (defaults + presets live in ./tuning.js) ─────────────
 const settings = { ...DEFAULTS };
 const LS_KEY = "hbfps.settings.v2";
 function loadSettings() {
@@ -78,13 +58,14 @@ const SLIDER_META = {
   playerSpeed: { label: "移動速度", min: 3, max: 12, step: 0.5 },
   maxHp: { label: "最大HP", min: 1, max: 30, step: 1 },
   shieldArc: { label: "盾の幅°", min: 10, max: 45, step: 1 },
-  sensitivity: { label: "カメラ感度", min: 0.5, max: 3.5, step: 0.1 },
+  mouseSens: { label: "感度(マウス)", min: 0.5, max: 3.5, step: 0.1 },
+  stickSens: { label: "感度(スティック)", min: 0.5, max: 3.5, step: 0.1 },
 };
 const ALL_IDS = Object.keys(SLIDER_META);
 // grouped layout; `jitter` pairs a random-width slider BESIDE its base setting,
 // `hp` appends the ♾ HP-infinite checkbox right under that row.
 const SETTING_GROUPS = [
-  { title: "ゲーム", rows: [{ id: "killGoal" }, { id: "maxHp", hp: true }, { id: "playerSpeed" }, { id: "sensitivity" }] },
+  { title: "ゲーム", rows: [{ id: "killGoal" }, { id: "maxHp", hp: true }, { id: "playerSpeed" }, { id: "mouseSens" }, { id: "stickSens" }] },
   { title: "敵", rows: [{ id: "enemyCount" }, { id: "enemySpeed" }, { id: "enemyRange", jitter: "rangeJitter" }] },
   { title: "弾・発砲", rows: [{ id: "bulletSpeed", jitter: "speedJitter" }, { id: "fireGap", jitter: "fireJitter" }, { id: "minShotGap" }] },
   { title: "固定モード（盾）", rows: [{ id: "shieldArc" }] },
@@ -244,15 +225,26 @@ root.innerHTML = `
     #hbfps .center-msg p { color: #cdd6e0; font-size: 13px; max-width: 440px; line-height: 1.6; }
     #hbfps .center-msg button { margin-top: 14px; padding: 11px 26px; font-size: 15px;
       font-weight: 600; color: #fff; background: #7c5cff; border: 0; border-radius: 8px; cursor: pointer; }
+    #hbfps .help-modal { position: absolute; inset: 0; z-index: 12; display: flex; align-items: center;
+      justify-content: center; background: rgba(4,6,10,0.6); }
+    #hbfps .help-modal.hidden { display: none; }
+    #hbfps .help-card { max-width: 460px; max-height: 86vh; overflow-y: auto; background: #161b22;
+      border: 1px solid #2a313c; border-radius: 12px; padding: 18px 22px; color: #e6edf3; }
+    #hbfps .help-card h2 { margin: 0 0 8px; font-size: 19px; }
+    #hbfps .help-card h3 { margin: 14px 0 4px; font-size: 13px; color: #9fb0c8; }
+    #hbfps .help-card p { font-size: 14px; line-height: 1.6; color: #cdd6e0; margin: 4px 0; }
+    #hbfps .help-card ul { margin: 4px 0; padding-left: 18px; }
+    #hbfps .help-card li { font-size: 14px; line-height: 1.7; color: #dbe2ea; }
+    #hbfps .help-card b { color: #fff; }
+    #hbfps .help-card .primary { margin-top: 14px; }
   </style>
-  <div class="panel" id="panel">
+  <div class="panel adv-open" id="panel">
    <div class="pcol pcol-main">
     <div class="phead">
       <h2>触覚 FPS</h2>
-      <span style="margin-left:auto;margin-right:6px;font-size:10px;color:#8b97a6;">HUD <span class="kb">☰</span></span>
+      <button class="iconbtn" id="helpBtn" title="操作説明" style="margin-left:auto;">？操作</button>
       <button class="iconbtn" id="drawerTab" title="HUD 表示/非表示 (☰ Menu)">‹</button>
     </div>
-    <p class="sub">敵の銃声を <b>音(HRTF)</b> と <b>触覚(L/R)</b> で方向化。<b>👁 OFF</b> は敵だけ消え、弾は見える＋耳と触覚で対処。</p>
 
     <div class="group-title">モード <span class="kb">⧉</span></div>
     <div class="modes" id="modes">
@@ -279,7 +271,7 @@ root.innerHTML = `
     <label class="row" title="最接近の敵弾の方向と距離を ~100Hz の連続振動で提示（左右バランス＋接近で増大）。映像OFF時の索敵に。発射時の定位はそのまま。"><input type="checkbox" id="contHaptic"> 〜 連続モード（弾の方向を触覚で）</label>
     <label class="row" title="移動中に画面が上下し、足音の振動が出る。歩くと敵の銃撃の触覚が分かりにくくなる（止まると気づきやすい / 動くと避けやすい）。"><input type="checkbox" id="walkFb"> 🚶 歩行フィードバック（移動）</label>
 
-    <div class="group-title settings-head" id="advHead"><span>⚙ 詳細設定</span><span class="tg" id="advTg">▸ 開く</span></div>
+    <div class="group-title settings-head" id="advHead"><span>⚙ 詳細設定</span><span class="tg" id="advTg">▾ 閉じる</span></div>
     <input type="file" id="fileInput" accept="application/json,.json" style="display:none">
 
     <div class="row" style="margin-top:10px; font-size:11px; color:#8b97a6;">
@@ -292,12 +284,10 @@ root.innerHTML = `
     </div>
     <button class="primary" id="startbtn">スタート / リスタート <span class="kb a">A</span></button>
     <button id="stopbtn" class="wide-stop">ストップ（タイトルに戻る）</button>
-    <p class="sub" style="margin-top:8px;" id="ctrlhint"></p>
    </div>
    <div class="pcol pcol-adv" id="advCol">
     <div id="advanced">
-      <div class="group-title">⚙ 詳細設定</div>
-      <p class="sub" style="margin:2px 0 6px;">プリセットで大まかに、ここで細かく。±幅は 0 でランダムなし。</p>
+      <div class="group-title">⚙ 詳細設定（±幅は 0 でランダムなし）</div>
       <div id="settings"></div>
       <div class="iorow">
         <button id="saveJson">設定をJSON保存</button>
@@ -318,6 +308,23 @@ root.innerHTML = `
     <p id="overlaytext"></p>
     <button id="overlaybtn">クリックして開始</button>
   </div>
+  <div class="help-modal hidden" id="helpModal">
+    <div class="help-card">
+      <h2>操作説明</h2>
+      <p>敵の銃声を <b>音(HRTF)</b> と <b>触覚(L/R)</b> で方向化。<b>👁 OFF</b> でも弾は見え、耳と触覚で対処できる。</p>
+      <h3>キーボード / マウス</h3>
+      <ul>
+        <li><b>移動モード</b>: <b>WASD</b> 移動 / マウスで水平回転 / <b>クリック</b> 射撃 / <b>Esc</b> 一時停止</li>
+        <li><b>固定モード</b>: その場で回転して銃声の方向へ正面を向け、<b>正面の盾</b>で受けて跳ね返す（動かない）</li>
+      </ul>
+      <h3>ゲームパッド</h3>
+      <ul>
+        <li><b>Ⓐ</b> 開始 / 射撃　<b>スティック</b> 移動・視点　<b>LB·RB</b> 難易度</li>
+        <li><b>☰</b> HUD 表示・一時停止　<b>⧉(View)</b> モード切替（開始前）　<b>Ⓧ/Ⓨ/Ⓑ</b> 映像/音/触覚（開始前）</li>
+      </ul>
+      <button id="helpClose" class="primary">とじる</button>
+    </div>
+  </div>
 `;
 document.body.style.margin = "0";
 document.body.appendChild(root);
@@ -333,8 +340,12 @@ const dmgEl = root.querySelector("#dmg");
 const pauseEl = root.querySelector("#pause");
 const panelEl = root.querySelector("#panel");
 const drawerOpen = root.querySelector("#drawerOpen");
-const ctrlHint = root.querySelector("#ctrlhint");
 const elGpStat = root.querySelector("#gpstat");
+// help modal (replaces the old faint in-panel control hints)
+const helpModal = root.querySelector("#helpModal");
+root.querySelector("#helpBtn").onclick = () => helpModal.classList.remove("hidden");
+root.querySelector("#helpClose").onclick = () => helpModal.classList.add("hidden");
+helpModal.onclick = (e) => { if (e.target === helpModal) helpModal.classList.add("hidden"); };
 let infhpEl; // built dynamically inside the grouped settings (assigned after build)
 
 // ── ranking board (booth: pop out to a second monitor, accumulates until reset) ─
@@ -398,11 +409,6 @@ walkFbEl.onchange = (e) => { settings.walkFeedback = e.target.checked; saveSetti
 const modeBtns = [...root.querySelectorAll("#modes button")];
 function refreshModeButtons() {
   for (const b of modeBtns) b.setAttribute("aria-pressed", String(b.dataset.mode === settings.mode));
-  const gpHint = "<br>🎮 Ⓐ=開始/射撃 ・ スティック=移動/視点 ・ LB/RB=難易度 ・ ☰(Menu)=HUD表示 ・ Ⓧ/Ⓨ/Ⓑ=映像/音/触覚(開始前) ・ ⧉(View)=モード(開始前) ・ Esc=一時停止";
-  ctrlHint.innerHTML =
-    (settings.mode === "move"
-      ? "WASD 移動 ・ マウス/右スティックで水平回転 ・ <b>クリック/RTで射撃</b> ・ Esc で一時停止"
-      : "マウス/スティックで<b>その場で回転</b>し、銃声の方向へ正面を向け、<b>正面の盾</b>で弾を受けて跳ね返す（動けません）・ Esc で一時停止") + gpHint;
 }
 function setMode(m) {
   settings.mode = m; saveSettings();
@@ -411,12 +417,7 @@ function setMode(m) {
 }
 for (const b of modeBtns) b.onclick = () => setMode(b.dataset.mode);
 
-// difficulty presets — set many params at once so casual users don't touch sliders
-const PRESETS = {
-  easy:   { killGoal: 12, enemyCount: 2, enemySpeed: 1.6, enemyRange: 16, rangeJitter: 2, bulletSpeed: 14, speedJitter: 2, fireGap: 4.0, fireJitter: 1.0, minShotGap: 1.2, maxHp: 10, shieldArc: 34 },
-  normal: { killGoal: 20, enemyCount: 4, enemySpeed: 2.2, enemyRange: 18, rangeJitter: 3, bulletSpeed: 20, speedJitter: 4, fireGap: 3.0, fireJitter: 1.0, minShotGap: 0.8, maxHp: 5,  shieldArc: 26 },
-  hard:   { killGoal: 30, enemyCount: 6, enemySpeed: 3.2, enemyRange: 20, rangeJitter: 5, bulletSpeed: 30, speedJitter: 8, fireGap: 1.8, fireJitter: 1.4, minShotGap: 0.5, maxHp: 3,  shieldArc: 18 },
-};
+// difficulty presets — PRESETS imported from ./tuning.js (single tuning file)
 const presetBtns = [...root.querySelectorAll("#presets button")];
 if (!PRESETS[settings.preset]) settings.preset = "normal"; // never leave it unselected
 // The selected preset is STICKY (settings.preset) so a difficulty is ALWAYS lit —
@@ -572,9 +573,7 @@ gun.position.copy(GUN_REST);
 camera.add(gun);
 let gunKick = 0;
 let walkPhase = 0, walkStepMark = 0, walkBob = 0, walkSway = 0; // walking head-bob + footstep cadence (move mode)
-const WALK_RATE = 9;   // rad/s phase advance while moving (~3 steps/s)
-const BOB_AMP = 0.09;  // m vertical camera bob (clearly visible)
-const SWAY_AMP = 0.045; // m side-to-side sway (half cadence) for a natural gait
+const WALK_RATE = WALK.rate, BOB_AMP = WALK.bobAmp, SWAY_AMP = WALK.swayAmp; // ← tuning.js
 
 // frontal shield (fixed mode) — green so it stands out from the blue sky
 const shieldMesh = new THREE.Mesh(
@@ -614,7 +613,7 @@ const EGEO = {
   eye: new THREE.BoxGeometry(0.34, 0.1, 0.06),
   hitbox: new THREE.BoxGeometry(0.95, 1.5, 0.7), // body-covering; the whole enemy is scaled up (ENEMY_SCALE)
 };
-const ENEMY_SCALE = 1.5; // bigger enemy → torso rises to eye level (1.6) so straight aim hits the body
+const ENEMY_SCALE = ENEMY.scale; // ← tuning.js (bigger enemy → torso ≈ eye level so straight aim hits the body)
 const enemyBodyMat = new THREE.MeshStandardMaterial({ color: 0xe8553a, metalness: 0.35, roughness: 0.5 });
 const enemyDarkMat = new THREE.MeshStandardMaterial({ color: 0x2b2320, metalness: 0.4, roughness: 0.6 });
 const hbMat = new THREE.MeshBasicMaterial({ visible: false }); // never rendered, still raycastable
@@ -743,8 +742,7 @@ function takeHit(srcPos) {
 }
 
 // ── player tracers (your own / reflected shots) — slower + streak, ALWAYS visible ─
-const PLAYER_BULLET_SPEED = 70; // m/s — was near-instant; slower so you SEE it travel
-const PLAYER_STREAK = 2.2;      // trail length floor (units)
+const PLAYER_BULLET_SPEED = PLAYER_BULLET.speed, PLAYER_STREAK = PLAYER_BULLET.streak; // ← tuning.js
 const ptHeadGeo = new THREE.SphereGeometry(0.13, 10, 10);
 const ptTrailGeo = new THREE.CylinderGeometry(0.06, 0.015, 1, 8); // unit along +Y
 let playerTracers = [];
@@ -756,6 +754,7 @@ function clearPlayerTracers() {
   playerTracers = [];
 }
 const _ptDir = new THREE.Vector3();
+const _aimVec = new THREE.Vector3();
 function spawnPlayerTracer(from, to, color = 0xffd23a, enemy = null) {
   const dir = to.clone().sub(from);
   const dist = Math.max(0.3, dir.length());
@@ -774,7 +773,9 @@ function updatePlayerTracers(dt) {
     const t = playerTracers[i];
     t.t += dt;
     const k = Math.min(1, t.t / t.dur);
-    const aimAt = t.enemy && t.enemy.alive ? t.enemy.mesh.position : t.to;
+    // home to the enemy's BODY centre (hitbox world pos), NOT mesh.position — the
+    // group origin sits at the FEET (y=0), which made shots curve into the ground.
+    const aimAt = t.enemy && t.enemy.alive ? t.enemy.hitbox.getWorldPosition(_aimVec) : t.to;
     t.head.position.lerpVectors(t.from, aimAt, k);
     _ptDir.copy(aimAt).sub(t.from); // re-orient the streak toward the (possibly moving) target
     if (_ptDir.lengthSq() > 1e-6) { _ptDir.normalize(); t.trail.quaternion.setFromUnitVectors(Y_AXIS, _ptDir); }
@@ -953,12 +954,10 @@ let lastContT = 0, contPhase = 0, contStream = null;
 // tone is continuous (root-fix for the "gata-gata"). The sine PHASE is carried
 // across chunks (contPhase) so there's no boundary click. A discrete fire/footstep
 // ends the live stream (1 session = 1 stream); we transparently re-open it.
-const CONT_FREQ = CONTENT.fps_continuous.haptic.freq;     // Hz carrier   ← central tuning
-const CONT_DUR_MS = CONTENT.fps_continuous.haptic.durMs;  // chunk length ← central tuning
-const CONT_GAIN = CONTENT.fps_continuous.haptic.gain;     // overall scale ← central tuning
-const CONT_FLOOR = CONTENT.fps_continuous.haptic.floor;   // A(r) floor (wide dynamic range) ← central tuning
-const CONT_PERIOD = CONT_DUR_MS / 1000; // feed ≈ real-time (one chunk per chunk-length)
-const CONT_RMAX_K = 1.6;    // A(r) reaches the floor at enemyRange * this
+// all continuous-mode tunables live in ./tuning.js (CONTINUOUS)
+const CONT_FREQ = CONTINUOUS.freq, CONT_DUR_MS = CONTINUOUS.durMs, CONT_GAIN = CONTINUOUS.gain;
+const CONT_FLOOR = CONTINUOUS.floor, CONT_CURVE = CONTINUOUS.curve;
+const CONT_PERIOD = CONTINUOUS.periodS, CONT_RMAX_K = CONTINUOUS.rmaxK;
 function closeContStream() {
   if (contStream && !contStream.closed) contStream.close();
   contStream = null;
@@ -985,7 +984,7 @@ function updateContinuousHaptic() {
   const AL = clamp((90 - deg) / 180, 0, 1);                 //   sign-matched to our forward frame)
   const Rmax = settings.enemyRange * CONT_RMAX_K;
   const closeness = clamp(1 - dist / Rmax, 0, 1);
-  const Ar = (CONT_FLOOR + (1 - CONT_FLOOR) * closeness * closeness) * CONT_GAIN; // squared → strong contrast (Eq. 4)
+  const Ar = (CONT_FLOOR + (1 - CONT_FLOOR) * Math.pow(closeness, CONT_CURVE)) * CONT_GAIN; // distance→amplitude (Eq. 4); floor/curve in tuning.js
   // (re)open the persistent stream — a discrete fire/footstep may have ended it
   if (!contStream || contStream.closed) {
     contStream = bridge.openStream({ channels: 2, sampleRate: 16000, gain: 1 });
@@ -1060,7 +1059,7 @@ function flashDamage() {
 // ── pointer lock + mouse look (yaw only) + Esc pause ─────────────────────────
 function onMouseMove(e) {
   if (paused || document.pointerLockElement !== renderer.domElement) return;
-  yaw -= e.movementX * 0.0024 * settings.sensitivity; // horizontal only (no pitch/roll), frozen while paused
+  yaw -= e.movementX * 0.0024 * settings.mouseSens; // horizontal only (no pitch/roll), frozen while paused
 }
 document.addEventListener("mousemove", onMouseMove);
 document.addEventListener("pointerlockchange", () => {
@@ -1128,7 +1127,7 @@ function pollGamepad(dt) {
     return;
   }
   if (paused || renderer.xr.isPresenting) return;
-  yaw -= dz(gp.axes[2] || 0) * 2.4 * dt * settings.sensitivity; // right stick X → yaw
+  yaw -= dz(gp.axes[2] || 0) * 2.4 * dt * settings.stickSens; // right stick X → yaw
   if (settings.mode === "move") {
     const lx = dz(gp.axes[0] || 0), ly = dz(gp.axes[1] || 0);
     if (lx || ly) {

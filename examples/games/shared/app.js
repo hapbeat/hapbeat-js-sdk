@@ -47,14 +47,10 @@ let lastPhase = ""; // connection phase, to re-render the menu banner on change
 // ── header ──────────────────────────────────────────────────
 const header = el("header", "bar");
 header.innerHTML = `
-  <h1>🟣 Hapbeat 触覚デモ <span class="sub">楽しい × 便利</span></h1>
+  <h1>🟣 Hapbeat 触覚デモ</h1>
   <span class="spacer"></span>
-  <span class="pill" id="status"><span class="dot"></span><span id="statusText">接続中…</span></span>
-  <span class="toggle-group" id="hdrMods" title="モダリティ切替（目/耳/手）">
-    <button id="visualBtn" aria-pressed="true" title="映像 (目)">👁 映像</button>
-    <button id="audioBtn" aria-pressed="true" title="音 (耳)">👂 音</button>
-    <button id="hapticBtn" aria-pressed="true" title="触覚 (手)">✋ 触覚</button>
-  </span>
+  <span class="pill" id="status" title="クリックで接続デバイスを表示"><span class="dot"></span><span id="statusText">接続中…</span></span>
+  <div class="device-pop hidden" id="devicePop"></div>
   <button id="testBtn" class="ghost">触覚テスト</button>
   <button id="rescanBtn" class="ghost">再スキャン</button>
   <button id="fsBtn" class="ghost" title="全画面">⛶</button>
@@ -68,17 +64,21 @@ app.appendChild(stage);
 
 const statusPill = header.querySelector("#status");
 const statusText = header.querySelector("#statusText");
-const visualBtn = header.querySelector("#visualBtn");
-const audioBtn = header.querySelector("#audioBtn");
-const hapticBtn = header.querySelector("#hapticBtn");
-const hdrMods = header.querySelector("#hdrMods"); // hidden in-game (toolbar group takes over)
+const devicePop = header.querySelector("#devicePop");
 
-visualBtn.onclick = () => bridge.setMaster("visual", !bridge.master.visual);
-audioBtn.onclick = () => {
-  bridge.unlockAudio();
-  bridge.setMaster("audio", !bridge.master.audio);
-};
-hapticBtn.onclick = () => bridge.setMaster("haptic", !bridge.master.haptic);
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+function renderDevicePop() {
+  const ds = bridge.devices || [];
+  devicePop.innerHTML = ds.length
+    ? `<div class="dp-title">接続デバイス ${ds.length}</div>` +
+      ds.map((d) => `<div class="dp-item">${esc(d.name || "(名前なし)")}${d.address ? `<span class="dp-addr">${esc(d.address)}</span>` : ""}</div>`).join("")
+    : `<div class="dp-empty">${bridge.connected ? "デバイス未検出" : "helper 未接続"}</div>`;
+}
+statusPill.onclick = () => { renderDevicePop(); devicePop.classList.toggle("hidden"); };
+document.addEventListener("click", (e) => {
+  if (e.target !== statusPill && !statusPill.contains(e.target) && !devicePop.contains(e.target)) devicePop.classList.add("hidden");
+});
+
 header.querySelector("#testBtn").onclick = () => {
   bridge.unlockAudio();
   bridge.testHaptic();
@@ -93,9 +93,6 @@ header.querySelector("#fsBtn").onclick = () => {
 };
 
 bridge.onChange((b) => {
-  visualBtn.setAttribute("aria-pressed", String(b.master.visual));
-  audioBtn.setAttribute("aria-pressed", String(b.master.audio));
-  hapticBtn.setAttribute("aria-pressed", String(b.master.haptic));
   if (b.connecting) {
     statusPill.className = "pill off";
     statusText.textContent = "helper 接続中…";
@@ -107,6 +104,7 @@ bridge.onChange((b) => {
     statusPill.className = "pill err";
     statusText.textContent = b.settled ? "helper 未接続（触覚OFF）" : "helper 接続中…";
   }
+  if (!devicePop.classList.contains("hidden")) renderDevicePop(); // keep the open popover fresh
   // refresh the menu banner when the connection phase changes (not on every emit)
   const phase = b.connecting ? "connecting" : b.connected ? "connected" : b.settled ? "failed" : "init";
   if (phase !== lastPhase) {
@@ -124,7 +122,6 @@ function showHome() {
   bridge.stopAll();
   stage.innerHTML = "";
   home.innerHTML = "";
-  hdrMods.style.display = ""; // global modality toggles belong to the home screen
 
   if (!bridge.connected) {
     if (bridge.connecting || !bridge.settled) {
@@ -144,9 +141,7 @@ function showHome() {
 
   const intro = el("p", "note");
   intro.innerHTML =
-    "ブラウザ + Hapbeat 無線版のデモ集。<b>楽しい × 便利</b>（触覚で Web 操作を補助）の実用デモと、効果が分かりやすい触覚ゲーム。各 1〜2 分。" +
-    "右上の <b>👁 映像 / 👂 音 / ✋ 触覚</b>（目・耳・手）を切り替えて、触覚の効きを A/B で体感してください（<b>👁 OFF</b>＝触覚だけ）。" +
-    "<br><b>事前に</b> demo-kit（<code>hapbeat-arcade</code>）をデバイスに配備しておく必要があります（README 参照）。";
+    "ブラウザ + Hapbeat（無線）の触覚デモ。各ゲーム内の <b>👁 映像 / 👂 音 / ✋ 触覚</b> を切り替え、触覚の効きを体感してください。";
   home.appendChild(intro);
 
   const cards = el("div", "cards");
@@ -219,7 +214,6 @@ function openGame(gm) {
   bridge.stopAll();
   home.innerHTML = "";
   stage.innerHTML = "";
-  hdrMods.style.display = "none"; // in-game: the toolbar's 👁/👂/✋ group takes over
 
   const head = el("div", "stage-head");
   const back = el("button", "ghost");

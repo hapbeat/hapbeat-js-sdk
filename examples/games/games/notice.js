@@ -147,8 +147,7 @@ export const game = {
         @keyframes nf-ring { 0%{transform:scale(.22);opacity:1;} 100%{transform:scale(7);opacity:0;} }
         @keyframes nf-pop { 0%{transform:scale(.55);opacity:0;} 22%{transform:scale(1.12);opacity:1;} 80%{opacity:1;} 100%{transform:scale(1);opacity:0;} }
       </style>
-      <div class="gametoolbar">
-        <span class="label">入力</span>
+      <div class="gametoolbar compact">
         <div class="toggle-group" id="ver"></div>
         <span class="spacer"></span>
         <span id="modslot"></span>
@@ -185,11 +184,7 @@ export const game = {
         <span>見逃し <b id="miss">0</b></span>
         <span id="state"></span>
       </div>
-      <p class="note"><b>狙い</b>：目や手がふさがった「ながら」で通知に気づけるか、を反応時間で測る二重課題。
-      <b>課題(task)</b>＝<span id="taskhelp"></span>（<b>${RUN_SEC}秒間にできるだけ多く</b>）。
-      <b>通知(notice)</b>＝作業中ランダムな時刻に<b>全員同じ ${N_NOTICES} 回</b>（👁画面端／👂チャイム／✋ブザー）。気づいたら最速で反応（キーボード=<b>Space</b>／パッド=<b>LT+RT 両押し</b>）。
-      パッド: <b>Ⓐ</b>=スタート / <b>RB</b>=リスタート / <b>☰</b>=ストップ / <b>Ⓥ(View)</b>=メニュー。開始前は <b>Ⓧ/Ⓨ/Ⓑ</b>=映像/音/触覚。
-      通知は<b>上の 👁/👂/✋ で ON の感覚すべて</b>から。<b>✋ だけ</b>にして比べると、目手がふさがっても触覚は速く確実。</p>
+      <p class="note"><b>狙い</b>：ながら作業中に通知へ気づけるか（二重課題）。<b>${RUN_SEC}秒</b>で<span id="taskhelp"></span>をこなしつつ、ランダムに鳴る<b>${N_NOTICES}回</b>の通知へ即反応（キーボード=<b>Space</b>／パッド=<b>LT+RT</b>）。<b>✋ だけ</b>にして比べると、目手がふさがっても触覚は速い。</p>
       <div class="rankpanel" id="rankpanel"></div>
     `;
 
@@ -241,9 +236,9 @@ export const game = {
       mods.setLocked(phase === "run");
     }
 
-    for (const [k, lbl] of [["keyboard", "⌨ キーボード"], ["gamepad", "🎮 ゲームパッド"]]) {
+    for (const [k, icon, name] of [["keyboard", "⌨", "キーボード"], ["gamepad", "🎮", "ゲームパッド"]]) {
       const b = document.createElement("button");
-      b.textContent = lbl; b.dataset.ver = k;
+      b.textContent = icon; b.dataset.ver = k; b.title = name; // icon-only to keep the toolbar on one line
       b.setAttribute("aria-pressed", String(k === version));
       b.onclick = () => { userPicked = true; setVersion(k); };
       verBox.appendChild(b);

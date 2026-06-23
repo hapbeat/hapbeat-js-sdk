@@ -105,11 +105,7 @@ export const CONTENT = {
     audio: null,
     usedBy: "fps", note: "歩行（足音の振動）。これが敵銃撃の触覚をマスクする＝止まると気づきやすい。",
   },
-  fps_continuous: {
-    haptic: { kind: "tone", freq: 100, durMs: 120, gain: 1.0, floor: 0.06 }, // floor = 最遠での残り振幅
-    audio: null,
-    usedBy: "fps", note: "連続モードの方向触覚（~100Hz）。L/R と振幅を最接近弾で連続変調。floor=遠距離の下限。",
-  },
+  // 連続モード（~100Hz の方向触覚）の数値は fps/tuning.js の CONTINUOUS にまとめてある（波形+アルゴリズム両方）。
 };
 
 const clamp01 = (g) => (g < 0 ? 0 : g > 1 ? 1 : g);
