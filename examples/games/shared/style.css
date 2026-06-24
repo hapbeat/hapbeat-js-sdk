@@ -69,6 +69,9 @@ header.bar h1 .sub { color: var(--ink-dim); font-weight: 400; font-size: 13px; m
 .pill.off .dot { background: var(--warn); }
 .pill.err { color: var(--ink); border-color: #6f2a26; }
 .pill.err .dot { background: var(--bad); }
+/* the status pill is clickable (shows the device popover) → button-like hover */
+#status { cursor: pointer; }
+#status:hover { border-color: var(--accent-2); color: var(--ink); }
 
 button {
   font: inherit;
@@ -197,10 +200,10 @@ canvas { display: block; width: 100%; background: #0a0d12; border-radius: 10px; 
 .note { font-size: 13px; color: var(--ink-dim); line-height: 1.6; }
 .note b { color: var(--ink); }
 
-/* connected-device popover (header status pill) */
-header.bar { position: relative; }
+/* connected-device popover — anchored directly under the status pill */
+.statuswrap { position: relative; display: inline-flex; align-items: center; }
 .device-pop {
-  position: absolute; top: calc(100% + 6px); right: 12px; z-index: 20; min-width: 180px;
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 20; min-width: 180px;
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px;
   box-shadow: 0 8px 24px rgba(0,0,0,0.4); font-size: 13px;
 }

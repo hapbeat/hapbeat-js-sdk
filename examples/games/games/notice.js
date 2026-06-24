@@ -55,13 +55,17 @@ const byCode = Object.fromEntries(TASKS.map((t) => [t.code, t]));
 const byPad = Object.fromEntries(TASKS.map((t) => [t.pad, t]));
 
 // Xbox-style controller: ABXY (right) + D-pad (left) = the 8 task buttons, plus
-// the LT/RT triggers at the top (the NOTICE response — pressed together). The
-// bumpers/sticks/View/Menu are omitted.
+// the LT/RT triggers (the NOTICE response — pressed together). The LB/RB bumpers
+// are drawn just below them for reference, so the triggers aren't mistaken for
+// the bumpers (only LT/RT light up / are pressed). Sticks/View/Menu are omitted.
 const CONTROLLER_SVG = `
 <svg class="gp-svg" viewBox="0 0 360 214" xmlns="http://www.w3.org/2000/svg">
-  <rect class="btn trig" id="t-l" x="80" y="4" width="56" height="16" rx="8"/>
-  <rect class="btn trig" id="t-r" x="224" y="4" width="56" height="16" rx="8"/>
-  <text class="cap" x="108" y="13">LT</text><text class="cap" x="252" y="13">RT</text>
+  <rect class="btn trig" id="t-l" x="84" y="1" width="48" height="12" rx="5"/>
+  <rect class="btn trig" id="t-r" x="228" y="1" width="48" height="12" rx="5"/>
+  <rect class="btn bump" id="bump-l" x="78" y="15" width="58" height="12" rx="5"/>
+  <rect class="btn bump" id="bump-r" x="224" y="15" width="58" height="12" rx="5"/>
+  <text class="cap" x="108" y="7">LT</text><text class="cap" x="252" y="7">RT</text>
+  <text class="cap dim" x="107" y="21">LB</text><text class="cap dim" x="253" y="21">RB</text>
   <path d="M92 28 H268 C305 28 327 48 333 84 C339 112 331 132 315 144 C300 156 295 186 278 202 C264 214 240 216 226 202 C212 188 200 160 180 160 C160 160 148 188 134 202 C120 216 96 214 82 202 C65 186 60 156 45 144 C29 132 21 112 27 84 C33 48 55 28 92 28 Z"
         fill="#232b37" stroke="#0c0f14" stroke-width="2.5"/>
   <rect class="btn" id="d-up" x="104" y="90" width="22" height="24" rx="5"/>
@@ -103,6 +107,7 @@ export const game = {
         .gp-svg .btn.ac { fill: #2f7d56; } .gp-svg .btn.bc { fill: #9b3d3d; }
         .gp-svg .btn.xc { fill: #3a64a0; } .gp-svg .btn.yc { fill: #9b8636; }
         .gp-svg .btn.trig { fill: #2b3340; }
+        .gp-svg .btn.bump { fill: #20262f; } /* LB/RB bumpers — reference only, never lit */
         .gp-svg .btn.target { fill: #ffd23a !important; stroke: #fff; stroke-width: 3; }
         .gp-svg .btn.pressed { fill: #3fb950 !important; }
         .gp-svg .btn.target.pressed { fill: #2dd4bf !important; }
@@ -112,6 +117,7 @@ export const game = {
           pointer-events: none; paint-order: stroke; stroke: #0c0f14; stroke-width: 0.8px; }
         .gp-svg text.dp { font-size: 15px; }
         .gp-svg text.cap { font-size: 11px; fill: #c4cdd8; }
+        .gp-svg text.cap.dim { fill: #828d9a; } /* LB/RB labels recede vs the active LT/RT */
         .gp-stat { text-align: center; font-size: 12px; color: #cdd6e0;
           background: rgba(10,13,18,0.72); padding: 2px 9px; border-radius: 6px; }
         .gp-stat b { color: #fff; }

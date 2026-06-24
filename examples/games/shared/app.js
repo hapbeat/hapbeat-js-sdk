@@ -49,8 +49,10 @@ const header = el("header", "bar");
 header.innerHTML = `
   <h1>🟣 Hapbeat 触覚デモ</h1>
   <span class="spacer"></span>
-  <span class="pill" id="status" title="クリックで接続デバイスを表示"><span class="dot"></span><span id="statusText">接続中…</span></span>
-  <div class="device-pop hidden" id="devicePop"></div>
+  <span class="statuswrap">
+    <span class="pill" id="status" title="クリックで接続デバイスを表示"><span class="dot"></span><span id="statusText">接続中…</span></span>
+    <div class="device-pop hidden" id="devicePop"></div>
+  </span>
   <button id="testBtn" class="ghost">触覚テスト</button>
   <button id="rescanBtn" class="ghost">再スキャン</button>
   <button id="fsBtn" class="ghost" title="全画面">⛶</button>
