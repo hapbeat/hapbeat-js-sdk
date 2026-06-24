@@ -1,4 +1,4 @@
-# Hapbeat Web SDK — context for AI coding agents
+# Hapbeat JS/TS SDK — context for AI coding agents
 
 Single self-contained reference so an AI coding agent can drive Hapbeat haptic
 devices from JS/TS correctly from one file. Package name: `@hapbeat/sdk`.
@@ -6,8 +6,10 @@ devices from JS/TS correctly from one file. Package name: `@hapbeat/sdk`.
 - last-verified-against: 0.1.0
 - Source of truth is the code: public surface in `src/index.ts`, the facade in
   `src/hapbeat.ts`, options/types in `src/types.ts`, the tuning side in
-  `src/eventmap.ts`, and the two `connect()` entries in `src/node.ts` /
-  `src/browser.ts`. If this file disagrees with the code, the code wins.
+  `src/eventmap.ts`, the persistent stream in `src/live-stream.ts`, clip pacing in
+  `src/clip.ts`, the wire layer in `src/protocol.ts`, and the two `connect()`
+  entries in `src/node.ts` / `src/browser.ts`. If this file disagrees with the
+  code, the code wins.
 - Canonical docs: https://devtools.hapbeat.com/docs/sdk-integration/
 
 ## What it is
@@ -106,9 +108,14 @@ stopAll(target?: string): void
 ping(): void
 discover(timeoutMs?: number /* = 1500 */): Promise<Device[]>
 streamPcm(pcm: Uint8Array, opts?: { sampleRate?: number; channels?: number; gain?: number; target?: string }): void
+openStream(opts?: { sampleRate?: number; channels?: number; gain?: number; target?: string }): LiveStreamHandle
 preloadClips(): Promise<void>
 connect(): Promise<this>   // connect() already calls this for you
 close(): Promise<void>
+```
+
+```ts
+interface LiveStreamHandle { write(pcm: Uint8Array): void; close(): void; readonly closed: boolean; }
 ```
 
 ```ts
@@ -138,7 +145,10 @@ hb.play("impact.hit"); // uses the manifest's intensity for this event
 
 `EventDef`: `eventId`, `intensity`, `loop`, `deviceWiper?`, `streaming`, `clip?`,
 `note`. The manifest has two buckets: `events` (command mode) and `stream_events`
-(clip mode → `streaming: true`).
+(clip mode → `streaming: true`). The JS `EventMap` is **manifest-only** — it carries
+per-event default intensity/clip; it does **not** have a per-call haptic-file overlay
+or a targeting layer (the Python SDK's `HapticFile` has those; in JS pass `target`
+at the call site or via `defaultTarget`).
 
 ## command vs clip (same `play(id)`, branches on the manifest)
 
@@ -150,6 +160,22 @@ hb.play("impact.hit"); // uses the manifest's intensity for this event
 - No `eventMap` → everything is command mode (gain defaults to `1.0`).
 - Clip WAVs must be **16 kHz mono PCM16**; the SDK does not resample (non-16 kHz
   warns). One stream at a time — a new clip cancels the previous.
+
+## Continuous / live streaming (`streamPcm` vs `openStream` vs clip)
+
+Three ways to send haptic PCM, all sharing **one** stream session (a new one ends
+the previous — "1 session = 1 stream"):
+
+- **clip** `play(streamEventId)` — the SDK loads a WAV and **paces** it out
+  (`streamSendAheadSec`, ring ≈ 256 ms), deferring STREAM_END until drained.
+- **`streamPcm(pcm, opts)`** — a single ad-hoc PCM16 buffer, paced like a clip.
+  Use for a one-shot synthesized cue. `channels: 2` carries L/R direction (PLAY has
+  no pan).
+- **`openStream(opts) → handle`** — a **persistent** session: `STREAM_BEGIN` once,
+  then `handle.write(pcm)` chunks in ~real time, `handle.close()` at the end. Use
+  for continuously-modulated haptics (per-frame directional tone in a game loop).
+  The SDK does **not** pace here — the caller must feed at ~real time or the device
+  ring (≈256 ms) underruns. `handle.closed` reports the state.
 
 ## Discovery & targeting
 
@@ -163,6 +189,10 @@ hb.play("impact.hit", { target: "*/chest" });         // all chest devices
 Target resolution: call-site `target` > `defaultTarget`. `""` = broadcast.
 Target syntax is device-addressing (hapbeat-contracts): `player_1/chest`,
 `*/chest`, `group_<N>` suffix.
+
+Browser caveats (helper WS): clip-mode playback reaches **all** helper-known devices
+(per-device browser clip targeting is deferred); `targetTimeUs` is **ignored** over
+the helper (immediate playback only). Command-mode `target` works on both transports.
 
 ## Patterns / gotchas
 
@@ -181,6 +211,20 @@ Target syntax is device-addressing (hapbeat-contracts): `player_1/chest`,
   (Node) / `fetch` (Browser); override `clipLoader` to load from a bundle.
 - **`streamPcm`** sends an ad-hoc PCM16 buffer (e.g. a synthesized stereo
   directional cue — `channels: 2` is how you get L/R, since PLAY has no pan).
+
+## Not implemented (don't reach for these)
+
+- **Mid-clip realtime gain/pan modulation** — gain is set per fire / per stream
+  session; you don't tween a playing clip. For continuous modulation use
+  `openStream` and write the modulated PCM yourself.
+- **Multi-source mixing / mic-capture streaming** — the SDK sends one stream at a
+  time; mixing is the app's job.
+- **Authoring / cloud / a kit format** — kits are authored in Hapbeat Studio; the
+  manifest schema is owned by hapbeat-contracts. Don't invent a manifest.
+- **mDNS discovery** — discovery is broadcast PING/PONG (`discover()`), not mDNS.
+- **Per-device browser clip targeting** and **`targetTimeUs` over the helper** — see
+  the browser caveats above.
+- **OSC bridge / CLI / launchpad** — those live in the Python SDK, not here.
 
 ## More detail
 

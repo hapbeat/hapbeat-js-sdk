@@ -148,7 +148,7 @@ export class ArcadeBridge {
 
   /**
    * Open a PERSISTENT stream session for continuously-modulated haptics (no
-   * per-chunk teardown — see hapbeat-web-sdk LiveStream). Returns a handle with
+   * per-chunk teardown — see the SDK's LiveStream / hb.openStream). Returns a handle with
    * write(pcm)/close()/closed, or null if haptics aren't available. The caller
    * must feed chunks at ~real-time rate and re-open if `closed` (a discrete
    * fire/streamPcm ends the live stream — 1 session = 1 stream).

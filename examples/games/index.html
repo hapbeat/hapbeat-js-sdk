@@ -7,13 +7,14 @@
   broadcasts the PLAY packets to the Hapbeat device.
 
   Run it over HTTP (ES modules + the import map below do not work from file://):
-      cd @repos-sdk/hapbeat-web-sdk
+      cd hapbeat-js-sdk
       npm run dev              # build + watch + serve + hot reload
       # then open  http://localhost:8170/examples/games/
   (or `npm run serve` for static-only, or `npm run build && npx serve .`)
 
-  Before haptics fire, deploy the demo kit (demo-kit/hapbeat-arcade) to the
-  device via Hapbeat Studio + helper. See README.md.
+  Haptics need the helper running (pip install hapbeat-helper). The demos stream
+  their clips from the host (CLIP mode), so no on-device kit install is required;
+  the kits live under demo-kit/. See README.md.
 -->
 <html lang="ja">
   <head>
