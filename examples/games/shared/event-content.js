@@ -97,8 +97,8 @@ export const CONTENT = {
   },
   fps_block: {
     haptic: { kind: "blip", freq: 90, durMs: 120, gain: 0.95 },
-    audio: { kind: "gun", freq: 520, durMs: 120, vol: 0.75 },
-    usedBy: "fps", note: "盾ブロック（成功・『ぽこん』）。被弾とは別フィードバック。音声ファイルは未指定（synth）。",
+    audio: { file: "audio/block.wav", kind: "gun", freq: 520, durMs: 120, vol: 0.75 },
+    usedBy: "fps", note: "盾ブロック（成功・『ぽこん』）。被弾とは別フィードバック。",
   },
   fps_kill: {
     haptic: { kind: "blip", freq: 300, durMs: 80, gain: 0.6 },
