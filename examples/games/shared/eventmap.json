@@ -1,0 +1,11 @@
+{
+  "_README": "つなぎ（EventMap）— シェルのミニゲーム（notice / hotcold / reflex）の論理イベント → 触覚 Kit の eventId + 再生調整。Unity SDK の EventMap 相当。bridge.fire(name) がこれを参照して『Kit clip 優先 / 無ければ synth』を解決する。kitEvent は demo-kit/shell-kit/shell-kit-manifest.json の stream_events(=clip) / events(=fire) のキーと一致させる。directional=true は左右パン（hot_pulse のみ）。gain は manifest intensity に掛かる倍率。音声ファイルは event-content.js の audio.file 側。素材が無い間は全イベント synth フォールバックで鳴る（＝現状と同一）。",
+  "notice_alert": { "kitEvent": "shell-kit.notice-alert", "mode": "clip", "gain": 1.0, "loop": false, "target": "" },
+  "notice_win":   { "kitEvent": "shell-kit.notice-win",   "mode": "clip", "gain": 1.0, "loop": false, "target": "" },
+  "hot_found":    { "kitEvent": "shell-kit.hot-found",    "mode": "clip", "gain": 1.0, "loop": false, "target": "" },
+  "hot_pulse":    { "kitEvent": "shell-kit.hot-pulse",    "mode": "clip", "gain": 1.0, "loop": false, "target": "", "directional": true },
+  "hot_timeout":  { "kitEvent": "shell-kit.hot-timeout",  "mode": "clip", "gain": 1.0, "loop": false, "target": "" },
+  "reflex_go":    { "kitEvent": "shell-kit.reflex-go",    "mode": "clip", "gain": 1.0, "loop": false, "target": "" },
+  "reflex_foul":  { "kitEvent": "shell-kit.reflex-foul",  "mode": "clip", "gain": 1.0, "loop": false, "target": "" },
+  "reflex_win":   { "kitEvent": "shell-kit.reflex-win",   "mode": "clip", "gain": 1.0, "loop": false, "target": "" }
+}

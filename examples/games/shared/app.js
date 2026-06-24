@@ -5,6 +5,7 @@
  */
 
 import { ArcadeBridge } from "./hapbeat-bridge.js";
+import { ContentRouter } from "./content-router.js";
 import { best as bestScore } from "./scores.js";
 // 効果体験ミニゲーム（触覚の効能を“測って”見せる）
 import { game as notice } from "../games/notice.js";
@@ -41,6 +42,10 @@ const LINK_DEMOS = [
 
 const app = document.getElementById("app");
 const bridge = new ArcadeBridge();
+// One shared file-first router (the "つなぎ"): bridge.fire() prefers a kit haptic clip
+// + an audio file when present, else the built-in synth. Wired (loaded) after init.
+const router = new ContentRouter(bridge);
+bridge.attachRouter(router);
 let active = null; // { unmount }
 let lastPhase = ""; // connection phase, to re-render the menu banner on change
 
@@ -237,7 +242,18 @@ function openGame(gm) {
 showHome();
 // Re-render the menu once the helper probe settles (updates the banner/pill),
 // but don't yank the player out of a game they already opened.
-bridge.init({ appName: "HapbeatArcade", audioBase: "" }).then(() => {
+bridge.init({ appName: "HapbeatArcade", audioBase: "" }).then(async () => {
+  // Wire the file-first router: reuse the AudioBank's AudioContext so audio files and
+  // synth share one context/master-gain (+ one unlock gesture). All paths are relative
+  // to examples/games/ (the shell root) — no "../" prefix (the FPS page needs it, this
+  // doesn't). Everything fails soft: missing kit/audio → synth fallback, no crash.
+  router.attachAudio(bridge.audio.ctx, bridge.audio.master);
+  await router.load({
+    eventmapUrl: "shared/eventmap.json",
+    manifestUrl: "demo-kit/shell-kit/shell-kit-manifest.json",
+    clipBase: "demo-kit/shell-kit/stream-clips/",
+  });
+  await router.loadAudioFiles(""); // event-content audio.file paths resolve against examples/games/
   if (!active) showHome();
 });
 

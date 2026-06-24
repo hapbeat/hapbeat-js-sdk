@@ -28,7 +28,18 @@ export class ArcadeBridge {
      *  to gate their on-screen hints; `audio`/`haptic` gate fire(). */
     this.master = { visual: true, audio: true, haptic: true };
     this.audio = new AudioBank();
+    this.router = null; // optional ContentRouter → file-first haptic clip / audio file
     this._listeners = new Set();
+  }
+
+  /**
+   * Attach a ContentRouter (the "つなぎ") so fire() prefers a kit's haptic clip and an
+   * audio file when present, falling back to the built-in synth otherwise. One shared
+   * router serves every game — see shared/content-router.js + the FPS demo for the
+   * same pattern. No-op until attached, so behaviour is unchanged without it.
+   */
+  attachRouter(router) {
+    this.router = router;
   }
 
   /** Load audio (always), then try the helper. Never throws. */
@@ -97,16 +108,25 @@ export class ArcadeBridge {
     const wantHaptic = opts.haptic !== false;
     const wantAudio = opts.audio !== false;
 
+    // HAPTIC: a kit clip via the router when one exists, else the synth blip. The
+    // synth closure IS today's behaviour, so with no kit attached nothing changes.
     if (wantHaptic && this.master.haptic && this.connected && this.hb) {
-      try {
-        const pcm = buildHaptic(stereoBlip, ev.haptic, { pan, gain });
-        if (pcm) this.hb.streamPcm(pcm, { channels: 2, sampleRate: 16000, gain: 1 });
-      } catch (e) {
-        console.warn(`[arcade] haptic stream failed: ${e?.message ?? e}`);
-      }
+      const synth = () => {
+        try {
+          const pcm = buildHaptic(stereoBlip, ev.haptic, { pan, gain });
+          if (pcm) this.hb.streamPcm(pcm, { channels: 2, sampleRate: 16000, gain: 1 });
+        } catch (e) {
+          console.warn(`[arcade] haptic stream failed: ${e?.message ?? e}`);
+        }
+      };
+      if (this.router?.ready) this.router.haptic(name, { pan, gain }, synth);
+      else synth();
     }
+    // AUDIO: a decoded audio file via the router when present, else the AudioBank synth.
     if (wantAudio && this.master.audio) {
-      this.audio.playSpec(ev.audio, { gain, pan });
+      const synth = () => this.audio.playSpec(ev.audio, { gain, pan });
+      if (this.router?.ready) this.router.audio(name, { pan, gain }, synth);
+      else synth();
     }
   }
 
