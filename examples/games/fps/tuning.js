@@ -61,5 +61,8 @@ export const WALK = {
 };
 
 // 敵・自弾
-export const ENEMY = { scale: 1.5 }; // 敵の拡大率（胴体が目線高さ ≈ 1.6m に来るように）
+export const ENEMY = {
+  scale: 1.5,      // 敵の拡大率（胴体が目線高さ ≈ 1.6m に来るように。当たり判定も一緒に拡大される）
+  hitRadius: 0.85, // m 当たり判定の許容半径（照準線が胴体中心からこの距離以内なら命中。大きいほど当てやすい）
+};
 export const PLAYER_BULLET = { speed: 70, streak: 2.2 }; // 自弾の速度 m/s / 残像の最小長 units

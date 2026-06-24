@@ -1037,12 +1037,14 @@ function enemyShoot(e) {
   spawnProjectile(e);
 }
 
-// ── shooting back (move mode) — raycast against the wide hitboxes ────────────
-const raycaster = new THREE.Raycaster();
+// ── shooting back (move mode) — forgiving hitscan around each enemy's body centre ─
+const ENEMY_HIT_RADIUS = ENEMY.hitRadius; // ← tuning.js (aim-assist tolerance, metres)
+const _fireOrigin = new THREE.Vector3(), _toEnemy = new THREE.Vector3(), _enemyCenter = new THREE.Vector3();
 function playerFire() {
   if (!playing || paused || settings.mode !== "move") return;
   gunKick = 1; // recoil only — muzzle FLASH removed per request
-  camera.getWorldDirection(fwd);
+  camera.getWorldDirection(fwd);        // unit aim direction (also refreshes camera matrices)
+  camera.getWorldPosition(_fireOrigin); // ray origin = eye
   const muzzleWorld = new THREE.Vector3();
   muzzle.getWorldPosition(muzzleWorld);
   if (events.ownShot) {
@@ -1054,17 +1056,25 @@ function playerFire() {
       bridge.streamPcm(stereoBlip(0, { gain: a.haptic.gain, durMs: a.haptic.durMs, freq: a.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
     }
   }
-  raycaster.setFromCamera({ x: 0, y: 0 }, camera);
-  const targets = enemies.filter((e) => e.alive).map((e) => e.hitbox);
-  const hits = raycaster.intersectObjects(targets, false);
-  let hitPoint = playerPos.clone().add(fwd.clone().multiplyScalar(60));
-  let hitEnemy = null;
-  if (hits.length) {
-    hitPoint = hits[0].point.clone();
-    hitEnemy = enemies.find((en) => en.hitbox === hits[0].object) || null;
+  // Pick the NEAREST alive enemy whose body centre lies within ENEMY_HIT_RADIUS of the
+  // aim line and in front of us. getWorldPosition() refreshes each enemy's matrices, so
+  // this never tests a stale position — the old raycast used intersectObjects(), which
+  // does NOT update world matrices and fired a single zero-tolerance pixel ray, so a
+  // moving target (or a hair-off aim) slipped through even when the crosshair was on it.
+  let hitEnemy = null, bestAlong = Infinity;
+  for (const e of enemies) {
+    if (!e.alive) continue;
+    e.hitbox.getWorldPosition(_enemyCenter);
+    _toEnemy.copy(_enemyCenter).sub(_fireOrigin);
+    const along = _toEnemy.dot(fwd);            // distance projected onto the aim ray
+    if (along <= 0) continue;                    // behind the player
+    const perp = Math.sqrt(Math.max(0, _toEnemy.lengthSq() - along * along)); // dist from the ray line
+    if (perp <= ENEMY_HIT_RADIUS && along < bestAlong) { bestAlong = along; hitEnemy = e; }
   }
+  const hitPoint = hitEnemy ? hitEnemy.hitbox.getWorldPosition(new THREE.Vector3())
+                            : _fireOrigin.clone().add(fwd.clone().multiplyScalar(60));
   // the kill is deferred to when the BULLET REACHES the enemy (updatePlayerTracers),
-  // not at click time — so a fast strafing target can be missed if it moves clear.
+  // not at fire time — the bullet homes to its (moving) body centre so it connects.
   spawnPlayerTracer(muzzleWorld, hitPoint, 0xffd23a, hitEnemy);
 }
 
