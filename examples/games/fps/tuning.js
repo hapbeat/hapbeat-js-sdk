@@ -44,16 +44,16 @@ const FACTORY = {
   },
   // 難易度プリセット（ボタンで defaults を一括上書き）
   presets: {
-    easy:   { killGoal: 12, enemyCount: 2, enemySpeed: 1.6, enemyRange: 16, rangeJitter: 2, bulletSpeed: 14, speedJitter: 2, fireGap: 4.0, fireJitter: 1.0, minShotGap: 1.2, maxHp: 10, shieldArc: 34 },
-    normal: { killGoal: 20, enemyCount: 4, enemySpeed: 2.2, enemyRange: 18, rangeJitter: 3, bulletSpeed: 20, speedJitter: 4, fireGap: 3.0, fireJitter: 1.0, minShotGap: 0.8, maxHp: 5,  shieldArc: 26 },
-    hard:   { killGoal: 30, enemyCount: 6, enemySpeed: 3.2, enemyRange: 20, rangeJitter: 5, bulletSpeed: 30, speedJitter: 8, fireGap: 1.8, fireJitter: 1.4, minShotGap: 0.5, maxHp: 3,  shieldArc: 18 },
+    easy:   { killGoal: 7, enemyCount: 2, enemySpeed: 1.6, enemyRange: 16, rangeJitter: 2, bulletSpeed: 14, speedJitter: 2, fireGap: 4.0, fireJitter: 1.0, minShotGap: 1.2, maxHp: 10, shieldArc: 34 },
+    normal: { killGoal: 10, enemyCount: 4, enemySpeed: 2.2, enemyRange: 18, rangeJitter: 3, bulletSpeed: 20, speedJitter: 4, fireGap: 3.0, fireJitter: 1.0, minShotGap: 0.8, maxHp: 5,  shieldArc: 26 },
+    hard:   { killGoal: 14, enemyCount: 6, enemySpeed: 3.2, enemyRange: 20, rangeJitter: 5, bulletSpeed: 30, speedJitter: 8, fireGap: 1.8, fireJitter: 1.4, minShotGap: 0.5, maxHp: 3,  shieldArc: 18 },
   },
   // 連続モード：最接近の敵弾の「方位=左右バランス」「距離=振幅」で ~100Hz を連続変調（ToH2022 Eqs.1–4）
   continuous: {
     freq: 100,      // Hz キャリア
     durMs: 120,     // チャンク長 ms
     periodS: 0.12,  // 送出周期 s（≈ チャンク長＝リアルタイム供給）
-    gain: 1.0,      // 全体スケール 0..1
+    gain: 0.5,      // 全体スケール 0..1
     floor: 0.25,    // ★最遠でも残す振幅（大きいほど遠い弾も気づきやすい）
     curve: 1,       // 距離→振幅カーブ（1=直線 / 2=2乗で近距離を強調）
     rmaxK: 1.6,     // floor に達する距離 = enemyRange × これ

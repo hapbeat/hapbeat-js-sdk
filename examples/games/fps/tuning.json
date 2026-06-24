@@ -26,7 +26,7 @@
     "normal": { "killGoal": 20, "enemyCount": 4, "enemySpeed": 2.2, "enemyRange": 18, "rangeJitter": 3, "bulletSpeed": 20, "speedJitter": 4, "fireGap": 3.0, "fireJitter": 1.0, "minShotGap": 0.8, "maxHp": 5,  "shieldArc": 26 },
     "hard":   { "killGoal": 30, "enemyCount": 6, "enemySpeed": 3.2, "enemyRange": 20, "rangeJitter": 5, "bulletSpeed": 30, "speedJitter": 8, "fireGap": 1.8, "fireJitter": 1.4, "minShotGap": 0.5, "maxHp": 3,  "shieldArc": 18 }
   },
-  "continuous": { "freq": 100, "durMs": 120, "periodS": 0.12, "gain": 1.0, "floor": 0.25, "curve": 1, "rmaxK": 1.6 },
+  "continuous": { "freq": 100, "durMs": 120, "periodS": 0.12, "gain": 0.5, "floor": 0.25, "curve": 1, "rmaxK": 1.6 },
   "walk": { "rate": 9, "bobAmp": 0.11, "swayAmp": 0.055 },
   "enemy": { "scale": 1.5, "hitRadius": 0.85 },
   "playerBullet": { "speed": 70, "streak": 2.2 },

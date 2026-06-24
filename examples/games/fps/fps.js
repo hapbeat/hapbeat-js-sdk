@@ -58,7 +58,7 @@ function saveSettings() {
 loadSettings();
 
 const SLIDER_META = {
-  killGoal: { label: "目標撃破", min: 5, max: 50, step: 5 },
+  killGoal: { label: "目標撃破", min: 1, max: 20, step: 1 },
   enemyCount: { label: "同時上限", min: 1, max: 8, step: 1 },
   enemySpeed: { label: "敵の速さ", min: 0, max: 5, step: 0.2 },
   enemyRange: { label: "敵の距離", min: 8, max: 26, step: 1 },
@@ -89,7 +89,7 @@ function nextFireDelay() { return Math.max(0.2, settings.fireGap + jit(settings.
 const bridge = new ArcadeBridge();
 let bridgeReady = false;
 bridge.init({ appName: "HapbeatFPS", audioBase: "../" }).then(() => { bridgeReady = true; syncConnBadge(); });
-const events = { enemyFire: true, playerHit: true, ownShot: false };
+const events = { enemyFire: true, playerHit: true, ownShot: true };
 
 // ── AudioContext (HRTF spatial audio) ────────────────────────────────────────
 const actx = new (window.AudioContext || window.webkitAudioContext)();
@@ -293,7 +293,7 @@ root.innerHTML = `
     <div class="group-title">フィードバック対象</div>
     <label class="row"><input type="checkbox" id="e_fire" checked> ① 敵の発砲（方向）</label>
     <label class="row"><input type="checkbox" id="e_hit" checked> ② 被弾</label>
-    <label class="row"><input type="checkbox" id="e_own"> ③ 自分の発砲</label>
+    <label class="row"><input type="checkbox" id="e_own" checked> ③ 自分の発砲</label>
     <label class="row" title="最接近の敵弾の方向と距離を ~100Hz の連続振動で提示（左右バランス＋接近で増大）。映像OFF時の索敵に。発射時の定位はそのまま。"><input type="checkbox" id="contHaptic"> 〜 連続モード（弾の方向を触覚で）</label>
     <label class="row" title="移動中に画面が上下し、足音の振動が出る。歩くと敵の銃撃の触覚が分かりにくくなる（止まると気づきやすい / 動くと避けやすい）。"><input type="checkbox" id="walkFb"> 🚶 歩行フィードバック（移動）</label>
 
@@ -679,11 +679,12 @@ function spawnOneEnemy() {
   const { group, eyeMat, hitbox } = makeEnemyMesh();
   group.position.set(Math.cos(ang) * r, 0, Math.sin(ang) * r);
   group.visible = bridge.master.visual;
+  group.scale.setScalar(0.001); // grow in (spawnT) so a kill-respawn doesn't hard-POP elsewhere
   worldGroup.add(group);
   enemies.push({
     mesh: group, eyeMat, hitbox, angle: ang, radius: r,
     orbitDir: Math.random() < 0.5 ? 1 : -1,
-    nextFire: 0.8 + nextFireDelay(), flash: 0, alive: true,
+    nextFire: 0.8 + nextFireDelay(), flash: 0, alive: true, spawnT: 0,
   });
 }
 
@@ -754,7 +755,12 @@ function updateProjectiles(dt) {
       if (Math.abs(theta) <= settings.shieldArc * DEG) {
         shieldFlash = 1;
         blockFeedback(p.src);
-        spawnPlayerTracer(playerPos.clone(), p.src.clone().sub(playerPos), 0x4dffa0, false); // reflect back (visual only; kill is explicit below)
+        // reflect back toward the enemy BODY (hitbox centre), not p.src which is the
+        // mesh origin at the FEET (y=0) — aiming at the feet made the bolt drift DOWN.
+        const back = p.enemy && p.enemy.alive
+          ? p.enemy.hitbox.getWorldPosition(new THREE.Vector3())
+          : p.src.clone().setY(1.25);
+        spawnPlayerTracer(playerPos.clone(), back.sub(playerPos), 0x4dffa0, false); // visual only; kill is explicit below
         if (p.enemy && p.enemy.alive) killEnemy(p.enemy, true);
       } else {
         takeHit(p.src);
@@ -1133,7 +1139,11 @@ function flashDamage() {
 // ── pointer lock + mouse look (yaw only) + Esc pause ─────────────────────────
 function onMouseMove(e) {
   if (paused || document.pointerLockElement !== renderer.domElement) return;
-  yaw -= e.movementX * 0.0024 * settings.mouseSens; // horizontal only (no pitch/roll), frozen while paused
+  // Chrome's pointer-lock can report a spurious huge movementX (hundreds–thousands of
+  // px) in a single event — esp. right after (re)locking — which SNAPS the whole view,
+  // making enemies/bullets look like they teleport. Cap one event to a fast-but-sane flick.
+  const mx = Math.max(-160, Math.min(160, e.movementX));
+  yaw -= mx * 0.0024 * settings.mouseSens; // horizontal only (no pitch/roll), frozen while paused
 }
 document.addEventListener("mousemove", onMouseMove);
 document.addEventListener("pointerlockchange", () => {
@@ -1294,6 +1304,10 @@ function update(dt) {
     const nowS = performance.now() / 1000;
     for (const e of enemies) {
       if (!e.alive) continue;
+      if (e.spawnT < 1) { // ~0.2s grow-in (softens the kill-respawn pop, esp. in 固定 mode)
+        e.spawnT = Math.min(1, e.spawnT + dt * 5);
+        e.mesh.scale.setScalar(tune.enemy.scale * e.spawnT);
+      }
       if (settings.mode === "move") {
         e.angle += (settings.enemySpeed / e.radius) * e.orbitDir * dt;
         e.mesh.position.x = Math.cos(e.angle) * e.radius;
