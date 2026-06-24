@@ -741,7 +741,7 @@ function updateProjectiles(dt) {
       if (Math.abs(theta) <= settings.shieldArc * DEG) {
         shieldFlash = 1;
         blockFeedback(p.src);
-        spawnPlayerTracer(playerPos.clone(), p.src.clone(), 0x4dffa0); // reflect back
+        spawnPlayerTracer(playerPos.clone(), p.src.clone().sub(playerPos), 0x4dffa0, false); // reflect back (visual only; kill is explicit below)
         if (p.enemy && p.enemy.alive) killEnemy(p.enemy, true);
       } else {
         takeHit(p.src);
@@ -772,37 +772,55 @@ function clearPlayerTracers() {
   }
   playerTracers = [];
 }
-const _ptDir = new THREE.Vector3();
-const _aimVec = new THREE.Vector3();
-function spawnPlayerTracer(from, to, color = 0xffd23a, enemy = null) {
-  const dir = to.clone().sub(from);
-  const dist = Math.max(0.3, dir.length());
-  dir.normalize();
+const _seg = new THREE.Vector3(), _toC = new THREE.Vector3(), _closest = new THREE.Vector3(), _ec = new THREE.Vector3();
+const PLAYER_BULLET_RANGE = 70; // m a bullet travels before it despawns
+// shortest distance from point c to the segment a→b (swept test → no tunneling at speed)
+function segPointDist(a, b, c) {
+  _seg.copy(b).sub(a);
+  const L2 = _seg.lengthSq();
+  let s = L2 > 0 ? _toC.copy(c).sub(a).dot(_seg) / L2 : 0;
+  s = s < 0 ? 0 : s > 1 ? 1 : s;
+  _closest.copy(a).addScaledVector(_seg, s);
+  return _closest.distanceTo(c);
+}
+// A real projectile: origin + direction are LOCKED at fire time and never change.
+// With collides=true its own swept flight decides what it hits — so aiming AFTER the
+// shot can't change the outcome, and what the tracer visibly crosses is what dies.
+function spawnPlayerTracer(from, dir, color = 0xffd23a, collides = true) {
+  const d = dir.clone().normalize();
   const head = new THREE.Mesh(ptHeadGeo, new THREE.MeshBasicMaterial({ color }));
   head.position.copy(from);
   const trail = new THREE.Mesh(ptTrailGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5 }));
-  trail.quaternion.setFromUnitVectors(Y_AXIS, dir);
+  trail.quaternion.setFromUnitVectors(Y_AXIS, d); // fixed orientation (straight flight)
   worldGroup.add(head); worldGroup.add(trail);
-  // `enemy` (if set) is killed when the bullet ARRIVES; the bullet homes to its
-  // live position so it visually connects even if the target strafes.
-  playerTracers.push({ head, trail, from: from.clone(), to: to.clone(), dir, dist, t: 0, dur: Math.max(0.18, dist / tune.playerBullet.speed), enemy });
+  playerTracers.push({ head, trail, dir: d, pos: from.clone(), prev: from.clone(), dist: 0, collides });
 }
 function updatePlayerTracers(dt) {
+  const R = tune.enemy.hitRadius, speed = tune.playerBullet.speed;
   for (let i = playerTracers.length - 1; i >= 0; i--) {
     const t = playerTracers[i];
-    t.t += dt;
-    const k = Math.min(1, t.t / t.dur);
-    // home to the enemy's BODY centre (hitbox world pos), NOT mesh.position — the
-    // group origin sits at the FEET (y=0), which made shots curve into the ground.
-    const aimAt = t.enemy && t.enemy.alive ? t.enemy.hitbox.getWorldPosition(_aimVec) : t.to;
-    t.head.position.lerpVectors(t.from, aimAt, k);
-    _ptDir.copy(aimAt).sub(t.from); // re-orient the streak toward the (possibly moving) target
-    if (_ptDir.lengthSq() > 1e-6) { _ptDir.normalize(); t.trail.quaternion.setFromUnitVectors(Y_AXIS, _ptDir); }
-    const len = Math.max(tune.playerBullet.streak, (t.dist / t.dur) * dt * 1.3); // bridge inter-frame gap
+    t.prev.copy(t.pos);
+    const step = speed * dt;
+    t.pos.addScaledVector(t.dir, step);
+    t.dist += step;
+    // swept collision: did THIS bullet's path this frame pass within R of an enemy body?
+    let hit = null, bestD = Infinity;
+    if (t.collides) {
+      for (const e of enemies) {
+        if (!e.alive) continue;
+        e.hitbox.getWorldPosition(_ec);                 // refreshes matrices → never stale
+        if (segPointDist(t.prev, t.pos, _ec) <= R) {
+          const d = _ec.distanceTo(t.prev);             // nearest one met along the path
+          if (d < bestD) { bestD = d; hit = e; }
+        }
+      }
+    }
+    t.head.position.copy(t.pos);
+    const len = Math.max(tune.playerBullet.streak, step * 1.3); // streak ≥ this frame's travel
     t.trail.scale.y = len;
-    t.trail.position.copy(t.head.position).addScaledVector(_ptDir, -len / 2);
-    if (k >= 1) {
-      if (t.enemy && t.enemy.alive) killEnemy(t.enemy, false); // hit registers on ARRIVAL
+    t.trail.position.copy(t.pos).addScaledVector(t.dir, -len / 2);
+    if (hit || t.dist >= PLAYER_BULLET_RANGE) {
+      if (hit) killEnemy(hit, false); // the bullet itself registers the hit, on contact
       worldGroup.remove(t.head); worldGroup.remove(t.trail);
       t.head.material.dispose(); t.trail.material.dispose();
       playerTracers.splice(i, 1);
@@ -1047,13 +1065,11 @@ function enemyShoot(e) {
   spawnProjectile(e);
 }
 
-// ── shooting back (move mode) — forgiving hitscan around each enemy's body centre ─
-const _fireOrigin = new THREE.Vector3(), _toEnemy = new THREE.Vector3(), _enemyCenter = new THREE.Vector3();
+// ── shooting back (move mode) — fire a real projectile; its flight decides the hit ──
 function playerFire() {
   if (!playing || paused || settings.mode !== "move") return;
   gunKick = 1; // recoil only — muzzle FLASH removed per request
-  camera.getWorldDirection(fwd);        // unit aim direction (also refreshes camera matrices)
-  camera.getWorldPosition(_fireOrigin); // ray origin = eye
+  camera.getWorldDirection(fwd); // aim direction — LOCKED into the bullet right now
   const muzzleWorld = new THREE.Vector3();
   muzzle.getWorldPosition(muzzleWorld);
   if (events.ownShot) {
@@ -1065,26 +1081,10 @@ function playerFire() {
       bridge.streamPcm(stereoBlip(0, { gain: a.haptic.gain, durMs: a.haptic.durMs, freq: a.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
     }
   }
-  // Pick the NEAREST alive enemy whose body centre lies within tune.enemy.hitRadius of
-  // the aim line and in front of us. getWorldPosition() refreshes each enemy's matrices,
-  // so this never tests a stale position — the old raycast used intersectObjects(), which
-  // does NOT update world matrices and fired a single zero-tolerance pixel ray, so a
-  // moving target (or a hair-off aim) slipped through even when the crosshair was on it.
-  let hitEnemy = null, bestAlong = Infinity;
-  for (const e of enemies) {
-    if (!e.alive) continue;
-    e.hitbox.getWorldPosition(_enemyCenter);
-    _toEnemy.copy(_enemyCenter).sub(_fireOrigin);
-    const along = _toEnemy.dot(fwd);            // distance projected onto the aim ray
-    if (along <= 0) continue;                    // behind the player
-    const perp = Math.sqrt(Math.max(0, _toEnemy.lengthSq() - along * along)); // dist from the ray line
-    if (perp <= tune.enemy.hitRadius && along < bestAlong) { bestAlong = along; hitEnemy = e; }
-  }
-  const hitPoint = hitEnemy ? hitEnemy.hitbox.getWorldPosition(new THREE.Vector3())
-                            : _fireOrigin.clone().add(fwd.clone().multiplyScalar(60));
-  // the kill is deferred to when the BULLET REACHES the enemy (updatePlayerTracers),
-  // not at fire time — the bullet homes to its (moving) body centre so it connects.
-  spawnPlayerTracer(muzzleWorld, hitPoint, 0xffd23a, hitEnemy);
+  // No aim-line hitscan, no homing: the bullet flies straight from the muzzle along the
+  // fire direction and its OWN swept path (updatePlayerTracers) decides what it hits.
+  // Moving the aim after the shot has no effect; what the tracer crosses is what dies.
+  spawnPlayerTracer(muzzleWorld, fwd, 0xffd23a);
 }
 
 let hitmarkerT = null;
