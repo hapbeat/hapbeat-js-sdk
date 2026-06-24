@@ -520,13 +520,13 @@ syncSliderUI();
 refreshPresetButtons();
 
 root.querySelector("#saveJson").onclick = () => {
-  // a saved file is the WHOLE config: slider settings + the deep tuning groups
-  // (walk / continuous / enemy / playerBullet) — load it back to apply everything.
-  const full = { ...settings, ...tune };
+  // download in the SAME schema as fps/tuning.json → drop this file onto fps/tuning.json
+  // to apply the whole config as the new default (or use Load to apply it live + persist).
+  const full = { defaults: { ...settings }, presets: PRESETS, continuous: tune.continuous, walk: tune.walk, enemy: tune.enemy, playerBullet: tune.playerBullet };
   const blob = new Blob([JSON.stringify(full, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = "hapbeat-fps-settings.json"; a.click();
+  a.href = url; a.download = "tuning.json"; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 const fileInput = root.querySelector("#fileInput");
@@ -538,13 +538,16 @@ fileInput.onchange = () => {
   r.onload = () => {
     try {
       const obj = JSON.parse(String(r.result));
-      for (const id of ALL_IDS) if (id in obj) settings[id] = clamp(parseFloat(obj[id]), SLIDER_META[id].min, SLIDER_META[id].max);
-      if (obj.mode === "move" || obj.mode === "fixed") settings.mode = obj.mode;
-      if (typeof obj.infiniteHp === "boolean") settings.infiniteHp = obj.infiniteHp;
-      if (typeof obj.continuousHaptic === "boolean") { settings.continuousHaptic = obj.continuousHaptic; contHapticEl.checked = obj.continuousHaptic; }
-      if (typeof obj.walkFeedback === "boolean") { settings.walkFeedback = obj.walkFeedback; walkFbEl.checked = obj.walkFeedback; }
-      settings.preset = PRESETS[obj.preset] ? obj.preset : "normal"; // keep a difficulty selected
-      applyTuneFrom(obj); // deep groups: walk / continuous / enemy / playerBullet (no source edit needed)
+      // accept the tuning.json schema ({defaults, presets, walk, ...}) OR a flat object
+      const dz = (obj.defaults && typeof obj.defaults === "object") ? obj.defaults : obj;
+      for (const id of ALL_IDS) if (id in dz) settings[id] = clamp(parseFloat(dz[id]), SLIDER_META[id].min, SLIDER_META[id].max);
+      if (dz.mode === "move" || dz.mode === "fixed") settings.mode = dz.mode;
+      if (typeof dz.infiniteHp === "boolean") settings.infiniteHp = dz.infiniteHp;
+      if (typeof dz.continuousHaptic === "boolean") { settings.continuousHaptic = dz.continuousHaptic; contHapticEl.checked = dz.continuousHaptic; }
+      if (typeof dz.walkFeedback === "boolean") { settings.walkFeedback = dz.walkFeedback; walkFbEl.checked = dz.walkFeedback; }
+      if (obj.presets && typeof obj.presets === "object") for (const k of Object.keys(PRESETS)) if (obj.presets[k]) Object.assign(PRESETS[k], obj.presets[k]);
+      settings.preset = PRESETS[dz.preset] ? dz.preset : "normal"; // keep a difficulty selected
+      applyTuneFrom(obj); // deep groups: walk / continuous / enemy / playerBullet (top-level keys)
       saveSettings(); syncSliderUI(); refreshModeButtons(); refreshPresetButtons(); applyModeVisibility();
       if (playing) topUpEnemies();
     } catch { /* bad file → ignore */ }
