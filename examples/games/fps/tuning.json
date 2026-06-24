@@ -29,5 +29,6 @@
   "continuous": { "freq": 100, "durMs": 120, "periodS": 0.12, "gain": 1.0, "floor": 0.25, "curve": 1, "rmaxK": 1.6 },
   "walk": { "rate": 9, "bobAmp": 0.11, "swayAmp": 0.055 },
   "enemy": { "scale": 1.5, "hitRadius": 0.85 },
-  "playerBullet": { "speed": 70, "streak": 2.2 }
+  "playerBullet": { "speed": 70, "streak": 2.2 },
+  "dash": { "multiplier": 2 }
 }

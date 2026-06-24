@@ -23,7 +23,7 @@ import { stereoBlip, stereoTone, phaseAdvance } from "../shared/synth.js";
 import { playerNameField, activeMods } from "../shared/controls.js";
 import { createRanking } from "../shared/ranking.js";
 import { CONTENT } from "../shared/event-content.js"; // central haptic/audio tuning
-import { DEFAULTS, PRESETS, CONTINUOUS, WALK, ENEMY, PLAYER_BULLET } from "./tuning.js"; // single gameplay-tuning file
+import { DEFAULTS, PRESETS, CONTINUOUS, WALK, ENEMY, PLAYER_BULLET, DASH } from "./tuning.js"; // single gameplay-tuning file
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const ARENA = 30;            // arena radius (circular)
@@ -37,7 +37,7 @@ const settings = { ...DEFAULTS };
 // runtime-mutable deep tuning (walk / continuous / enemy / player-bullet). Factory
 // values come from tuning.js; Save/Load JSON and localStorage round-trip these too,
 // so a saved file applies the WHOLE config — no hand-editing the source needed.
-const tune = { walk: { ...WALK }, continuous: { ...CONTINUOUS }, enemy: { ...ENEMY }, playerBullet: { ...PLAYER_BULLET } };
+const tune = { walk: { ...WALK }, continuous: { ...CONTINUOUS }, enemy: { ...ENEMY }, playerBullet: { ...PLAYER_BULLET }, dash: { ...DASH } };
 const LS_KEY = "hbfps.settings.v2", LS_TUNE = "hbfps.tune.v1";
 function applyTuneFrom(obj) { // copy known deep-tuning groups out of a parsed object
   let any = false;
@@ -331,12 +331,12 @@ root.innerHTML = `
       <p>敵の銃声を <b>音(HRTF)</b> と <b>触覚(L/R)</b> で方向化。<b>👁 OFF</b> でも弾は見え、耳と触覚で対処できる。</p>
       <h3>キーボード / マウス</h3>
       <ul>
-        <li><b>移動モード</b>: <b>WASD</b> 移動 / マウスで水平回転 / <b>クリック</b> 射撃 / <b>Esc</b> 一時停止</li>
+        <li><b>移動モード</b>: <b>WASD</b> 移動 / マウスで水平回転 / <b>クリック</b> 射撃 / <b>Shift</b> ダッシュ / <b>Esc</b> 一時停止</li>
         <li><b>固定モード</b>: その場で回転して銃声の方向へ正面を向け、<b>正面の盾</b>で受けて跳ね返す（動かない）</li>
       </ul>
       <h3>ゲームパッド</h3>
       <ul>
-        <li><b>Ⓐ</b> 開始 / 射撃　<b>スティック</b> 移動・視点　<b>LB·RB</b> 難易度</li>
+        <li><b>Ⓐ</b> 開始 / 射撃　<b>スティック</b> 移動・視点　<b>LB</b> ダッシュ（タイトルでは <b>LB·RB</b> 難易度）</li>
         <li><b>☰</b> HUD 表示・一時停止　<b>⧉(View)</b> モード切替（開始前）　<b>Ⓧ/Ⓨ/Ⓑ</b> 映像/音/触覚（開始前）</li>
       </ul>
       <button id="helpClose" class="primary">とじる</button>
@@ -522,7 +522,7 @@ refreshPresetButtons();
 root.querySelector("#saveJson").onclick = () => {
   // download in the SAME schema as fps/tuning.json → drop this file onto fps/tuning.json
   // to apply the whole config as the new default (or use Load to apply it live + persist).
-  const full = { defaults: { ...settings }, presets: PRESETS, continuous: tune.continuous, walk: tune.walk, enemy: tune.enemy, playerBullet: tune.playerBullet };
+  const full = { defaults: { ...settings }, presets: PRESETS, continuous: tune.continuous, walk: tune.walk, enemy: tune.enemy, playerBullet: tune.playerBullet, dash: tune.dash };
   const blob = new Blob([JSON.stringify(full, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -855,6 +855,7 @@ function updateDeathFx(dt) {
 let hp = 5, score = 0, kills = 0, playing = false, paused = false;
 let lastHapticT = 0, lastShotT = 0;
 let gpFirePrev = false, gpStartPrev = false, gpStatText = "", gpLbPrev = false, gpRbPrev = false;
+let dashing = false, gpLbHeld = false; // sprint: Shift (keyboard) / LB (gamepad). 2× speed + feedback
 let gpXPrev = false, gpYPrev = false, gpBPrev = false, gpVwPrev = false; // Ⓧ/Ⓨ/Ⓑ modality, View=mode
 const keys = Object.create(null);
 const playerPos = new THREE.Vector3(0, 1.6, 0);
@@ -1040,7 +1041,8 @@ function stopContinuousHaptic() { lastContT = 0; contPhase = 0; closeContStream(
 function footstepHaptic() {
   if (!bridge.master.haptic) return;
   const h = CONTENT.fps_walk.haptic;
-  bridge.streamPcm(stereoBlip(0, { gain: h.gain, durMs: h.durMs, freq: h.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
+  const gain = h.gain * (dashing ? tune.dash.multiplier : 1); // dash → stronger footstep buzz
+  bridge.streamPcm(stereoBlip(0, { gain, durMs: h.durMs, freq: h.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
 }
 // Footstep SOUND (move mode) — a short low thud through the local AudioContext
 // (non-spatial, centred). Like the buzz, it masks the gunfire cue while you walk.
@@ -1056,7 +1058,7 @@ function footstepSound() {
   o.frequency.exponentialRampToValueAtTime(a.freq * 0.6, end);
   const g = actx.createGain();
   g.gain.setValueAtTime(0.0001, t0);
-  g.gain.exponentialRampToValueAtTime(a.vol, t0 + 0.004);
+  g.gain.exponentialRampToValueAtTime(a.vol * (dashing ? tune.dash.multiplier : 1), t0 + 0.004); // dash → louder steps
   g.gain.exponentialRampToValueAtTime(0.0001, end);
   o.connect(g).connect(masterGain);
   o.start(t0); o.stop(end + 0.02);
@@ -1145,7 +1147,7 @@ function pollGamepad(dt) {
   // mis-enumerated as non-standard "gamepads" and would otherwise be picked first.
   let gp = null;
   for (const p of pads) { if (!p) continue; if (!gp) gp = p; if (p.mapping === "standard") { gp = p; break; } }
-  if (!gp) { gpFirePrev = false; gpStartPrev = false; gpLbPrev = false; gpRbPrev = false; gpXPrev = gpYPrev = gpBPrev = gpVwPrev = false; setGpStat("未検出", false); return; }
+  if (!gp) { gpFirePrev = false; gpStartPrev = false; gpLbPrev = false; gpRbPrev = false; gpLbHeld = false; gpXPrev = gpYPrev = gpBPrev = gpVwPrev = false; setGpStat("未検出", false); return; }
   let pressedBtn = -1;
   for (let i = 0; i < gp.buttons.length; i++) if (gp.buttons[i]?.pressed) { pressedBtn = i; break; }
   const tag = gp.mapping === "standard" ? "接続" : "接続(非標準)";
@@ -1155,10 +1157,9 @@ function pollGamepad(dt) {
   const fireEdge = fire && !gpFirePrev; gpFirePrev = fire;
   const startBtn = !!gp.buttons[9]?.pressed; // Start/Menu
   const startEdge = startBtn && !gpStartPrev; gpStartPrev = startBtn;
-  const lb = !!gp.buttons[4]?.pressed, rb = !!gp.buttons[5]?.pressed; // bumpers → difficulty
+  const lb = !!gp.buttons[4]?.pressed, rb = !!gp.buttons[5]?.pressed; // LB = dash (in game) / LB·RB = 難易度 (title)
   const lbEdge = lb && !gpLbPrev, rbEdge = rb && !gpRbPrev; gpLbPrev = lb; gpRbPrev = rb;
-  if (lbEdge) cyclePreset(-1);
-  if (rbEdge) cyclePreset(1);
+  gpLbHeld = lb; // held state → dash while playing (cyclePreset moved to the !playing block below)
   // Ⓧ/Ⓨ/Ⓑ toggle 映像/音/触覚 and View=モード切替 — only while NOT playing (locked
   // mid-game). ☰ Menu = HUD/パネルの表示非表示 (any time). Pause stays on Esc.
   const gx = !!gp.buttons[2]?.pressed, gy = !!gp.buttons[3]?.pressed, gbb = !!gp.buttons[1]?.pressed, gvw = !!gp.buttons[8]?.pressed;
@@ -1170,17 +1171,20 @@ function pollGamepad(dt) {
     if (yEdge) toggleMaster("audio", mAudio);
     if (bEdge) toggleMaster("haptic", mHaptic);
     if (vwEdge) setMode(settings.mode === "move" ? "fixed" : "move");
+    if (lbEdge) cyclePreset(-1); // LB·RB pick difficulty on the title (LB = dash once playing)
+    if (rbEdge) cyclePreset(1);
     if (fireEdge) startGame();
     return;
   }
   if (paused || renderer.xr.isPresenting) return;
   yaw -= dz(gp.axes[2] || 0) * 2.4 * dt * settings.stickSens; // right stick X → yaw
   if (settings.mode === "move") {
+    const spd = settings.playerSpeed * ((lb || keys.ShiftLeft || keys.ShiftRight) ? tune.dash.multiplier : 1); // LB / Shift = dash
     const lx = dz(gp.axes[0] || 0), ly = dz(gp.axes[1] || 0);
     if (lx || ly) {
       const sin = Math.sin(yaw), cos = Math.cos(yaw);
-      rig.position.x += (lx * cos + ly * sin) * settings.playerSpeed * dt;
-      rig.position.z += (-lx * sin + ly * cos) * settings.playerSpeed * dt;
+      rig.position.x += (lx * cos + ly * sin) * spd * dt;
+      rig.position.z += (-lx * sin + ly * cos) * spd * dt;
       clampToArena();
     }
     if (fireEdge) playerFire();
@@ -1219,6 +1223,10 @@ function update(dt) {
 
   const active = playing && !paused && !renderer.xr.isPresenting;
   if (active) {
+    // dash: Shift (keyboard) or LB (gamepad, tracked in pollGamepad). Scales speed AND
+    // all walk feedback below by tune.dash.multiplier (default 2×). move mode only.
+    dashing = settings.mode === "move" && (keys.ShiftLeft || keys.ShiftRight || gpLbHeld);
+    const dashK = dashing ? tune.dash.multiplier : 1;
     if (settings.mode === "move") {
       let mx = 0, mz = 0;
       if (keys.KeyW) mz -= 1;
@@ -1228,8 +1236,8 @@ function update(dt) {
       if (mx || mz) {
         const len = Math.hypot(mx, mz); mx /= len; mz /= len;
         const sin = Math.sin(yaw), cos = Math.cos(yaw);
-        rig.position.x += (mx * cos + mz * sin) * settings.playerSpeed * dt;
-        rig.position.z += (-mx * sin + mz * cos) * settings.playerSpeed * dt;
+        rig.position.x += (mx * cos + mz * sin) * settings.playerSpeed * dashK * dt;
+        rig.position.z += (-mx * sin + mz * cos) * settings.playerSpeed * dashK * dt;
         clampToArena();
       }
     }
@@ -1241,13 +1249,13 @@ function update(dt) {
     lastWalkX = rig.position.x; lastWalkZ = rig.position.z;
     const walking = settings.walkFeedback && settings.mode === "move" && movedDist > 0.0015;
     if (walking) {
-      walkPhase += tune.walk.rate * dt;
+      walkPhase += tune.walk.rate * dashK * dt; // dash → cadence keeps pace with the 2× speed
       // ONE footstep per full up-down (every 2π) so 上下1回 = フィードバック1回.
       if (walkPhase - walkStepMark >= 2 * Math.PI) { walkStepMark += 2 * Math.PI; footstepHaptic(); footstepSound(); }
       // DRIVE the bob directly (full amplitude) — easing toward an oscillating
       // target just low-passes it away, which is why it looked like nothing moved.
-      walkBob = Math.sin(walkPhase) * tune.walk.bobAmp;        // one up-down per stride
-      walkSway = Math.sin(walkPhase * 0.5) * tune.walk.swayAmp; // sway alternates each step (period = 2 strides)
+      walkBob = Math.sin(walkPhase) * tune.walk.bobAmp * dashK;        // dash → bigger bob
+      walkSway = Math.sin(walkPhase * 0.5) * tune.walk.swayAmp * dashK; // sway alternates each step (period = 2 strides)
     } else {
       walkStepMark = walkPhase;
       walkBob += (0 - walkBob) * Math.min(1, dt * 10); // ease back to level when stopped

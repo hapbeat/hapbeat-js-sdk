@@ -74,6 +74,10 @@ const FACTORY = {
     speed: 70,    // m/s 自弾の速度
     streak: 2.2,  // units 残像の最小長
   },
+  // ダッシュ（move モード・Shift / パッド LB を押している間）
+  dash: {
+    multiplier: 2, // 標準の何倍か。移動速度＋歩行フィードバック（上下動/足音/振動）すべてに掛かる
+  },
 };
 
 // tuning.json（あれば）を FACTORY に深く上書き
@@ -101,3 +105,4 @@ export const CONTINUOUS = cfg.continuous;
 export const WALK = cfg.walk;
 export const ENEMY = cfg.enemy;
 export const PLAYER_BULLET = cfg.playerBullet;
+export const DASH = cfg.dash;
