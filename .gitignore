@@ -20,3 +20,4 @@ dev-notes/
 CLAUDE.md
 instructions/
 .claude/
+examples/games/demo-kit/**/.studio-cache.json

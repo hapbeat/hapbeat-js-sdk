@@ -104,8 +104,8 @@ const listener = actx.listener;
 // fallback below, so behaviour is unchanged until WAVs are dropped in.
 const router = new ContentRouter(bridge);
 router.attachAudio(actx, masterGain); // audio FILES play HRTF-spatialized through our ctx
-router.load({ eventmapUrl: "eventmap.json", manifestUrl: "kit/manifest.json", clipBase: "kit/stream-clips/" });
-router.loadAudioFiles("../"); // event-content audio.file paths resolve against the shell root
+router.load({ eventmapUrl: "eventmap.json", manifestUrl: "../demo-kit/fps-kit/fps-kit-manifest.json", clipBase: "../demo-kit/fps-kit/stream-clips/" });
+router.loadAudioFiles("../"); // event-content audio.file paths resolve against the shell root (examples/games/)
 function playShot(worldPos, { gain = 1, freq = 220, durMs = 150, noise = true } = {}) {
   if (!bridge.master.audio) return;
   if (actx.state === "suspended") actx.resume();
@@ -973,7 +973,7 @@ function lateralPan(enemyWorldPos) {
   return { pan: clamp(Math.sin(theta), -1, 1), dist, theta };
 }
 function directionalCue(worldPos, { strong = false } = {}) {
-  const name = strong ? "fps_player_hit" : "fps_enemy_fire";
+  const name = strong ? "fps_player_hit" : "fps_enemy_shot";
   const ev = CONTENT[name]; // central tuning (synth-fallback values)
   const { pan, dist } = lateralPan(worldPos);
   const closeness = clamp(1 - dist / (settings.enemyRange * 1.6), 0.12, 1);
@@ -1101,13 +1101,13 @@ function playerFire() {
   const muzzleWorld = new THREE.Vector3();
   muzzle.getWorldPosition(muzzleWorld);
   if (events.ownShot) {
-    const a = CONTENT.fps_own_shot;
-    router.audio("fps_own_shot", { worldPos: muzzleWorld, gain: 1 }, () =>
+    const a = CONTENT.fps_player_shot;
+    router.audio("fps_player_shot", { worldPos: muzzleWorld, gain: 1 }, () =>
       playShot(muzzleWorld, { gain: a.audio.vol, freq: a.audio.freq, durMs: a.audio.durMs }));
     const t = performance.now() / 1000;
     if (t - lastHapticT >= HAPTIC_MIN_GAP) {
       lastHapticT = t;
-      router.haptic("fps_own_shot", { gain: 1 }, () =>
+      router.haptic("fps_player_shot", { gain: 1 }, () =>
         bridge.streamPcm(stereoBlip(0, { gain: a.haptic.gain, durMs: a.haptic.durMs, freq: a.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 }));
     }
   }

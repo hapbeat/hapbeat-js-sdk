@@ -80,35 +80,38 @@ export const CONTENT = {
   },
 
   // ── 触覚FPS (fps) — base values; pan/distance are applied live in fps.js ───
-  fps_enemy_fire: {
+  fps_enemy_shot: {
     haptic: { kind: "dir", freq: 170, durMs: 95, gain: 0.55 },
-    audio: { kind: "gun", freq: 230, durMs: 150, vol: 0.55 },
+    audio: { file: "audio/shot_enemy_laserSmall_003.ogg", kind: "gun", freq: 230, durMs: 150, vol: 0.55 },
     usedBy: "fps", note: "敵の発砲（方向）。L/R は弾の方位で決まる。",
   },
   fps_player_hit: {
     haptic: { kind: "dir", freq: 120, durMs: 150, gain: 1.0 },
-    audio: { kind: "gun", freq: 150, durMs: 220, vol: 0.8 },
+    audio: { file: "audio/damage.mp3", kind: "gun", freq: 150, durMs: 220, vol: 0.8 },
     usedBy: "fps", note: "被弾（強）。",
   },
-  fps_own_shot: {
+  fps_player_shot: {
     haptic: { kind: "blip", freq: 220, durMs: 70, gain: 0.7 },
-    audio: { kind: "gun", freq: 320, durMs: 110, vol: 0.7 },
+    audio: { file: "audio/shot_player_laserSmall_000.ogg", kind: "gun", freq: 320, durMs: 110, vol: 0.7 },
     usedBy: "fps", note: "自分の発砲。",
   },
   fps_block: {
     haptic: { kind: "blip", freq: 90, durMs: 120, gain: 0.95 },
     audio: { kind: "gun", freq: 520, durMs: 120, vol: 0.75 },
-    usedBy: "fps", note: "盾ブロック（成功・『ぽこん』）。被弾とは別フィードバック。",
+    usedBy: "fps", note: "盾ブロック（成功・『ぽこん』）。被弾とは別フィードバック。音声ファイルは未指定（synth）。",
   },
   fps_kill: {
     haptic: { kind: "blip", freq: 300, durMs: 80, gain: 0.6 },
-    audio: { kind: "gun", freq: 480, durMs: 90, vol: 0.6 },
+    audio: { file: "audio/kill_enemy_laserLarge_000.ogg", kind: "gun", freq: 480, durMs: 90, vol: 0.6 },
     usedBy: "fps", note: "撃破。",
   },
   fps_walk: {
     haptic: { kind: "blip", freq: 55, durMs: 60, gain: 0.35 },
-    audio: { kind: "thud", freq: 72, durMs: 95, vol: 0.28 },
-    usedBy: "fps", note: "歩行（上下動＋低い踏み込み音＋足音振動）。敵銃撃の音/触覚をマスクする＝止まると気づきやすい。",
+    audio: {
+      file: ["audio/footstep_concrete_000.ogg", "audio/footstep_concrete_001.ogg", "audio/footstep_concrete_002.ogg", "audio/footstep_concrete_003.ogg", "audio/footstep_concrete_004.ogg"],
+      kind: "thud", freq: 72, durMs: 95, vol: 0.28,
+    },
+    usedBy: "fps", note: "歩行（足音はファイル 5 種からランダム）。敵銃撃の音/触覚をマスクする＝止まると気づきやすい。",
   },
   // 連続モード（~100Hz の方向触覚）の数値は fps/tuning.js の CONTINUOUS にまとめてある（波形+アルゴリズム両方）。
 };

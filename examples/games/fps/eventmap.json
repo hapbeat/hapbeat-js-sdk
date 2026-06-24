@@ -1,9 +1,9 @@
 {
-  "_README": "つなぎ（EventMap）— 論理イベント → 触覚 Kit の eventId + 再生調整。Unity SDK の EventMap 相当。kitEvent は fps/kit/manifest.json の stream_events(=clip) / events(=fire) のキーと一致させる。mode: clip(ホストが WAV を stream、Kit 未インストールでも鳴る・既定) / fire(デバイス内蔵 clip)。gain は manifest intensity に掛かる倍率。directional=true の触覚は弾の方位で L/R パンを掛ける。target は送信先(空=全体)。音声ファイルは event-content.js の audio.file 側で管理。",
-  "fps_enemy_fire": { "kitEvent": "fps-kit.enemy_fire", "mode": "clip", "gain": 1.0, "loop": false, "target": "", "directional": true },
-  "fps_player_hit": { "kitEvent": "fps-kit.player_hit", "mode": "clip", "gain": 1.0, "loop": false, "target": "", "directional": true },
-  "fps_own_shot":   { "kitEvent": "fps-kit.own_shot",   "mode": "clip", "gain": 1.0, "loop": false, "target": "" },
-  "fps_block":      { "kitEvent": "fps-kit.block",      "mode": "clip", "gain": 1.0, "loop": false, "target": "" },
-  "fps_kill":       { "kitEvent": "fps-kit.kill",       "mode": "clip", "gain": 1.0, "loop": false, "target": "" },
-  "fps_walk":       { "kitEvent": "fps-kit.walk",       "mode": "clip", "gain": 1.0, "loop": false, "target": "" }
+  "_README": "つなぎ（EventMap）— 論理イベント → 触覚 Kit の eventId + 再生調整。kitEvent は demo-kit/fps-kit/fps-kit-manifest.json の stream_events/events のキーと一致。kitEvent は配列にすると毎回ランダムで選ぶ（足音のバリエーション用）。mode: clip(ホストが WAV を stream・既定) / fire(デバイス内蔵 clip)。gain は manifest intensity に掛かる倍率。directional=true の触覚は弾の方位で L/R パン。音声ファイルは event-content.js の audio.file 側。",
+  "fps_enemy_shot":  { "kitEvent": "fps-kit.shot-enemy",  "mode": "clip", "gain": 1.0, "loop": false, "target": "", "directional": true },
+  "fps_player_hit":  { "kitEvent": "fps-kit.damage",      "mode": "clip", "gain": 1.0, "loop": false, "target": "", "directional": true },
+  "fps_player_shot": { "kitEvent": "fps-kit.shot-player", "mode": "clip", "gain": 1.0, "loop": false, "target": "" },
+  "fps_block":       { "kitEvent": "fps-kit.block",       "mode": "clip", "gain": 1.0, "loop": false, "target": "" },
+  "fps_kill":        { "kitEvent": "fps-kit.kill-enemy",  "mode": "clip", "gain": 1.0, "loop": false, "target": "" },
+  "fps_walk":        { "kitEvent": ["fps-kit.footstep-0", "fps-kit.footstep-1"], "mode": "clip", "gain": 1.0, "loop": false, "target": "" }
 }

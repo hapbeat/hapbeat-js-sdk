@@ -25,6 +25,8 @@ import { CONTENT } from "./event-content.js";
 
 const clamp01 = (g) => (g < 0 ? 0 : g > 1 ? 1 : g);
 const clampPan = (p) => (p < -1 ? -1 : p > 1 ? 1 : p);
+const asArray = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]); // kitEvent / audio.file may be a list
+const pick = (a) => a[(Math.random() * a.length) | 0];                 // one variant per fire (footsteps etc.)
 
 async function fetchJson(url, fallback) {
   try {
@@ -71,34 +73,38 @@ export class ContentRouter {
     this._audioDest = destination || (ctx ? ctx.destination : null);
   }
 
-  /** Decode the `audio.file` WAVs referenced by event-content for the given events. */
+  /** Decode the `audio.file` (string OR array) WAV/OGG/MP3s referenced by event-content. */
   async loadAudioFiles(audioBase = "") {
     if (!this._audioCtx) return;
     const jobs = [];
-    for (const [name, ev] of Object.entries(CONTENT)) {
-      const file = ev?.audio?.file;
-      if (!file) continue;
-      jobs.push(
-        fetch(audioBase + file)
-          .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`audio ${r.status}`))))
-          .then((buf) => this._audioCtx.decodeAudioData(buf.slice(0)))
-          .then((ab) => this.audioBuf.set(name, ab))
-          .catch(() => {/* missing → synth fallback */}),
-      );
+    for (const ev of Object.values(CONTENT)) {
+      for (const file of asArray(ev?.audio?.file)) {
+        if (this.audioBuf.has(file)) continue; // keyed by file path → shared variants decode once
+        jobs.push(
+          fetch(audioBase + file)
+            .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`audio ${r.status}`))))
+            .then((buf) => this._audioCtx.decodeAudioData(buf.slice(0)))
+            .then((ab) => this.audioBuf.set(file, ab))
+            .catch(() => {/* missing → synth fallback */}),
+        );
+      }
     }
     await Promise.all(jobs);
   }
 
   binding(name) { return this.map[name] || null; }
 
-  /** True when this logical event has a HAPTIC clip available (decoded) → file path. */
-  hasHapticClip(name) {
+  /** kitEvents (from the binding) that have a decoded HAPTIC clip — possibly several variants. */
+  _hapticIdsReady(name) {
     const b = this.binding(name);
-    return !!(b && b.kitEvent && this.hapticPcm.has(b.kitEvent));
+    return b ? asArray(b.kitEvent).filter((k) => this.hapticPcm.has(k)) : [];
   }
-
-  /** True when this logical event has an AUDIO file decoded → file path. */
-  hasAudioFile(name) { return this.audioBuf.has(name); }
+  /** audio.file paths (from event-content) that are decoded — possibly several variants. */
+  _audioFilesReady(name) {
+    return asArray(CONTENT[name]?.audio?.file).filter((f) => this.audioBuf.has(f));
+  }
+  hasHapticClip(name) { return this._hapticIdsReady(name).length > 0; }
+  hasAudioFile(name) { return this._audioFilesReady(name).length > 0; }
 
   /**
    * HAPTIC for a logical event. Plays the manifest clip if present (panned for
@@ -107,13 +113,15 @@ export class ContentRouter {
    * @returns {boolean} true if a FILE played (so the caller can skip its synth)
    */
   haptic(name, opts = {}, fallback) {
-    if (this.hasHapticClip(name)) {
+    const ready = this._hapticIdsReady(name);
+    if (ready.length) {
       const b = this.binding(name);
-      const def = this.kit.get(b.kitEvent);
+      const id = pick(ready); // random variant (e.g. footstep-0 / footstep-1)
+      const wav = this.hapticPcm.get(id);
+      const def = this.kit.get(id);
       const gain = clamp01((b.gain ?? 1) * (opts.gain ?? 1) * (def?.intensity ?? 1));
       const pan = b.directional ? clampPan(opts.pan ?? 0) : 0;
-      const pcm = this._panClip(this.hapticPcm.get(b.kitEvent), pan, gain);
-      this.bridge.streamPcm(pcm, { channels: 2, sampleRate: this.hapticPcm.get(b.kitEvent).sampleRate, gain: 1, target: opts.target ?? b.target });
+      this.bridge.streamPcm(this._panClip(wav, pan, gain), { channels: 2, sampleRate: wav.sampleRate, gain: 1, target: opts.target ?? b.target });
       return true;
     }
     if (fallback) fallback();
@@ -128,10 +136,11 @@ export class ContentRouter {
    */
   audio(name, opts = {}, fallback) {
     // file path self-gates on the audio master; the synth fallback self-gates too
-    if (this.bridge.master.audio && this.hasAudioFile(name) && this._audioCtx) {
+    const ready = this.bridge.master.audio && this._audioCtx ? this._audioFilesReady(name) : [];
+    if (ready.length) {
       const ev = CONTENT[name];
       const vol = clamp01((opts.gain ?? 1) * (ev?.audio?.vol ?? 1));
-      this._playBuffer(this.audioBuf.get(name), vol, opts.worldPos, opts.pan ?? 0);
+      this._playBuffer(this.audioBuf.get(pick(ready)), vol, opts.worldPos, opts.pan ?? 0); // random variant
       return true;
     }
     if (fallback) fallback();
