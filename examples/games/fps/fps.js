@@ -134,8 +134,7 @@ root.innerHTML = `
     #hbfps .pscroll { display: flex; align-items: flex-start;        /* the two columns scroll together… */
       max-height: calc(100vh - 24px); overflow-y: auto; scrollbar-width: none; } /* …scrollbar hidden (no width shift) */
     #hbfps .pscroll::-webkit-scrollbar { width: 0; height: 0; }
-    #hbfps .menu-pin { position: absolute; top: 7px; right: 7px; z-index: 11; /* ☰‹ pinned to the panel's top-right (right of 詳細設定); stays put when the panel scrolls */
-      width: auto; height: auto; padding: 3px 9px; font-size: 14px; letter-spacing: 2px; }
+    #hbfps .menu-pin { position: absolute; top: 7px; right: 7px; z-index: 11; display: flex; align-items: center; gap: 4px; } /* ‹ toggle + ☰ gamepad-mapping hint, pinned top-right (right of 詳細設定); stays put when the panel scrolls */
     #hbfps .pcol { padding: 10px 12px; }
     #hbfps .pcol-main { width: 300px; flex: 0 0 auto; }
     #hbfps .pcol-adv { width: 0; max-height: 0; flex: 0 0 auto; overflow: hidden; padding: 0; } /* collapsed: no width AND no height (no empty margin). instant toggle — animating width while max-height popped looked like a vertical-then-horizontal jump */
@@ -149,9 +148,9 @@ root.innerHTML = `
     #hbfps .textbtn { background: #222a35; color: #cdd6e0; border: 1px solid #39424f; border-radius: 7px;
       padding: 4px 11px; height: 25px; line-height: 1; font-size: 12px; cursor: pointer; white-space: nowrap; }
     #hbfps .textbtn:hover { background: #2c3543; }
-    #hbfps .drawer-open { position: absolute; top: 12px; left: 12px; z-index: 9; display: none;
+    #hbfps .drawer-open { position: absolute; top: 12px; left: 12px; z-index: 9; display: none; align-items: center; gap: 4px;
       background: rgba(10,13,18,0.84); color: #cdd6e0; border: 1px solid #39424f;
-      border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 15px; letter-spacing: 2px; }
+      border-radius: 8px; padding: 3px 8px 3px 7px; height: 30px; cursor: pointer; font-size: 16px; } /* shown as flex via JS (☰ hint + › toggle) */
     #hbfps .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 13px; }
     #hbfps .group-title { font-size: 11px; color: #8b97a6; text-transform: uppercase;
       letter-spacing: .06em; margin: 10px 0 2px; }
@@ -243,7 +242,7 @@ root.innerHTML = `
     #hbfps .help-card .primary { margin-top: 14px; }
   </style>
   <div class="panel adv-open" id="panel">
-   <button class="iconbtn menu-pin" id="drawerTab" title="メニュー / HUD を隠す">☰‹</button>
+   <div class="menu-pin"><span class="kb">☰</span><button class="iconbtn" id="drawerTab" title="HUD を隠す（パッドは ☰ Menu）">‹</button></div>
    <div class="pscroll">
    <div class="pcol pcol-main">
     <div class="phead">
@@ -302,7 +301,7 @@ root.innerHTML = `
    </div>
    </div>
   </div>
-  <button class="drawer-open" id="drawerOpen" title="メニュー / HUD を表示">☰›</button>
+  <button class="drawer-open" id="drawerOpen" title="HUD を表示（パッドは ☰ Menu）"><span class="kb">☰</span>›</button>
   <div class="hud">
     HP <b id="hp">5</b><br>撃破 <b id="kills">0/20</b><br>敵 <b id="left">0</b>
   </div>
@@ -384,7 +383,7 @@ bridge.onChange(syncConnBadge);
 
 function setDrawer(open) { // collapse/expand the HUD panel; the › button shows when collapsed
   panelEl.classList.toggle("collapsed", !open);
-  drawerOpen.style.display = open ? "none" : "block";
+  drawerOpen.style.display = open ? "none" : "flex"; // flex: ☰ hint + › glyph sit on one line
 }
 // HUD ⟺ pause: opening the panel pauses the game, closing it resumes — you don't
 // play with the HUD open. While not playing, it just toggles visibility.
@@ -1221,11 +1220,12 @@ function update(dt) {
     const walking = settings.walkFeedback && settings.mode === "move" && movedDist > 0.0015;
     if (walking) {
       walkPhase += WALK_RATE * dt;
-      if (walkPhase - walkStepMark >= Math.PI) { walkStepMark += Math.PI; footstepHaptic(); footstepSound(); }
+      // ONE footstep per full up-down (every 2π) so 上下1回 = フィードバック1回.
+      if (walkPhase - walkStepMark >= 2 * Math.PI) { walkStepMark += 2 * Math.PI; footstepHaptic(); footstepSound(); }
       // DRIVE the bob directly (full amplitude) — easing toward an oscillating
       // target just low-passes it away, which is why it looked like nothing moved.
-      walkBob = Math.sin(walkPhase) * BOB_AMP;        // 2 dips per stride (each footfall)
-      walkSway = Math.sin(walkPhase * 0.5) * SWAY_AMP; // 1 sway per stride
+      walkBob = Math.sin(walkPhase) * BOB_AMP;        // one up-down per stride
+      walkSway = Math.sin(walkPhase * 0.5) * SWAY_AMP; // sway alternates each step (period = 2 strides)
     } else {
       walkStepMark = walkPhase;
       walkBob += (0 - walkBob) * Math.min(1, dt * 10); // ease back to level when stopped
