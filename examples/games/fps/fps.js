@@ -34,14 +34,26 @@ const jit = (w) => (Math.random() * 2 - 1) * w; // ±w uniform random
 
 // ── persistent settings (defaults + presets live in ./tuning.js) ─────────────
 const settings = { ...DEFAULTS };
-const LS_KEY = "hbfps.settings.v2";
+// runtime-mutable deep tuning (walk / continuous / enemy / player-bullet). Factory
+// values come from tuning.js; Save/Load JSON and localStorage round-trip these too,
+// so a saved file applies the WHOLE config — no hand-editing the source needed.
+const tune = { walk: { ...WALK }, continuous: { ...CONTINUOUS }, enemy: { ...ENEMY }, playerBullet: { ...PLAYER_BULLET } };
+const LS_KEY = "hbfps.settings.v2", LS_TUNE = "hbfps.tune.v1";
+function applyTuneFrom(obj) { // copy known deep-tuning groups out of a parsed object
+  let any = false;
+  for (const g of Object.keys(tune)) if (obj && obj[g] && typeof obj[g] === "object") { Object.assign(tune[g], obj[g]); any = true; }
+  return any;
+}
 function loadSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(LS_KEY) || "null");
     if (s && typeof s === "object") for (const k of Object.keys(DEFAULTS)) if (k in s) settings[k] = s[k];
   } catch { /* ignore */ }
+  try { applyTuneFrom(JSON.parse(localStorage.getItem(LS_TUNE) || "null")); } catch { /* ignore */ }
 }
-function saveSettings() { try { localStorage.setItem(LS_KEY, JSON.stringify(settings)); } catch { /* ignore */ } }
+function saveSettings() {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(settings)); localStorage.setItem(LS_TUNE, JSON.stringify(tune)); } catch { /* ignore */ }
+}
 loadSettings();
 
 const SLIDER_META = {
@@ -294,8 +306,8 @@ root.innerHTML = `
       <div class="group-title">⚙ 詳細設定（±幅は 0 でランダムなし）</div>
       <div id="settings"></div>
       <div class="iorow">
-        <button id="saveJson">設定をJSON保存</button>
-        <button id="loadJson">JSON読込</button>
+        <button id="saveJson">Save</button>
+        <button id="loadJson">Load</button>
       </div>
     </div>
    </div>
@@ -508,7 +520,10 @@ syncSliderUI();
 refreshPresetButtons();
 
 root.querySelector("#saveJson").onclick = () => {
-  const blob = new Blob([JSON.stringify(settings, null, 2)], { type: "application/json" });
+  // a saved file is the WHOLE config: slider settings + the deep tuning groups
+  // (walk / continuous / enemy / playerBullet) — load it back to apply everything.
+  const full = { ...settings, ...tune };
+  const blob = new Blob([JSON.stringify(full, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url; a.download = "hapbeat-fps-settings.json"; a.click();
@@ -529,6 +544,7 @@ fileInput.onchange = () => {
       if (typeof obj.continuousHaptic === "boolean") { settings.continuousHaptic = obj.continuousHaptic; contHapticEl.checked = obj.continuousHaptic; }
       if (typeof obj.walkFeedback === "boolean") { settings.walkFeedback = obj.walkFeedback; walkFbEl.checked = obj.walkFeedback; }
       settings.preset = PRESETS[obj.preset] ? obj.preset : "normal"; // keep a difficulty selected
+      applyTuneFrom(obj); // deep groups: walk / continuous / enemy / playerBullet (no source edit needed)
       saveSettings(); syncSliderUI(); refreshModeButtons(); refreshPresetButtons(); applyModeVisibility();
       if (playing) topUpEnemies();
     } catch { /* bad file → ignore */ }
@@ -579,7 +595,6 @@ camera.add(gun);
 let gunKick = 0;
 let walkPhase = 0, walkStepMark = 0, walkBob = 0, walkSway = 0; // walking head-bob + footstep cadence (move mode)
 let lastWalkX = 0, lastWalkZ = 0; // rig position last frame → measure real movement (keyboard OR stick)
-const WALK_RATE = WALK.rate, BOB_AMP = WALK.bobAmp, SWAY_AMP = WALK.swayAmp; // ← tuning.js
 
 // frontal shield (fixed mode) — green so it stands out from the blue sky
 const shieldMesh = new THREE.Mesh(
@@ -617,9 +632,8 @@ const EGEO = {
   egun: new THREE.BoxGeometry(0.12, 0.12, 0.5),
   head: new THREE.BoxGeometry(0.42, 0.38, 0.4),
   eye: new THREE.BoxGeometry(0.34, 0.1, 0.06),
-  hitbox: new THREE.BoxGeometry(0.95, 1.5, 0.7), // body-covering; the whole enemy is scaled up (ENEMY_SCALE)
+  hitbox: new THREE.BoxGeometry(0.95, 1.5, 0.7), // body-covering; the whole enemy is scaled up (tune.enemy.scale)
 };
-const ENEMY_SCALE = ENEMY.scale; // ← tuning.js (bigger enemy → torso ≈ eye level so straight aim hits the body)
 const enemyBodyMat = new THREE.MeshStandardMaterial({ color: 0xe8553a, metalness: 0.35, roughness: 0.5 });
 const enemyDarkMat = new THREE.MeshStandardMaterial({ color: 0x2b2320, metalness: 0.4, roughness: 0.6 });
 const hbMat = new THREE.MeshBasicMaterial({ visible: false }); // never rendered, still raycastable
@@ -640,7 +654,7 @@ function makeEnemyMesh() {
   add(EGEO.head, enemyBodyMat, 0, 1.62, 0);
   add(EGEO.eye, eyeMat, 0, 1.64, 0.21);
   const hitbox = add(EGEO.hitbox, hbMat, 0, 1.15, 0); // covers the body (local)
-  g.scale.setScalar(ENEMY_SCALE); // scale the WHOLE enemy up → torso ≈ eye level (1.05·1.5≈1.6)
+  g.scale.setScalar(tune.enemy.scale); // scale the WHOLE enemy up → torso ≈ eye level (1.05·1.5≈1.6). applies to NEW spawns (restart after changing)
   return { group: g, eyeMat, hitbox };
 }
 
@@ -748,7 +762,6 @@ function takeHit(srcPos) {
 }
 
 // ── player tracers (your own / reflected shots) — slower + streak, ALWAYS visible ─
-const PLAYER_BULLET_SPEED = PLAYER_BULLET.speed, PLAYER_STREAK = PLAYER_BULLET.streak; // ← tuning.js
 const ptHeadGeo = new THREE.SphereGeometry(0.13, 10, 10);
 const ptTrailGeo = new THREE.CylinderGeometry(0.06, 0.015, 1, 8); // unit along +Y
 let playerTracers = [];
@@ -772,7 +785,7 @@ function spawnPlayerTracer(from, to, color = 0xffd23a, enemy = null) {
   worldGroup.add(head); worldGroup.add(trail);
   // `enemy` (if set) is killed when the bullet ARRIVES; the bullet homes to its
   // live position so it visually connects even if the target strafes.
-  playerTracers.push({ head, trail, from: from.clone(), to: to.clone(), dir, dist, t: 0, dur: Math.max(0.18, dist / PLAYER_BULLET_SPEED), enemy });
+  playerTracers.push({ head, trail, from: from.clone(), to: to.clone(), dir, dist, t: 0, dur: Math.max(0.18, dist / tune.playerBullet.speed), enemy });
 }
 function updatePlayerTracers(dt) {
   for (let i = playerTracers.length - 1; i >= 0; i--) {
@@ -785,7 +798,7 @@ function updatePlayerTracers(dt) {
     t.head.position.lerpVectors(t.from, aimAt, k);
     _ptDir.copy(aimAt).sub(t.from); // re-orient the streak toward the (possibly moving) target
     if (_ptDir.lengthSq() > 1e-6) { _ptDir.normalize(); t.trail.quaternion.setFromUnitVectors(Y_AXIS, _ptDir); }
-    const len = Math.max(PLAYER_STREAK, (t.dist / t.dur) * dt * 1.3); // bridge inter-frame gap
+    const len = Math.max(tune.playerBullet.streak, (t.dist / t.dur) * dt * 1.3); // bridge inter-frame gap
     t.trail.scale.y = len;
     t.trail.position.copy(t.head.position).addScaledVector(_ptDir, -len / 2);
     if (k >= 1) {
@@ -960,10 +973,7 @@ let lastContT = 0, contPhase = 0, contStream = null;
 // tone is continuous (root-fix for the "gata-gata"). The sine PHASE is carried
 // across chunks (contPhase) so there's no boundary click. A discrete fire/footstep
 // ends the live stream (1 session = 1 stream); we transparently re-open it.
-// all continuous-mode tunables live in ./tuning.js (CONTINUOUS)
-const CONT_FREQ = CONTINUOUS.freq, CONT_DUR_MS = CONTINUOUS.durMs, CONT_GAIN = CONTINUOUS.gain;
-const CONT_FLOOR = CONTINUOUS.floor, CONT_CURVE = CONTINUOUS.curve;
-const CONT_PERIOD = CONTINUOUS.periodS, CONT_RMAX_K = CONTINUOUS.rmaxK;
+// all continuous-mode tunables live in ./tuning.js (CONTINUOUS) → tune.continuous (runtime)
 function closeContStream() {
   if (contStream && !contStream.closed) contStream.close();
   contStream = null;
@@ -980,7 +990,7 @@ function nearestBullet() {
 function updateContinuousHaptic() {
   if (!settings.continuousHaptic || !playing || paused || !bridge.master.haptic) { closeContStream(); return; }
   const t = performance.now() / 1000;
-  if (t - lastContT < CONT_PERIOD) return;
+  if (t - lastContT < tune.continuous.periodS) return;
   const p = nearestBullet();
   if (!p) { closeContStream(); contPhase = 0; return; } // no threat → drop the stream
   lastContT = t;
@@ -988,17 +998,17 @@ function updateContinuousHaptic() {
   const deg = (theta * 180) / Math.PI;                      // +deg = bullet to the right
   const AR = clamp((90 + deg) / 180, 0, 1);                 // right-stronger when on the right (Eqs. 2–3,
   const AL = clamp((90 - deg) / 180, 0, 1);                 //   sign-matched to our forward frame)
-  const Rmax = settings.enemyRange * CONT_RMAX_K;
+  const Rmax = settings.enemyRange * tune.continuous.rmaxK;
   const closeness = clamp(1 - dist / Rmax, 0, 1);
-  const Ar = (CONT_FLOOR + (1 - CONT_FLOOR) * Math.pow(closeness, CONT_CURVE)) * CONT_GAIN; // distance→amplitude (Eq. 4); floor/curve in tuning.js
+  const Ar = (tune.continuous.floor + (1 - tune.continuous.floor) * Math.pow(closeness, tune.continuous.curve)) * tune.continuous.gain; // distance→amplitude (Eq. 4); floor/curve in tuning.js
   // (re)open the persistent stream — a discrete fire/footstep may have ended it
   if (!contStream || contStream.closed) {
     contStream = bridge.openStream({ channels: 2, sampleRate: 16000, gain: 1 });
     contPhase = 0;
   }
   if (contStream) {
-    contStream.write(stereoTone(AL * Ar, AR * Ar, { freq: CONT_FREQ, durMs: CONT_DUR_MS, edgeMs: 0, startPhase: contPhase }));
-    contPhase = (contPhase + phaseAdvance(CONT_FREQ, CONT_DUR_MS)) % (2 * Math.PI); // carry phase → seamless
+    contStream.write(stereoTone(AL * Ar, AR * Ar, { freq: tune.continuous.freq, durMs: tune.continuous.durMs, edgeMs: 0, startPhase: contPhase }));
+    contPhase = (contPhase + phaseAdvance(tune.continuous.freq, tune.continuous.durMs)) % (2 * Math.PI); // carry phase → seamless
   }
 }
 function stopContinuousHaptic() { lastContT = 0; contPhase = 0; closeContStream(); }
@@ -1038,7 +1048,6 @@ function enemyShoot(e) {
 }
 
 // ── shooting back (move mode) — forgiving hitscan around each enemy's body centre ─
-const ENEMY_HIT_RADIUS = ENEMY.hitRadius; // ← tuning.js (aim-assist tolerance, metres)
 const _fireOrigin = new THREE.Vector3(), _toEnemy = new THREE.Vector3(), _enemyCenter = new THREE.Vector3();
 function playerFire() {
   if (!playing || paused || settings.mode !== "move") return;
@@ -1056,9 +1065,9 @@ function playerFire() {
       bridge.streamPcm(stereoBlip(0, { gain: a.haptic.gain, durMs: a.haptic.durMs, freq: a.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
     }
   }
-  // Pick the NEAREST alive enemy whose body centre lies within ENEMY_HIT_RADIUS of the
-  // aim line and in front of us. getWorldPosition() refreshes each enemy's matrices, so
-  // this never tests a stale position — the old raycast used intersectObjects(), which
+  // Pick the NEAREST alive enemy whose body centre lies within tune.enemy.hitRadius of
+  // the aim line and in front of us. getWorldPosition() refreshes each enemy's matrices,
+  // so this never tests a stale position — the old raycast used intersectObjects(), which
   // does NOT update world matrices and fired a single zero-tolerance pixel ray, so a
   // moving target (or a hair-off aim) slipped through even when the crosshair was on it.
   let hitEnemy = null, bestAlong = Infinity;
@@ -1069,7 +1078,7 @@ function playerFire() {
     const along = _toEnemy.dot(fwd);            // distance projected onto the aim ray
     if (along <= 0) continue;                    // behind the player
     const perp = Math.sqrt(Math.max(0, _toEnemy.lengthSq() - along * along)); // dist from the ray line
-    if (perp <= ENEMY_HIT_RADIUS && along < bestAlong) { bestAlong = along; hitEnemy = e; }
+    if (perp <= tune.enemy.hitRadius && along < bestAlong) { bestAlong = along; hitEnemy = e; }
   }
   const hitPoint = hitEnemy ? hitEnemy.hitbox.getWorldPosition(new THREE.Vector3())
                             : _fireOrigin.clone().add(fwd.clone().multiplyScalar(60));
@@ -1229,13 +1238,13 @@ function update(dt) {
     lastWalkX = rig.position.x; lastWalkZ = rig.position.z;
     const walking = settings.walkFeedback && settings.mode === "move" && movedDist > 0.0015;
     if (walking) {
-      walkPhase += WALK_RATE * dt;
+      walkPhase += tune.walk.rate * dt;
       // ONE footstep per full up-down (every 2π) so 上下1回 = フィードバック1回.
       if (walkPhase - walkStepMark >= 2 * Math.PI) { walkStepMark += 2 * Math.PI; footstepHaptic(); footstepSound(); }
       // DRIVE the bob directly (full amplitude) — easing toward an oscillating
       // target just low-passes it away, which is why it looked like nothing moved.
-      walkBob = Math.sin(walkPhase) * BOB_AMP;        // one up-down per stride
-      walkSway = Math.sin(walkPhase * 0.5) * SWAY_AMP; // sway alternates each step (period = 2 strides)
+      walkBob = Math.sin(walkPhase) * tune.walk.bobAmp;        // one up-down per stride
+      walkSway = Math.sin(walkPhase * 0.5) * tune.walk.swayAmp; // sway alternates each step (period = 2 strides)
     } else {
       walkStepMark = walkPhase;
       walkBob += (0 - walkBob) * Math.min(1, dt * 10); // ease back to level when stopped
