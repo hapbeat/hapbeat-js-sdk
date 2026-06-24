@@ -23,6 +23,7 @@ import { stereoBlip, stereoTone, phaseAdvance } from "../shared/synth.js";
 import { playerNameField, activeMods } from "../shared/controls.js";
 import { createRanking } from "../shared/ranking.js";
 import { CONTENT } from "../shared/event-content.js"; // central haptic/audio tuning
+import { ContentRouter } from "../shared/content-router.js"; // file-first / synth-fallback router (つなぎ)
 import { DEFAULTS, PRESETS, CONTINUOUS, WALK, ENEMY, PLAYER_BULLET, DASH } from "./tuning.js"; // single gameplay-tuning file
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
@@ -96,6 +97,15 @@ const masterGain = actx.createGain();
 masterGain.gain.value = 0.9;
 masterGain.connect(actx.destination);
 const listener = actx.listener;
+
+// ── content router (つなぎ): file-first playback, synth fallback ───────────────
+// Reads fps/eventmap.json (bindings) + fps/kit/manifest.json (Studio Kit, haptic
+// clips) + event-content.js (audio). With no assets it always hits the synth
+// fallback below, so behaviour is unchanged until WAVs are dropped in.
+const router = new ContentRouter(bridge);
+router.attachAudio(actx, masterGain); // audio FILES play HRTF-spatialized through our ctx
+router.load({ eventmapUrl: "eventmap.json", manifestUrl: "kit/manifest.json", clipBase: "kit/stream-clips/" });
+router.loadAudioFiles("../"); // event-content audio.file paths resolve against the shell root
 function playShot(worldPos, { gain = 1, freq = 220, durMs = 150, noise = true } = {}) {
   if (!bridge.master.audio) return;
   if (actx.state === "suspended") actx.resume();
@@ -932,11 +942,13 @@ function killEnemy(e, reflected) {
   kills += 1; score += 100;
   spawnDeathFx(pos);
   const ev = CONTENT.fps_kill;
-  playShot(pos, { gain: ev.audio.vol, freq: reflected ? ev.audio.freq * 0.75 : ev.audio.freq, durMs: ev.audio.durMs, noise: false });
+  router.audio("fps_kill", { worldPos: pos, gain: 1 }, () =>
+    playShot(pos, { gain: ev.audio.vol, freq: reflected ? ev.audio.freq * 0.75 : ev.audio.freq, durMs: ev.audio.durMs, noise: false }));
   const tk = performance.now() / 1000;
   if (bridge.master.haptic && tk - lastHapticT >= HAPTIC_MIN_GAP) {
     lastHapticT = tk;
-    bridge.streamPcm(stereoBlip(0, { gain: ev.haptic.gain, durMs: ev.haptic.durMs, freq: ev.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
+    router.haptic("fps_kill", { gain: 1 }, () =>
+      bridge.streamPcm(stereoBlip(0, { gain: ev.haptic.gain, durMs: ev.haptic.durMs, freq: ev.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 }));
   }
   hitmarker();
   updateHud();
@@ -961,26 +973,33 @@ function lateralPan(enemyWorldPos) {
   return { pan: clamp(Math.sin(theta), -1, 1), dist, theta };
 }
 function directionalCue(worldPos, { strong = false } = {}) {
-  const ev = strong ? CONTENT.fps_player_hit : CONTENT.fps_enemy_fire; // central tuning
+  const name = strong ? "fps_player_hit" : "fps_enemy_fire";
+  const ev = CONTENT[name]; // central tuning (synth-fallback values)
   const { pan, dist } = lateralPan(worldPos);
   const closeness = clamp(1 - dist / (settings.enemyRange * 1.6), 0.12, 1);
-  playShot(worldPos, { gain: ev.audio.vol, freq: ev.audio.freq, durMs: ev.audio.durMs });
+  // audio: kit/event-content file (HRTF) → synth gun burst
+  router.audio(name, { worldPos, gain: 1 }, () =>
+    playShot(worldPos, { gain: ev.audio.vol, freq: ev.audio.freq, durMs: ev.audio.durMs }));
+  // haptic: manifest clip (panned) → synth blip, throttled. `cl` (closeness) scales BOTH.
   const t = performance.now() / 1000;
   if (t - lastHapticT >= HAPTIC_MIN_GAP) {
     lastHapticT = t;
-    const gain = clamp(ev.haptic.gain * (0.45 + 0.55 * closeness), 0.1, 1); // scale by closeness
-    bridge.streamPcm(stereoBlip(pan, { gain, durMs: ev.haptic.durMs, freq: ev.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
+    const cl = 0.45 + 0.55 * closeness;
+    router.haptic(name, { pan, gain: cl }, () =>
+      bridge.streamPcm(stereoBlip(pan, { gain: clamp(ev.haptic.gain * cl, 0.1, 1), durMs: ev.haptic.durMs, freq: ev.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 }));
   }
 }
 // 固定モード: shield BLOCK (success) — deliberately a clean low "pokon", distinct
 // from the body-HIT cue (fps_player_hit, via directionalCue) so the two are obvious.
 function blockFeedback(srcPos) {
   const ev = CONTENT.fps_block;
-  playShot(playerPos, { gain: ev.audio.vol, freq: ev.audio.freq, durMs: ev.audio.durMs, noise: false });
+  router.audio("fps_block", { worldPos: playerPos, gain: 1 }, () =>
+    playShot(playerPos, { gain: ev.audio.vol, freq: ev.audio.freq, durMs: ev.audio.durMs, noise: false }));
   const t = performance.now() / 1000;
   if (t - lastHapticT >= HAPTIC_MIN_GAP) {
     lastHapticT = t;
-    bridge.streamPcm(stereoBlip(0, { gain: ev.haptic.gain, durMs: ev.haptic.durMs, freq: ev.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
+    router.haptic("fps_block", { gain: 1 }, () =>
+      bridge.streamPcm(stereoBlip(0, { gain: ev.haptic.gain, durMs: ev.haptic.durMs, freq: ev.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 }));
   }
 }
 
@@ -1041,8 +1060,9 @@ function stopContinuousHaptic() { lastContT = 0; contPhase = 0; closeContStream(
 function footstepHaptic() {
   if (!bridge.master.haptic) return;
   const h = CONTENT.fps_walk.haptic;
-  const gain = h.gain * (dashing ? tune.dash.multiplier : 1); // dash → stronger footstep buzz
-  bridge.streamPcm(stereoBlip(0, { gain, durMs: h.durMs, freq: h.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
+  const dashK = dashing ? tune.dash.multiplier : 1; // dash → stronger footstep buzz
+  router.haptic("fps_walk", { gain: dashK }, () =>
+    bridge.streamPcm(stereoBlip(0, { gain: h.gain * dashK, durMs: h.durMs, freq: h.freq }), { channels: 2, sampleRate: 16000, gain: 1 }));
 }
 // Footstep SOUND (move mode) — a short low thud through the local AudioContext
 // (non-spatial, centred). Like the buzz, it masks the gunfire cue while you walk.
@@ -1050,18 +1070,21 @@ function footstepSound() {
   if (!bridge.master.audio) return;
   const a = CONTENT.fps_walk.audio;
   if (!a) return;
-  if (actx.state === "suspended") actx.resume();
-  const t0 = actx.currentTime, end = t0 + a.durMs / 1000;
-  const o = actx.createOscillator();
-  o.type = "triangle";
-  o.frequency.setValueAtTime(a.freq, t0);
-  o.frequency.exponentialRampToValueAtTime(a.freq * 0.6, end);
-  const g = actx.createGain();
-  g.gain.setValueAtTime(0.0001, t0);
-  g.gain.exponentialRampToValueAtTime(a.vol * (dashing ? tune.dash.multiplier : 1), t0 + 0.004); // dash → louder steps
-  g.gain.exponentialRampToValueAtTime(0.0001, end);
-  o.connect(g).connect(masterGain);
-  o.start(t0); o.stop(end + 0.02);
+  const dashK = dashing ? tune.dash.multiplier : 1; // dash → louder steps
+  router.audio("fps_walk", { gain: dashK }, () => {
+    if (actx.state === "suspended") actx.resume();
+    const t0 = actx.currentTime, end = t0 + a.durMs / 1000;
+    const o = actx.createOscillator();
+    o.type = "triangle";
+    o.frequency.setValueAtTime(a.freq, t0);
+    o.frequency.exponentialRampToValueAtTime(a.freq * 0.6, end);
+    const g = actx.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(a.vol * dashK, t0 + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, end);
+    o.connect(g).connect(masterGain);
+    o.start(t0); o.stop(end + 0.02);
+  });
 }
 
 function enemyShoot(e) {
@@ -1079,11 +1102,13 @@ function playerFire() {
   muzzle.getWorldPosition(muzzleWorld);
   if (events.ownShot) {
     const a = CONTENT.fps_own_shot;
-    playShot(muzzleWorld, { gain: a.audio.vol, freq: a.audio.freq, durMs: a.audio.durMs });
+    router.audio("fps_own_shot", { worldPos: muzzleWorld, gain: 1 }, () =>
+      playShot(muzzleWorld, { gain: a.audio.vol, freq: a.audio.freq, durMs: a.audio.durMs }));
     const t = performance.now() / 1000;
     if (t - lastHapticT >= HAPTIC_MIN_GAP) {
       lastHapticT = t;
-      bridge.streamPcm(stereoBlip(0, { gain: a.haptic.gain, durMs: a.haptic.durMs, freq: a.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
+      router.haptic("fps_own_shot", { gain: 1 }, () =>
+        bridge.streamPcm(stereoBlip(0, { gain: a.haptic.gain, durMs: a.haptic.durMs, freq: a.haptic.freq }), { channels: 2, sampleRate: 16000, gain: 1 }));
     }
   }
   // No aim-line hitscan, no homing: the bullet flies straight from the muzzle along the

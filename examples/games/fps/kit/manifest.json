@@ -1,0 +1,10 @@
+{
+  "schema_version": "2.0.0",
+  "version": "0.0.0",
+  "name": "fps-kit",
+  "description": "触覚FPS デモの触覚 Kit（プレースホルダ）。Hapbeat Studio で書き出した manifest.json と WAV を、この manifest.json と stream-clips/ に差し替えると触覚がファイル再生に切り替わる。events/stream_events が空の間は、各イベントは shared/event-content.js の synth 値で鳴る（フォールバック）。eventmap.json の kitEvent はここの stream_events / events のキーと一致させる。",
+  "author": "",
+  "events": {},
+  "stream_events": {},
+  "install_clips": {}
+}

@@ -11,14 +11,19 @@
  * ⚠️ EVERYTHING HERE IS A PLACEHOLDER. Final haptic + audio design happens HERE,
  *    later, in one pass. Tweak numbers freely; nothing else needs to change.
  *
- * haptic — synthesized stereo PCM streamed to the device (no installed kit needed):
+ * haptic — synthesized stereo PCM (the FALLBACK). For games wired through
+ *   shared/content-router.js the REAL haptic comes from the Hapbeat Studio kit
+ *   manifest (a WAV clip); this synth plays only when that clip isn't present.
  *   kind:"blip"   { freq, durMs, gain, decay }                     one decaying pulse
  *   kind:"double" { freq, durMs, freq2, durMs2, gapMs, gain }      two pulses (e.g. "found!")
  *   gain is the BASE intensity 0..1 (a per-call gain overrides it).
  *
- * audio — synthesized WebAudio tone (placeholder; no WAV files):
- *   kind:"tone"   { type:"sine|triangle|square|sawtooth", freq, durMs, vol, attack, decay }
- *   vol is RELATIVE 0..1 and is multiplied by the event intensity.
+ * audio — FILE first, synth fallback (resolved by shared/content-router.js):
+ *   file:"assets/audio/<game>/<name>.wav"  → play this WAV (preferred). The path is
+ *        relative to the shell root (examples/games/); each game passes its own base.
+ *   If `file` is absent / fails to load, the synth spec plays instead:
+ *   kind:"tone" { type:"sine|triangle|square|sawtooth", freq, durMs, vol, attack, decay }
+ *   kind:"arp"/"gun"/"thud" … vol is RELATIVE 0..1 and multiplied by the event intensity.
  *   audio:null    → silent (haptic-only event).
  *
  * FPS note: the FPS demo computes pan/distance live (directional), but pulls its
