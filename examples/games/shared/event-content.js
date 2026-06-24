@@ -102,8 +102,8 @@ export const CONTENT = {
   },
   fps_walk: {
     haptic: { kind: "blip", freq: 55, durMs: 60, gain: 0.35 },
-    audio: null,
-    usedBy: "fps", note: "歩行（足音の振動）。これが敵銃撃の触覚をマスクする＝止まると気づきやすい。",
+    audio: { kind: "thud", freq: 72, durMs: 95, vol: 0.28 },
+    usedBy: "fps", note: "歩行（上下動＋低い踏み込み音＋足音振動）。敵銃撃の音/触覚をマスクする＝止まると気づきやすい。",
   },
   // 連続モード（~100Hz の方向触覚）の数値は fps/tuning.js の CONTINUOUS にまとめてある（波形+アルゴリズム両方）。
 };

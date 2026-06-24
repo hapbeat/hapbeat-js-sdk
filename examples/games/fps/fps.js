@@ -134,10 +134,11 @@ root.innerHTML = `
     #hbfps .pscroll { display: flex; align-items: flex-start;        /* the two columns scroll together… */
       max-height: calc(100vh - 24px); overflow-y: auto; scrollbar-width: none; } /* …scrollbar hidden (no width shift) */
     #hbfps .pscroll::-webkit-scrollbar { width: 0; height: 0; }
-    #hbfps .menu-pin { position: absolute; top: 7px; right: 7px; z-index: 11; } /* ☰ pinned to the panel's top-right (right of 詳細設定); stays put when the panel scrolls */
+    #hbfps .menu-pin { position: absolute; top: 7px; right: 7px; z-index: 11; /* ☰‹ pinned to the panel's top-right (right of 詳細設定); stays put when the panel scrolls */
+      width: auto; height: auto; padding: 3px 9px; font-size: 14px; letter-spacing: 2px; }
     #hbfps .pcol { padding: 10px 12px; }
     #hbfps .pcol-main { width: 300px; flex: 0 0 auto; }
-    #hbfps .pcol-adv { width: 0; max-height: 0; flex: 0 0 auto; overflow: hidden; padding: 0; transition: width .12s ease; } /* collapsed: no width AND no height (no empty margin) */
+    #hbfps .pcol-adv { width: 0; max-height: 0; flex: 0 0 auto; overflow: hidden; padding: 0; } /* collapsed: no width AND no height (no empty margin). instant toggle — animating width while max-height popped looked like a vertical-then-horizontal jump */
     #hbfps .panel.adv-open .pcol-adv { width: 292px; max-height: none; padding: 10px 12px; border-left: 1px solid #2a313c; } /* 詳細設定 = 2nd column */
     #hbfps .panel.collapsed { display: none; }
     #hbfps .panel h2 { margin: 0; font-size: 15px; }
@@ -150,7 +151,7 @@ root.innerHTML = `
     #hbfps .textbtn:hover { background: #2c3543; }
     #hbfps .drawer-open { position: absolute; top: 12px; left: 12px; z-index: 9; display: none;
       background: rgba(10,13,18,0.84); color: #cdd6e0; border: 1px solid #39424f;
-      border-radius: 8px; width: 34px; height: 30px; cursor: pointer; font-size: 16px; }
+      border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 15px; letter-spacing: 2px; }
     #hbfps .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 13px; }
     #hbfps .group-title { font-size: 11px; color: #8b97a6; text-transform: uppercase;
       letter-spacing: .06em; margin: 10px 0 2px; }
@@ -169,7 +170,7 @@ root.innerHTML = `
       background: #1b222c; color: #cdd6e0; border-radius: 7px; cursor: pointer; }
     #hbfps .modes button[aria-pressed=true] { background: #7c5cff; color: #fff; border-color: #7c5cff; }
     #hbfps .settings-head { cursor: pointer; user-select: none; display: flex; justify-content: space-between; align-items: center; }
-    #hbfps .settings-head .tg { color: #7c5cff; font-size: 11px; }
+    #hbfps .settings-head .tg { color: #c2b6ff; font-size: 11px; } /* lighter lavender — readable on dark */
     #hbfps #advanced { padding: 0; } /* no inner scroll — the whole panel scrolls */
     #hbfps .srow-group { font-size: 11px; color: #8b97a6; font-weight: 600; margin: 9px 0 1px; }
     #hbfps .srow.pair { grid-template-columns: 58px 1fr 24px 14px 0.85fr 20px; }
@@ -242,7 +243,7 @@ root.innerHTML = `
     #hbfps .help-card .primary { margin-top: 14px; }
   </style>
   <div class="panel adv-open" id="panel">
-   <button class="iconbtn menu-pin" id="drawerTab" title="メニュー / HUD を隠す">☰</button>
+   <button class="iconbtn menu-pin" id="drawerTab" title="メニュー / HUD を隠す">☰‹</button>
    <div class="pscroll">
    <div class="pcol pcol-main">
     <div class="phead">
@@ -301,7 +302,7 @@ root.innerHTML = `
    </div>
    </div>
   </div>
-  <button class="drawer-open" id="drawerOpen" title="メニュー / HUD を表示">☰</button>
+  <button class="drawer-open" id="drawerOpen" title="メニュー / HUD を表示">☰›</button>
   <div class="hud">
     HP <b id="hp">5</b><br>撃破 <b id="kills">0/20</b><br>敵 <b id="left">0</b>
   </div>
@@ -578,6 +579,7 @@ gun.position.copy(GUN_REST);
 camera.add(gun);
 let gunKick = 0;
 let walkPhase = 0, walkStepMark = 0, walkBob = 0, walkSway = 0; // walking head-bob + footstep cadence (move mode)
+let lastWalkX = 0, lastWalkZ = 0; // rig position last frame → measure real movement (keyboard OR stick)
 const WALK_RATE = WALK.rate, BOB_AMP = WALK.bobAmp, SWAY_AMP = WALK.swayAmp; // ← tuning.js
 
 // frontal shield (fixed mode) — green so it stands out from the blue sky
@@ -840,7 +842,7 @@ function startGame() {
   yaw = 0;
   rig.position.set(0, 0, 0);
   playerPos.set(0, 1.6, 0);
-  walkPhase = 0; walkStepMark = 0; walkBob = 0; walkSway = 0; camera.position.set(0, 1.6, 0); // reset head-bob/sway
+  walkPhase = 0; walkStepMark = 0; walkBob = 0; walkSway = 0; lastWalkX = 0; lastWalkZ = 0; camera.position.set(0, 1.6, 0); // reset head-bob/sway
   lastShotT = 0;
   clearProjectiles(); clearPlayerTracers(); clearDeathFx();
   for (const e of enemies) { worldGroup.remove(e.mesh); e.eyeMat.dispose(); }
@@ -1010,6 +1012,25 @@ function footstepHaptic() {
   const h = CONTENT.fps_walk.haptic;
   bridge.streamPcm(stereoBlip(0, { gain: h.gain, durMs: h.durMs, freq: h.freq }), { channels: 2, sampleRate: 16000, gain: 1 });
 }
+// Footstep SOUND (move mode) — a short low thud through the local AudioContext
+// (non-spatial, centred). Like the buzz, it masks the gunfire cue while you walk.
+function footstepSound() {
+  if (!bridge.master.audio) return;
+  const a = CONTENT.fps_walk.audio;
+  if (!a) return;
+  if (actx.state === "suspended") actx.resume();
+  const t0 = actx.currentTime, end = t0 + a.durMs / 1000;
+  const o = actx.createOscillator();
+  o.type = "triangle";
+  o.frequency.setValueAtTime(a.freq, t0);
+  o.frequency.exponentialRampToValueAtTime(a.freq * 0.6, end);
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(a.vol, t0 + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.0001, end);
+  o.connect(g).connect(masterGain);
+  o.start(t0); o.stop(end + 0.02);
+}
 
 function enemyShoot(e) {
   e.flash = 1;
@@ -1177,7 +1198,6 @@ function update(dt) {
 
   const active = playing && !paused && !renderer.xr.isPresenting;
   if (active) {
-    let moving = false;
     if (settings.mode === "move") {
       let mx = 0, mz = 0;
       if (keys.KeyW) mz -= 1;
@@ -1190,15 +1210,18 @@ function update(dt) {
         rig.position.x += (mx * cos + mz * sin) * settings.playerSpeed * dt;
         rig.position.z += (-mx * sin + mz * cos) * settings.playerSpeed * dt;
         clampToArena();
-        moving = true;
       }
     }
-    // walking head-bob + sway + footstep haptic (move mode, opt-in). The footstep
-    // buzz masks the enemy-fire cue → stand still to detect, move to dodge.
-    const walking = settings.walkFeedback && moving && settings.mode === "move";
+    // walking head-bob + sway + footstep (move mode, opt-in). Detect motion from the
+    // rig's ACTUAL displacement this frame so BOTH keyboard (WASD) and gamepad stick
+    // (moved earlier in pollGamepad) drive it — the pad path used to never set the
+    // old `moving` flag, so stick walkers felt/saw/heard nothing.
+    const movedDist = Math.hypot(rig.position.x - lastWalkX, rig.position.z - lastWalkZ);
+    lastWalkX = rig.position.x; lastWalkZ = rig.position.z;
+    const walking = settings.walkFeedback && settings.mode === "move" && movedDist > 0.0015;
     if (walking) {
       walkPhase += WALK_RATE * dt;
-      if (walkPhase - walkStepMark >= Math.PI) { walkStepMark += Math.PI; footstepHaptic(); }
+      if (walkPhase - walkStepMark >= Math.PI) { walkStepMark += Math.PI; footstepHaptic(); footstepSound(); }
       // DRIVE the bob directly (full amplitude) — easing toward an oscillating
       // target just low-passes it away, which is why it looked like nothing moved.
       walkBob = Math.sin(walkPhase) * BOB_AMP;        // 2 dips per stride (each footfall)
