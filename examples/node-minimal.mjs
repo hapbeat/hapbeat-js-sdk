@@ -3,7 +3,7 @@
 // (build first: npm run build)
 import { connect } from "../dist/node.js";
 
-const EVENT_ID = "impact.hit"; // must exist in the kit deployed to your device
+const EVENT_ID = "sample-kit.sine_100hz"; // must exist in the kit deployed to your device
 
 const hb = await connect({ appName: "NodeExample" });
 

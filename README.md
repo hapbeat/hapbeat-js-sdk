@@ -32,8 +32,8 @@ ESM-only (`"type": "module"`). The **browser** path also needs the helper daemon
 import { connect } from "@hapbeat/sdk";
 
 const hb = await connect({ appName: "MyApp" }); // opens UDP broadcast + keep-alive
-hb.play("impact.hit", { gain: 0.3 });           // fire by event id (gain 0..1)
-hb.play("impact.hit");                          // gain omitted → kit/EventMap baseline
+hb.play("sample-kit.sine_100hz", { gain: 0.3 });           // fire by event id (gain 0..1)
+hb.play("sample-kit.sine_100hz");                          // gain omitted → kit/EventMap baseline
 hb.stopAll();
 await hb.close();
 ```
@@ -44,10 +44,10 @@ await hb.close();
 import { connect } from "@hapbeat/sdk";
 
 const hb = await connect({ appName: "MyWebXR" }); // → ws://localhost:7703 (helper)
-hb.play("impact.hit", { gain: 0.5 });
+hb.play("sample-kit.sine_100hz", { gain: 0.5 });
 ```
 
-`"impact.hit"` must be an event id in the **kit deployed to the device** (via Hapbeat
+`"sample-kit.sine_100hz"` must be an event id in the **kit deployed to the device** (via Hapbeat
 Studio). Use it in React the same way — `connect()` once (e.g. in an effect / a
 module singleton), then `hb.play(...)` from event handlers.
 
@@ -61,7 +61,7 @@ import { connect, EventMap } from "@hapbeat/sdk";
 
 const manifest = await fetch("/my-kit/my-kit-manifest.json").then((r) => r.json());
 const hb = await connect({ eventMap: EventMap.fromManifest(manifest) });
-hb.play("impact.hit"); // uses the manifest's intensity for this event
+hb.play("sample-kit.sine_100hz"); // uses the manifest's intensity for this event
 ```
 
 ## command vs clip — two modes, one `play(id)`
@@ -99,9 +99,9 @@ new `openStream` ends the previous live stream.
 ```ts
 for (const d of await hb.discover(1500)) console.log(d.ip, d.address);
 
-hb.play("impact.hit", { target: "player_1/chest" }); // one device
-hb.play("impact.hit", { target: "*/chest" });         // all chest devices
-hb.play("impact.hit", { target: "" });                // broadcast (default)
+hb.play("sample-kit.sine_100hz", { target: "player_1/chest" }); // one device
+hb.play("sample-kit.sine_100hz", { target: "*/chest" });         // all chest devices
+hb.play("sample-kit.sine_100hz", { target: "" });                // broadcast (default)
 ```
 
 ## Project layout (where the kit lives)

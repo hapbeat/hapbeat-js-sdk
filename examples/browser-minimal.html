@@ -20,7 +20,7 @@
     </script>
   </head>
   <body>
-    <button id="fire">Play impact.hit</button>
+    <button id="fire">Play sample-kit.sine_100hz</button>
     <pre id="log"></pre>
     <script type="module">
       import { connect } from "@hapbeat/sdk";
@@ -35,7 +35,7 @@
         log("ERROR: " + e.message);
       }
 
-      document.getElementById("fire").onclick = () => hb?.play("impact.hit", { gain: 0.5 });
+      document.getElementById("fire").onclick = () => hb?.play("sample-kit.sine_100hz", { gain: 0.5 });
     </script>
   </body>
 </html>

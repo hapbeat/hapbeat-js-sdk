@@ -114,15 +114,15 @@ test("parsePong extended", () => {
 test("EventMap.fromManifest reads schema 2.0.0 intensity", () => {
   const em = EventMap.fromManifest({
     schema_version: "2.0.0",
-    events: { "impact.hit": { clip: "hit.wav", parameters: { intensity: 0.42 } } },
+    events: { "sample-kit.sine_100hz": { clip: "sine_100hz.wav", parameters: { intensity: 0.42 } } },
   });
-  assert.equal(em.gainFor("impact.hit"), 0.42);
+  assert.equal(em.gainFor("sample-kit.sine_100hz"), 0.42);
   assert.equal(em.gainFor("unknown"), 1.0);
 });
 
 test("Node transport: socket open + broadcast send + close (no device needed)", async () => {
   const hb = await connect({ appName: "WebSdkTest", keepalive: false });
-  assert.equal(hb.play("impact.hit", { gain: 0.1 }), undefined); // does not throw
+  assert.equal(hb.play("sample-kit.sine_100hz", { gain: 0.1 }), undefined); // does not throw
   hb.stopAll();
   await hb.close();
 });
@@ -168,7 +168,7 @@ test("parseWav reads PCM16; rejects non-WAV", () => {
 test("EventMap.fromManifest marks stream_events as clip mode", () => {
   const em = EventMap.fromManifest({
     schema_version: "2.0.0",
-    events: { "k.hit": { clip: "hit.wav", parameters: { intensity: 0.4 } } },
+    events: { "k.hit": { clip: "sine_100hz.wav", parameters: { intensity: 0.4 } } },
     stream_events: { "k.loop": { clip: "loop.wav", parameters: { intensity: 0.6 } } },
   });
   assert.equal(em.get("k.hit").streaming, false);
@@ -179,7 +179,7 @@ test("EventMap.fromManifest marks stream_events as clip mode", () => {
 test("facade play() branches fire vs clip from the manifest", async () => {
   const eventMap = EventMap.fromManifest({
     schema_version: "2.0.0",
-    events: { "k.hit": { clip: "hit.wav", parameters: { intensity: 0.4 } } },
+    events: { "k.hit": { clip: "sine_100hz.wav", parameters: { intensity: 0.4 } } },
     stream_events: { "k.stream": { clip: "loop.wav", parameters: { intensity: 0.6 } } },
   });
   const wav = makeWav({ sampleRate: 16000, channels: 1, samples: new Array(320).fill(1000) }); // 20ms

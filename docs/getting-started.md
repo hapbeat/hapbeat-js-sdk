@@ -6,7 +6,7 @@ Drive a Hapbeat device from JavaScript or TypeScript.
 
 - A Hapbeat device on the **same Wi-Fi/LAN** as your machine.
 - A **kit deployed to the device** via [Hapbeat Studio](https://devtools.hapbeat.com),
-  defining the event ids you can play (e.g. `impact.hit`).
+  defining the event ids you can play (e.g. `sample-kit.sine_100hz`).
 - For **browser** use: [hapbeat-helper](https://github.com/hapbeat/hapbeat-helper)
   running locally (`pip install hapbeat-helper`), since browsers can't open raw UDP.
 
@@ -22,7 +22,7 @@ npm install @hapbeat/sdk
 import { connect } from "@hapbeat/sdk";
 
 const hb = await connect({ appName: "MyApp" });
-hb.play("impact.hit", { gain: 0.5 });
+hb.play("sample-kit.sine_100hz", { gain: 0.5 });
 await hb.close();
 ```
 
@@ -36,7 +36,7 @@ import { connect } from "@hapbeat/sdk";
 
 // helper must be running locally (ws://localhost:7703)
 const hb = await connect({ appName: "MyWebXR" });
-hb.play("impact.hit", { gain: 0.5 });
+hb.play("sample-kit.sine_100hz", { gain: 0.5 });
 ```
 
 Your bundler (Vite, webpack, esbuild) automatically picks the browser build via
@@ -49,15 +49,15 @@ import { connect, EventMap } from "@hapbeat/sdk";
 
 const manifest = await fetch("/my-kit/my-kit-manifest.json").then((r) => r.json());
 const hb = await connect({ eventMap: EventMap.fromManifest(manifest) });
-hb.play("impact.hit");   // fires at the manifest's authored intensity
+hb.play("sample-kit.sine_100hz");   // fires at the manifest's authored intensity
 ```
 
 ## Targeting
 
 ```ts
-hb.play("impact.hit", { target: "player_1/chest" }); // one device
-hb.play("impact.hit", { target: "*/chest" });         // all chest devices
-hb.play("impact.hit");                                 // broadcast (all)
+hb.play("sample-kit.sine_100hz", { target: "player_1/chest" }); // one device
+hb.play("sample-kit.sine_100hz", { target: "*/chest" });         // all chest devices
+hb.play("sample-kit.sine_100hz");                                 // broadcast (all)
 ```
 
 ## Fire vs. clip — two modes, one `play()`
@@ -86,7 +86,7 @@ const hb = await connect({
 
 await hb.preloadClips();      // optional: decode clip WAVs up front (no first-play latency)
 
-hb.play("impact.hit");        // fire  → device plays its installed clip
+hb.play("sample-kit.sine_100hz");        // fire  → device plays its installed clip
 hb.play("rumble.loop");       // clip  → SDK streams stream-clips/rumble_loop.wav over UDP
 hb.stop("rumble.loop");       // stops the active stream
 ```
@@ -96,7 +96,7 @@ Manifest excerpt:
 ```jsonc
 {
   "schema_version": "2.0.0",
-  "events":        { "impact.hit":  { "clip": "hit.wav",  "parameters": { "intensity": 0.5 } } },
+  "events":        { "sample-kit.sine_100hz":  { "clip": "sine_100hz.wav",  "parameters": { "intensity": 0.5 } } },
   "stream_events": { "rumble.loop": { "clip": "rumble_loop.wav", "parameters": { "intensity": 0.6 } } }
 }
 ```
