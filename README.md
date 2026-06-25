@@ -26,9 +26,6 @@ npm install @hapbeat/sdk
 ESM-only (`"type": "module"`). The **browser** path also needs the helper daemon:
 `pip install hapbeat-helper` → run `hapbeat-helper`.
 
-> npm publish is pending. Until then, install from a checkout
-> (`npm install && npm run build`, then `npm link`) or a git dependency.
-
 ## Quick start — Node
 
 ```ts

@@ -42,9 +42,6 @@ instruction.
 npm install @hapbeat/sdk
 ```
 
-(npm publish pending; until then `npm install && npm run build`, then `npm link`,
-or use a git dependency.)
-
 ## Quick start — Node (make it vibrate)
 
 ```ts
