@@ -1,11 +1,15 @@
 # `@hapbeat/sdk` examples
 
+These examples live in the repo — they're **not** in the npm package (only `dist`
+ships). Clone it to use them: `git clone https://github.com/hapbeat/hapbeat-js-sdk`.
+
 Runnable references, smallest first.
 
 | Example | For | Shows | Needs |
 |---|---|---|---|
 | [`node-minimal.mjs`](./node-minimal.mjs) | Node | `connect()` → `play(id)` → `close()` over UDP | a Hapbeat on the LAN + a deployed kit (for sound) |
 | [`browser-minimal.html`](./browser-minimal.html) | Browser | the same call over the helper WebSocket | `hapbeat-helper` running + HTTP server |
+| [`react-native/`](./react-native/) | Android/iOS app | helper-free direct UDP from the phone, command + streaming | `react-native-udp` + `fast-text-encoding`, a Hapbeat on the LAN |
 | [`games/`](./games/) | Browser | the full pattern: `EventMap` + kit manifest + the file-first/synth router, across an FPS and 3 mini-games | served over HTTP; helper for haptics |
 
 ## Before you run

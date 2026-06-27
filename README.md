@@ -63,9 +63,11 @@ const hb = await connect({ appName: "MyApp" }); // direct UDP broadcast from the
 hb.play("sample-kit.sine_100hz", { gain: 0.5 });
 ```
 
-Install the optional native module: `npm install react-native-udp` (autolinked). On
-RN < 0.74, add a `TextEncoder`/`TextDecoder` polyfill. A runnable Android demo with
-buttons (command + streaming) is in [`examples/react-native/`](./examples/react-native/).
+Install the optional native module + the required polyfill: `npm install react-native-udp
+fast-text-encoding` (RN Hermes — including 0.86 — ships `TextEncoder` but **not**
+`TextDecoder`). Also add the `metro.config.js` resolver and `import 'fast-text-encoding'`
+as the first import. Full setup + a runnable Android demo (command + streaming, verified
+on a physical device) is in [`examples/react-native/`](./examples/react-native/).
 
 ## EventMap — the tuning side (optional)
 
@@ -137,8 +139,13 @@ clips from a bundle / IndexedDB.
 
 ## Examples
 
+The `examples/` folder is **not** in the npm package (only `dist` ships). Clone the repo
+to use them: `git clone https://github.com/hapbeat/hapbeat-js-sdk`.
+
 - [`examples/node-minimal.mjs`](./examples/node-minimal.mjs) — fire an event from Node.
 - [`examples/browser-minimal.html`](./examples/browser-minimal.html) — fire from a page (helper).
+- [`examples/react-native/`](./examples/react-native/) — an Android demo: button taps →
+  command + streaming, direct UDP from the phone (**no helper**).
 - [`examples/games/`](./examples/games/) — a browser **haptic-demo arcade** (FPS +
   mini-games) showing the EventMap / kit-manifest / file-vs-synth router pattern.
   Run `npm run dev` and open the printed URL.
