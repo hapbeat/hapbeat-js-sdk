@@ -6,12 +6,12 @@
  * full setup (install @hapbeat/sdk + react-native-udp, polyfill, run).
  */
 
-// --- TextEncoder/TextDecoder polyfill (RN < 0.74 lacks them) ---------------
-// The wire protocol encodes strings (event ids, app name) with TextEncoder.
-// If you target RN < 0.74, `npm i text-encoding` and uncomment:
-// import { TextEncoder, TextDecoder } from 'text-encoding';
-// // @ts-ignore
-// if (typeof global.TextEncoder === 'undefined') { global.TextEncoder = TextEncoder; global.TextDecoder = TextDecoder; }
+// --- TextEncoder/TextDecoder polyfill (REQUIRED) ---------------------------
+// The wire protocol uses TextEncoder/TextDecoder. RN's Hermes (incl. 0.86)
+// ships TextEncoder but NOT TextDecoder, so a polyfill is required. It must run
+// before @hapbeat/sdk loads, so keep it as the very first import (`npm i
+// fast-text-encoding`). Verified on Android with RN 0.86.
+import 'fast-text-encoding';
 
 import React, { useEffect, useRef, useState } from 'react';
 import {

@@ -7,8 +7,9 @@ device. Button taps send a command (`play`) and a 1‑second synthesized
 streaming buffer.
 
 > This example ships only `App.tsx` (drop it into a bare RN app). It is not a
-> full project — follow the steps below. **Not yet verified on a physical
-> device**; please report back.
+> full project — follow the steps below. **Verified on a physical Android device
+> with React Native 0.86** (Hermes / New Architecture): the UDP socket binds, a
+> Hapbeat is discovered, and command + streaming both fire — all without a helper.
 
 ## Prerequisites
 
@@ -24,8 +25,8 @@ streaming buffer.
 npx @react-native-community/cli@latest init HapbeatRnDemo
 cd HapbeatRnDemo
 
-# 2. Install the UDP native module (autolinked) + the SDK
-npm install react-native-udp
+# 2. Install: the UDP native module (autolinked), the TextDecoder polyfill, the SDK
+npm install react-native-udp fast-text-encoding
 
 # 2a. Until @hapbeat/sdk >= 0.2.0 is on npm, install the local build:
 #     in the SDK repo:  npm run build && npm pack   → hapbeat-sdk-0.2.0.tgz
@@ -35,21 +36,35 @@ npm install react-native-udp
 # 3. Drop in this App.tsx (replace the generated one)
 cp /path/to/hapbeat-js-sdk/examples/react-native/App.tsx ./App.tsx
 
-# 4. Run on Android
+# 4. Tell Metro to honor the package "react-native" export condition (see below)
+
+# 5. Run on Android
 npx react-native run-android
 ```
 
-## Polyfill (RN < 0.74 only)
+### metro.config.js
 
-The wire protocol uses `TextEncoder`/`TextDecoder`. RN 0.74+ provides them. On
-older RN, install a polyfill and uncomment the block at the top of `App.tsx`:
+So `@hapbeat/sdk` resolves to its `react-native` build (UDP), add to the resolver:
 
-```bash
-npm install text-encoding
+```js
+const config = {
+  resolver: {
+    unstable_enablePackageExports: true,
+    unstable_conditionNames: ['react-native', 'require', 'default'],
+  },
+};
 ```
 
-(An ASCII `appName` like `"RN Demo"` is used here. A Japanese `appName` for the
-OLED needs the full UTF‑8 polyfill / RN 0.74+.)
+## Polyfill: TextDecoder (required)
+
+The wire protocol uses `TextEncoder`/`TextDecoder`. RN's Hermes — **including
+0.86** — ships `TextEncoder` but **not** `TextDecoder`, so `npm i
+fast-text-encoding` is required and `import 'fast-text-encoding';` must be the
+**first import** (it is, at the top of `App.tsx`). Without it you get
+`ReferenceError: Property 'TextDecoder' doesn't exist` on connect.
+
+(An ASCII `appName` like `"RN Demo"` is used here; `fast-text-encoding` also
+covers a Japanese `appName` for the OLED.)
 
 The protocol also uses `BigInt` / `DataView.setBigInt64` (timestamps). Hermes has
 supported `BigInt` since RN 0.70, so no action is needed on any modern RN; only a

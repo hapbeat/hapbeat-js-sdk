@@ -14,8 +14,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   and broadcasts straight from the phone over Wi-Fi — **no `hapbeat-helper`
   needed** (a phone is not sandboxed like a browser). Same wire format as Node.
   - `react-native-udp` is an optional peer dependency; install it in the app.
-  - On RN runtimes without `TextEncoder`/`TextDecoder` (RN < 0.74), add a
-    polyfill — see `examples/react-native/`.
+  - Needs a `TextDecoder` polyfill (`fast-text-encoding`): RN Hermes — incl.
+    **0.86** — ships `TextEncoder` but not `TextDecoder`. See `examples/react-native/`.
+  - **Verified on a physical Android device (RN 0.86, Hermes / New Architecture):**
+    UDP socket binds, a Hapbeat is discovered, command + streaming both fire — no helper.
 - **`examples/react-native/`** — a minimal Android demo: button taps send a
   command (`play`) and a 1 s synthesized streaming buffer.
 
@@ -24,6 +26,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Internal: Node and React Native transports now share `UdpTransportBase`
   (all protocol/keepalive/discovery logic); only the socket plumbing differs.
   No public API change for the Node/Browser builds.
+
+### Fixed
+
+- `src/index.ts` re-exports the wire layer as `import * as protocol; export
+  { protocol }` instead of `export * as protocol`, so React Native's Metro
+  bundles it without the `@babel/plugin-transform-export-namespace-from` plugin.
 
 ## [0.1.0] - 2026-06-25
 
