@@ -1,7 +1,7 @@
 {
   "name": "@hapbeat/sdk",
-  "version": "0.1.0",
-  "description": "Web/Node SDK for driving Hapbeat haptic devices (direct UDP in Node, hapbeat-helper WebSocket in the browser)",
+  "version": "0.2.0",
+  "description": "JavaScript/TypeScript SDK for driving Hapbeat haptic devices (direct UDP in Node and React Native, hapbeat-helper WebSocket in the browser)",
   "type": "module",
   "license": "MIT",
   "author": "Hapbeat",
@@ -11,13 +11,14 @@
     "url": "git+https://github.com/hapbeat/hapbeat-js-sdk.git"
   },
   "bugs": "https://github.com/hapbeat/hapbeat-js-sdk/issues",
-  "keywords": ["hapbeat", "haptics", "udp", "osc", "webxr", "three.js", "vr", "creative-coding"],
+  "keywords": ["hapbeat", "haptics", "udp", "osc", "webxr", "three.js", "vr", "react-native", "creative-coding"],
   "main": "./dist/node.js",
   "module": "./dist/node.js",
   "types": "./dist/node.d.ts",
   "exports": {
     ".": {
       "node": { "types": "./dist/node.d.ts", "default": "./dist/node.js" },
+      "react-native": { "types": "./dist/react-native.d.ts", "default": "./dist/react-native.js" },
       "browser": { "types": "./dist/browser.d.ts", "default": "./dist/browser.js" },
       "default": { "types": "./dist/browser.d.ts", "default": "./dist/browser.js" }
     }
@@ -34,6 +35,12 @@
     "prepublishOnly": "npm run build"
   },
   "engines": { "node": ">=18" },
+  "peerDependencies": {
+    "react-native-udp": ">=4"
+  },
+  "peerDependenciesMeta": {
+    "react-native-udp": { "optional": true }
+  },
   "devDependencies": {
     "@types/node": "^22",
     "typescript": "^5.5"

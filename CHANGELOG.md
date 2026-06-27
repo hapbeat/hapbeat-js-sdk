@@ -6,6 +6,25 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **React Native transport** — a third `connect()` build resolved via the
+  package `exports` `"react-native"` condition (`dist/react-native.js`). It opens
+  a real UDP socket through the optional peer dependency **`react-native-udp`**
+  and broadcasts straight from the phone over Wi-Fi — **no `hapbeat-helper`
+  needed** (a phone is not sandboxed like a browser). Same wire format as Node.
+  - `react-native-udp` is an optional peer dependency; install it in the app.
+  - On RN runtimes without `TextEncoder`/`TextDecoder` (RN < 0.74), add a
+    polyfill — see `examples/react-native/`.
+- **`examples/react-native/`** — a minimal Android demo: button taps send a
+  command (`play`) and a 1 s synthesized streaming buffer.
+
+### Changed
+
+- Internal: Node and React Native transports now share `UdpTransportBase`
+  (all protocol/keepalive/discovery logic); only the socket plumbing differs.
+  No public API change for the Node/Browser builds.
+
 ## [0.1.0] - 2026-06-25
 
 Initial public release. One API, two transports.

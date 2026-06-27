@@ -1,9 +1,12 @@
 # Hapbeat JS/TS SDK
 
 Drive [Hapbeat](https://hapbeat.com) haptic devices from JavaScript / TypeScript.
-**One API, two transports:**
+**One API, three transports:**
 
 - **Node** (Electron, servers, CLIs, creative-coding) → direct Wi-Fi **UDP** broadcast.
+- **React Native** (Android / iOS apps) → direct Wi-Fi **UDP** broadcast via the
+  optional [`react-native-udp`](https://www.npmjs.com/package/react-native-udp) — a
+  phone can open a real UDP socket, so **no helper** is needed.
 - **Browser** (WebXR, three.js / Babylon.js / p5.js, React, jsPsych experiments) →
   relays through [hapbeat-helper](https://github.com/hapbeat/hapbeat-helper) over a
   local **WebSocket**, because browsers cannot open raw UDP sockets.
@@ -50,6 +53,19 @@ hb.play("sample-kit.sine_100hz", { gain: 0.5 });
 `"sample-kit.sine_100hz"` must be an event id in the **kit deployed to the device** (via Hapbeat
 Studio). Use it in React the same way — `connect()` once (e.g. in an effect / a
 module singleton), then `hb.play(...)` from event handlers.
+
+## Quick start — React Native (Android / iOS, no helper)
+
+```ts
+import { connect } from "@hapbeat/sdk"; // resolves to the "react-native" build (Metro)
+
+const hb = await connect({ appName: "MyApp" }); // direct UDP broadcast from the phone
+hb.play("sample-kit.sine_100hz", { gain: 0.5 });
+```
+
+Install the optional native module: `npm install react-native-udp` (autolinked). On
+RN < 0.74, add a `TextEncoder`/`TextDecoder` polyfill. A runnable Android demo with
+buttons (command + streaming) is in [`examples/react-native/`](./examples/react-native/).
 
 ## EventMap — the tuning side (optional)
 

@@ -14,13 +14,20 @@ devices from JS/TS correctly from one file. Package name: `@hapbeat/sdk`.
 
 ## What it is
 
-A thin SDK to fire haptic events on Hapbeat devices over the LAN. One API, two
+A thin SDK to fire haptic events on Hapbeat devices over the LAN. One API, three
 transports, chosen automatically by the package `exports` map:
 
 - **Node** (Electron, servers, CLIs, creative-coding) → direct Wi-Fi UDP broadcast.
+- **React Native** (Android / iOS) → direct Wi-Fi UDP broadcast via the optional
+  peer dep **`react-native-udp`**. A phone is not sandboxed like a browser, so it
+  opens a real UDP socket — **no helper**. Same wire format as Node.
 - **Browser** (WebXR, three.js / Babylon.js, p5.js, jsPsych) → relays through
   **hapbeat-helper** over WebSocket (`ws://localhost:7703`), because browsers
   cannot open raw UDP sockets.
+
+Entries: `src/node.ts` (dgram), `src/react-native.ts` (`react-native-udp`),
+`src/browser.ts` (helper WS); all three share `src/transport-udp-base.ts` /
+`src/protocol.ts`.
 
 It does **not** author haptics, run a cloud, mix multiple sources, or modulate
 gain/pan mid-clip. The waveform lives in the kit on the device; the SDK sends the
