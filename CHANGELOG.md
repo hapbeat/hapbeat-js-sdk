@@ -4,10 +4,6 @@
 形式は [Keep a Changelog](https://keepachangelog.com/) に、バージョン付けは
 [Semantic Versioning](https://semver.org/) に従います。
 
-## [Unreleased]
-
-（次リリースに向けた未確定の変更をここに溜めます。現在はありません）
-
 ## [0.2.1] - 2026-06-29
 
 ### 変更（Changed）
@@ -87,7 +83,6 @@
 - サンプル: `examples/node-minimal.mjs`、`examples/browser-minimal.html`、および
   `examples/games/` 配下のブラウザ触覚デモ集。
 
-[Unreleased]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.2.1...HEAD
 [0.2.1]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/hapbeat/hapbeat-js-sdk/releases/tag/v0.1.0
