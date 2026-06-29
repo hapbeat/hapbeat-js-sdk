@@ -29,7 +29,7 @@ export class NodeUdpTransport extends UdpTransportBase {
           } catch {
             /* ignore */
           }
-          // Port busy (e.g. hapbeat-helper holds 7700) -> ephemeral fallback.
+          // bindPort busy (e.g. another listener on it) -> ephemeral fallback.
           if (!isFallback) bind(0, true);
           else reject(err);
         };
@@ -43,7 +43,8 @@ export class NodeUdpTransport extends UdpTransportBase {
           resolve();
         });
       };
-      bind(this.port, false);
+      // Receive on bindPort (ephemeral by default per DEC-036); send to this.port.
+      bind(this.bindPort, false);
     });
   }
 

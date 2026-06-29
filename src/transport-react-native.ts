@@ -32,7 +32,7 @@ export class ReactNativeUdpTransport extends UdpTransportBase {
           } catch {
             /* ignore */
           }
-          // Port busy -> ephemeral fallback (a phone usually has 7700 free).
+          // bindPort busy -> ephemeral fallback (a phone usually has it free).
           if (!isFallback) bind(0, true);
           else reject(err);
         };
@@ -50,7 +50,8 @@ export class ReactNativeUdpTransport extends UdpTransportBase {
           resolve();
         });
       };
-      bind(this.port, false);
+      // Receive on bindPort (ephemeral by default per DEC-036); send to this.port.
+      bind(this.bindPort, false);
     });
   }
 

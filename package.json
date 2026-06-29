@@ -1,6 +1,6 @@
 {
   "name": "@hapbeat/sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "JavaScript/TypeScript SDK for driving Hapbeat haptic devices (direct UDP in Node and React Native, hapbeat-helper WebSocket in the browser)",
   "type": "module",
   "license": "MIT",

@@ -12,8 +12,17 @@ export interface Device {
 }
 
 export interface HapbeatOptions {
-  /** UDP port (Node transport). Default 7700. */
+  /** UDP destination port commands are sent to (Node/RN transport). Default 7700. */
   port?: number;
+  /**
+   * Local UDP port to bind the *receive* socket to (Node/RN transport).
+   * Default `0` = ephemeral (OS-assigned), per DEC-036: only the daemon
+   * (hapbeat-helper) binds the well-known 7700; SDKs receive on an ephemeral
+   * port and send to 7700, so an SDK never steals 7700 from the helper.
+   * Set `bindPort: 7700` to opt in to binding the well-known port (e.g. a
+   * daemon-style listener); it falls back to ephemeral if 7700 is busy.
+   */
+  bindPort?: number;
   /** Broadcast address (Node transport). Default 255.255.255.255. */
   broadcastAddr?: string;
   /** Helper WebSocket URL (Browser transport). Default ws://localhost:7703. */

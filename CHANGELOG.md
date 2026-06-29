@@ -6,6 +6,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-29
+
+### Changed
+
+- **Node / React Native transport: the receive socket now binds an ephemeral
+  (OS-assigned) port by default** instead of trying the well-known `7700` first
+  (DEC-036). Only the daemon (`hapbeat-helper`) should bind `7700`; an SDK that
+  grabbed it first could break a later-starting helper (and Studio). Sends still
+  go to `7700`; PONGs return to the ephemeral source port so discovery is
+  unaffected. This aligns the JS SDK with the Python and Unity SDKs.
+
+### Added
+
+- **`bindPort` option** — opt in to binding a specific local receive port (e.g.
+  `bindPort: 7700` for a daemon-style listener that wants unsolicited
+  broadcasts). Falls back to ephemeral if the port is busy. Default `0`
+  (ephemeral).
+
 ## [0.2.0] - 2026-06-29
 
 ### Added
@@ -64,6 +82,7 @@ Initial public release. One API, two transports.
 - Examples: `examples/node-minimal.mjs`, `examples/browser-minimal.html`, and a
   browser haptic‑demo arcade under `examples/games/`.
 
-[Unreleased]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/hapbeat/hapbeat-js-sdk/releases/tag/v0.1.0

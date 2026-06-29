@@ -16,6 +16,8 @@ const KEEPALIVE_MS = 5000;
 
 export abstract class UdpTransportBase implements Transport {
   protected readonly port: number;
+  /** Local receive-bind port. 0 = ephemeral (DEC-036 default). */
+  protected readonly bindPort: number;
   protected readonly broadcastAddr: string;
   protected readonly appName: string;
   protected readonly deviceName: string;
@@ -28,6 +30,7 @@ export abstract class UdpTransportBase implements Transport {
 
   constructor(options: HapbeatOptions = {}) {
     this.port = options.port ?? DEFAULT_UDP_PORT;
+    this.bindPort = options.bindPort ?? 0; // ephemeral by default (DEC-036)
     this.broadcastAddr = options.broadcastAddr ?? DEFAULT_BROADCAST;
     this.appName = (options.appName ?? "").slice(0, protocol.MAX_APP_NAME_LEN);
     this.deviceName = options.deviceName ?? "";

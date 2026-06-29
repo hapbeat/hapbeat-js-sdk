@@ -5,7 +5,8 @@ import { test } from "node:test";
 
 import * as protocol from "../dist/protocol.js";
 import { EventMap, Hapbeat, parseWav } from "../dist/index.js";
-import { connect } from "../dist/node.js";
+import { connect, NodeUdpTransport } from "../dist/node.js";
+import * as dgram from "node:dgram";
 
 // Build a minimal 16-bit PCM WAV in memory for clip tests.
 function makeWav({ sampleRate = 16000, channels = 1, samples = [] }) {
@@ -125,6 +126,36 @@ test("Node transport: socket open + broadcast send + close (no device needed)", 
   assert.equal(hb.play("sample-kit.sine_100hz", { gain: 0.1 }), undefined); // does not throw
   hb.stopAll();
   await hb.close();
+});
+
+test("Node transport: default receive bind is ephemeral, not 7700 (DEC-036)", async () => {
+  const t = new NodeUdpTransport({ keepalive: false });
+  await t.connect();
+  const port = t.socket.address().port; // TS-private at compile; present at runtime
+  assert.notEqual(port, 7700, "default bind must not take the well-known 7700");
+  assert.ok(port > 0);
+  await t.close();
+});
+
+test("Node transport: coexists with a daemon holding 7700 (DEC-036)", async () => {
+  // Simulate hapbeat-helper owning the well-known receive port.
+  const daemon = dgram.createSocket({ type: "udp4", reuseAddr: true });
+  await new Promise((res, rej) => {
+    daemon.once("error", rej);
+    daemon.bind(7700, res);
+  });
+  const t = new NodeUdpTransport({ keepalive: false });
+  await t.connect();
+  assert.notEqual(t.socket.address().port, 7700, "SDK must not fight for 7700");
+  await t.close();
+  daemon.close();
+});
+
+test("Node transport: bindPort opt-in binds the well-known port when free", async () => {
+  const t = new NodeUdpTransport({ keepalive: false, bindPort: 7700 });
+  await t.connect();
+  assert.equal(t.socket.address().port, 7700);
+  await t.close();
 });
 
 // ── Clip streaming (contracts §0x30–0x32) ──────────────────────────────────
