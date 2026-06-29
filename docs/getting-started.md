@@ -42,6 +42,44 @@ hb.play("sample-kit.sine_100hz", { gain: 0.5 });
 Your bundler (Vite, webpack, esbuild) automatically picks the browser build via
 the package `exports` map.
 
+## React Native (Android / iOS)
+
+A phone isn't sandboxed like a browser, so it can open a real UDP socket and
+broadcast straight over Wi-Fi — **no hapbeat-helper needed**. Same wire format
+as Node.
+
+```ts
+import "fast-text-encoding";          // must be the FIRST import (before @hapbeat/sdk)
+import { connect } from "@hapbeat/sdk";
+
+const hb = await connect({ appName: "MyApp" });
+hb.play("sample-kit.sine_100hz", { gain: 0.5 });
+```
+
+App-side setup:
+
+```bash
+npm install react-native-udp fast-text-encoding
+```
+
+- `react-native-udp` is an **optional peer dependency** (autolinked) that backs
+  the UDP socket.
+- `fast-text-encoding` is a **required polyfill**: RN Hermes (incl. 0.86) ships
+  `TextEncoder` but not `TextDecoder`, which the wire decoder needs. Import it
+  before `@hapbeat/sdk` or you get `ReferenceError: Property 'TextDecoder'`.
+- Enable package `exports` in `metro.config.js`:
+
+  ```js
+  config.resolver.unstable_enablePackageExports = true;
+  config.resolver.unstable_conditionNames = ["react-native", "require", "default"];
+  ```
+
+- **iOS 14+** needs a local-network usage description (`NSLocalNetworkUsageDescription`).
+  **Android** broadcasts work out of the box; PONG discovery may need a multicast lock.
+
+See `examples/react-native/` for a runnable Android demo. Verified on a physical
+Android device (RN 0.86, Hermes / New Architecture).
+
 ## Keep intensities out of firing code
 
 ```ts

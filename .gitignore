@@ -4,6 +4,9 @@ node_modules/
 # Build output (published to npm, not committed)
 dist/
 
+# npm pack artifact
+*.tgz
+
 # Logs / misc
 *.log
 .DS_Store

@@ -6,6 +6,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-29
+
 ### Added
 
 - **React Native transport** — a third `connect()` build resolved via the
@@ -62,5 +64,6 @@ Initial public release. One API, two transports.
 - Examples: `examples/node-minimal.mjs`, `examples/browser-minimal.html`, and a
   browser haptic‑demo arcade under `examples/games/`.
 
-[Unreleased]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/hapbeat/hapbeat-js-sdk/releases/tag/v0.1.0
