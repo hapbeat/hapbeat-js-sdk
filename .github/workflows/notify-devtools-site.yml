@@ -1,11 +1,13 @@
 name: Notify devtools-site of docs change
 
 # このワークフローの目的:
-#   docs/ 配下のファイルまたは CHANGELOG.md が変更された push のみ devtools-site
+#   docs/ 配下のファイル・CHANGELOG.md・examples/games/（devtools-site が
+#   https://devtools.hapbeat.com/demos/arcade/ でホストする Hapbeat Arcade デモ）
+#   が変更された push のみ devtools-site
 #   (https://github.com/Hapbeat/hapbeat-devtools-site) に
 #   repository_dispatch を投げ、portal site の自動再ビルド・デプロイを起動する。
 #
-#   機能改善・バグ修正など docs/ / CHANGELOG.md 以外の push では走らない。
+#   機能改善・バグ修正など上記パス以外の push では走らない。
 #
 # 必要 secret:
 #   DOCS_SITE_DISPATCH_TOKEN
@@ -25,6 +27,7 @@ on:
     paths:
       - 'docs/**'
       - 'CHANGELOG.md'
+      - 'examples/games/**'
   workflow_dispatch:
 
 jobs:

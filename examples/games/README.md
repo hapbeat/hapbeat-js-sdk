@@ -12,6 +12,9 @@
 
 各ゲームに 難易度（Normal/Hard/Expert）・自己ベスト（localStorage 保存）・クリア後の「もう一度 / メニュー」導線・画面シェイク＋粒子の演出を実装。ヘッダーに全画面（⛶）ボタンあり（キオスク向け）。
 
+> **ブラウザですぐ試せる**: ローカルで動かさなくても <https://devtools.hapbeat.com/demos/arcade/> で試遊できる（ホスト版）。
+> 触覚を出すには **hapbeat-helper 起動 + Hapbeat 実機 + demo-kit 配備** が必要（無くても音と映像で試遊可）。
+
 ---
 
 ## アーキテクチャ

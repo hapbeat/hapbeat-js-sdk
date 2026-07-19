@@ -148,7 +148,9 @@ to use them: `git clone https://github.com/hapbeat/hapbeat-js-sdk`.
   command + streaming, direct UDP from the phone (**no helper**).
 - [`examples/games/`](./examples/games/) — a browser **haptic-demo arcade** (FPS +
   mini-games) showing the EventMap / kit-manifest / file-vs-synth router pattern.
-  Run `npm run dev` and open the printed URL.
+  Run `npm run dev` and open the printed URL. Also **hosted** —
+  try it without cloning at <https://devtools.hapbeat.com/demos/arcade/>
+  (haptics need `hapbeat-helper` running + a real Hapbeat device with the demo kit deployed).
 
 ## For AI coding agents
 
