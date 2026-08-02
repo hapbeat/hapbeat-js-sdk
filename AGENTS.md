@@ -17,8 +17,8 @@ devices from JS/TS correctly from one file. Package name: `@hapbeat/sdk`.
 A thin SDK to fire haptic events on Hapbeat devices over the LAN. One API, three
 transports, chosen automatically by the package `exports` map:
 
-- **Node** (Electron, servers, CLIs, creative-coding) → direct Wi-Fi UDP broadcast.
-- **React Native** (Android / iOS) → direct Wi-Fi UDP broadcast via the optional
+- **Node** (Electron, servers, CLIs, creative-coding) → direct Wi-Fi UDP.
+- **React Native** (Android / iOS) → direct Wi-Fi UDP via the optional
   peer dep **`react-native-udp`**. A phone is not sandboxed like a browser, so it
   opens a real UDP socket — **no helper**. Same wire format as Node.
 - **Browser** (WebXR, three.js / Babylon.js, p5.js, jsPsych) → relays through
@@ -54,7 +54,7 @@ npm install @hapbeat/sdk
 ```ts
 import { connect } from "@hapbeat/sdk";
 
-const hb = await connect({ appName: "MyApp" }); // opens UDP broadcast + keep-alive
+const hb = await connect({ appName: "MyApp" }); // opens the UDP socket + keep-alive
 hb.play("sample-kit.sine_100hz", { gain: 0.3 });           // gain 0..1; fire by event id
 hb.play("sample-kit.sine_100hz");                          // gain omitted -> EventMap/kit baseline
 hb.stopAll();
@@ -74,12 +74,13 @@ hb.play("sample-kit.sine_100hz", { gain: 0.5 });
 ```
 
 Bundlers pick the browser build automatically. The helper (`pip install
-hapbeat-helper`) does the UDP broadcast on the page's behalf.
+hapbeat-helper`) sends the UDP on the page's behalf, and decides unicast vs
+broadcast itself.
 
 ## Public API (verbatim signatures)
 
 ```ts
-// Node:    src/node.ts     — UDP broadcast transport
+// Node:    src/node.ts     — direct UDP transport
 // Browser: src/browser.ts  — helper WebSocket transport
 connect(options?: HapbeatOptions): Promise<Hapbeat>
 ```
@@ -93,11 +94,13 @@ helperUrl?: string;        // Browser. Default "ws://localhost:7703".
 appName?: string;          // OLED app name (Node keep-alive). Max 16 chars.
 deviceName?: string;
 group?: number;            // group id this sender targets
-defaultTarget?: string;    // device-addressing target; "" = broadcast
+defaultTarget?: string;    // device-addressing target; "" = every device
 onConnectionLost?: () => void;   // Browser: helper WS dropped
 connectTimeoutMs?: number;       // Browser. Default 4000.
 eventMap?: EventMap;       // tuning catalog for default gains
-keepalive?: boolean;       // CONNECT_STATUS keep-alive (Node). Default true.
+keepalive?: boolean;       // PING (+CONNECT_STATUS) keep-alive (Node/RN). Default true.
+unicast?: boolean;         // Node/RN: unicast to PONGing devices. Default true.
+deviceTtlMs?: number;      // Node/RN: destination liveness window. Default 15000.
 clipBase?: string;         // base URL prefix (Browser) / dir path (Node) for clip WAVs
 clipLoader?: (ref: string) => Promise<ArrayBuffer | Uint8Array>;
 streamSendAheadSec?: number;     // clip send-ahead (< 0.256). Default 0.15.
@@ -186,13 +189,27 @@ the previous — "1 session = 1 stream"):
 ```ts
 for (const d of await hb.discover(1500)) console.log(d.ip, d.address);
 
-hb.play("sample-kit.sine_100hz", { target: "player_1/chest" }); // one device
-hb.play("sample-kit.sine_100hz", { target: "*/chest" });         // all chest devices
+hb.play("sample-kit.sine_100hz", { target: "player_1/pos_neck" }); // one device
+hb.play("sample-kit.sine_100hz", { target: "*/pos_neck" });        // that position, every player
+hb.play("sample-kit.sine_100hz", { target: "*/*/group_2" });       // group 2
 ```
 
-Target resolution: call-site `target` > `defaultTarget`. `""` = broadcast.
-Target syntax is device-addressing (hapbeat-contracts): `player_1/chest`,
-`*/chest`, `group_<N>` suffix.
+Target resolution: call-site `target` > `defaultTarget`. `""` = every device.
+
+Device addresses are always `player_<N>/<position>/group_<M>` (defaults
+`player_1` / `group_1`) and matching is **positional** — segment *i* vs segment
+*i*, `*` covers one **whole** segment, a short target front-matches. So
+**`group_2` alone never matches** (compared against the player slot; write
+`*/*/group_2`) and **`pos_*` is not a wildcard** (compared literally; write
+`player_1/*`). `protocol.addressMatches(target, address)` is the same check the
+device runs.
+
+Sending: Node/RN **unicast** commands and streams to devices that answered a
+recent PING, falling back to broadcast while none is known (APs delay broadcast
+frames up to one DTIM beacon, 100–300 ms, whenever any client is power-saving).
+`{ unicast: false }` forces broadcast — better when many devices must fire in
+lockstep. PING/CONNECT_STATUS stay broadcast; the keep-alive PING is what keeps
+unicast alive, since devices reply PONG only to a PING.
 
 Browser caveats (helper WS): clip-mode playback reaches **all** helper-known devices
 (per-device browser clip targeting is deferred); `targetTimeUs` is **ignored** over

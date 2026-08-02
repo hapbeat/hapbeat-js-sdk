@@ -1,9 +1,9 @@
 /**
- * React Native transport: direct UDP broadcast over the `react-native-udp`
- * native module. A phone is NOT sandboxed like a browser — it can open a real
- * UDP socket — so it talks to Hapbeat over Wi-Fi directly, with no
- * hapbeat-helper. Same wire format as the Node transport (all in
- * UdpTransportBase); only the socket plumbing differs.
+ * React Native transport: direct UDP (unicast to known devices, broadcast
+ * otherwise) over the `react-native-udp` native module. A phone is NOT
+ * sandboxed like a browser — it can open a real UDP socket — so it talks to
+ * Hapbeat over Wi-Fi directly, with no hapbeat-helper. Same wire format as the
+ * Node transport (all in UdpTransportBase); only the socket plumbing differs.
  *
  * `react-native-udp` is an OPTIONAL peer dependency — install it in the RN app.
  * This file is imported only by the React Native entry point, so Node/browser
@@ -56,9 +56,15 @@ export class ReactNativeUdpTransport extends UdpTransportBase {
   }
 
   protected sendBytes(packet: Uint8Array): void {
+    this.sendBytesTo(packet, this.broadcastAddr);
+  }
+
+  protected sendBytesTo(packet: Uint8Array, ip: string): void {
     // react-native-udp wants explicit (offset, length); it accepts a Uint8Array.
-    this.socket?.send(packet, 0, packet.length, this.port, this.broadcastAddr, (err) => {
-      if (err) console.warn("[hapbeat] udp send failed:", err.message);
+    this.socket?.send(packet, 0, packet.length, this.port, ip, (err) => {
+      // One unreachable device (powered off since its last PONG) must not stop
+      // the packet reaching the others, so this only logs.
+      if (err) console.warn(`[hapbeat] udp send to ${ip} failed:`, err.message);
     });
   }
 

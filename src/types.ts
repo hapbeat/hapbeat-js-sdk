@@ -41,8 +41,30 @@ export interface HapbeatOptions {
   connectTimeoutMs?: number;
   /** Optional tuning catalog used to resolve default gains by event id. */
   eventMap?: EventMap;
-  /** Whether to run the CONNECT_STATUS keep-alive (Node only). Default true. */
+  /**
+   * Whether to run the keep-alive (Node/RN only): a PING every 5 s, plus
+   * CONNECT_STATUS when `appName` is set. Default true. The PING is what keeps
+   * unicast alive — devices answer PONG only to a PING — so turning this off
+   * makes commands fall back to broadcast once the last PONG ages out.
+   */
   keepalive?: boolean;
+  /**
+   * Send PLAY/STOP/STOP_ALL and clip streams straight to devices that answered
+   * a PING (Node/RN only), instead of broadcasting. Default true.
+   *
+   * Wi-Fi APs hold broadcast frames until the next DTIM beacon (100-300 ms)
+   * whenever any client on the AP is power-saving, which is heard as late
+   * haptics and stuttering streams; unicast frames are not batched. Falls back
+   * to broadcast until a device replies. Set `false` to always broadcast (e.g.
+   * many devices that must fire in lockstep, where one broadcast beats N
+   * sequential unicasts).
+   */
+  unicast?: boolean;
+  /**
+   * How long a device stays a unicast destination after its last PONG, in ms.
+   * Default 15000 (three keep-alive PINGs).
+   */
+  deviceTtlMs?: number;
   /**
    * Base location of stream-clip WAVs (clip-mode events). The event's `clip`
    * filename is resolved against this. Browser: a URL prefix (e.g.

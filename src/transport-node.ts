@@ -1,5 +1,6 @@
 /**
- * Node transport: direct UDP broadcast over `node:dgram`.
+ * Node transport: direct UDP (unicast to known devices, broadcast otherwise)
+ * over `node:dgram`.
  *
  * Imported only by the Node entry point so the `node:dgram` dependency never
  * leaks into browser/RN bundles. All protocol logic lives in UdpTransportBase;
@@ -36,6 +37,12 @@ export class NodeUdpTransport extends UdpTransportBase {
         sock.once("error", onBindError);
         sock.bind(port, () => {
           sock.removeListener("error", onBindError);
+          // Log only — never close the socket, and never make this a `once`
+          // listener. Unicasting at a device that is off/rebooting makes ICMP
+          // port-unreachable routine (Windows surfaces it here as ECONNRESET);
+          // tearing the socket down on that would leave the SDK permanently
+          // deaf to PONGs — the exact bug the Unity SDK and hapbeat-helper
+          // each had to fix.
           sock.on("error", (e) => console.warn("[hapbeat] udp error:", e.message));
           sock.on("message", (msg, rinfo) => this.handleMessage(msg, rinfo.address));
           sock.setBroadcast(true);
@@ -49,8 +56,14 @@ export class NodeUdpTransport extends UdpTransportBase {
   }
 
   protected sendBytes(packet: Uint8Array): void {
-    this.socket?.send(packet, this.port, this.broadcastAddr, (err) => {
-      if (err) console.warn("[hapbeat] udp send failed:", err.message);
+    this.sendBytesTo(packet, this.broadcastAddr);
+  }
+
+  protected sendBytesTo(packet: Uint8Array, ip: string): void {
+    this.socket?.send(packet, this.port, ip, (err) => {
+      // One unreachable device (powered off since its last PONG) must not stop
+      // the packet reaching the others, so this only logs.
+      if (err) console.warn(`[hapbeat] udp send to ${ip} failed:`, err.message);
     });
   }
 

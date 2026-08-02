@@ -250,3 +250,43 @@ export function parsePong(data: Uint8Array): Pong | null {
   if (off < p.length) out.volumeSteps = p[off++];
   return out;
 }
+
+/**
+ * Does `deviceAddress` accept a packet aimed at `target`?
+ *
+ * A port of the firmware's `addressMatch()`
+ * (hapbeat-device-firmware/src/address_match.cpp), which is the authority: the
+ * device re-applies this filter on receipt, so the SDK only uses it to pick
+ * unicast destinations, never to decide what plays.
+ *
+ * Rules (contracts/specs/device-addressing.md §4.3):
+ * - an empty target matches every address;
+ * - both strings are split on `/` and compared **positionally**, so `group_2`
+ *   alone is compared against the *player* slot and never matches — write
+ *   `* /* /group_2` (no spaces);
+ * - a `*` segment matches any single segment, but only when the whole segment
+ *   is `*` (`pos_*` is compared literally);
+ * - fewer target segments than address segments is a front-match;
+ * - more target segments than address segments is a mismatch;
+ * - a single trailing `/` is ignored (`"player_1/" === "player_1"`), because
+ *   firmware walks pointers and exits at the terminator rather than producing
+ *   an empty segment. Splitting naively would drop a device the firmware
+ *   *would* have accepted.
+ */
+export function addressMatches(target: string | undefined, deviceAddress: string | undefined): boolean {
+  if (!target) return true;
+
+  const targetSegments = target.split("/");
+  const addressSegments = (deviceAddress ?? "").split("/");
+
+  // Only the last empty segment is dropped, and only once: "a//" really does
+  // compare an empty segment in firmware, and still mismatches.
+  let count = targetSegments.length;
+  if (count > 1 && targetSegments[count - 1] === "") count--;
+
+  for (let i = 0; i < count; i++) {
+    if (i >= addressSegments.length) return false; // target longer = mismatch
+    if (targetSegments[i] !== "*" && targetSegments[i] !== addressSegments[i]) return false;
+  }
+  return true; // front-match or exact match
+}

@@ -333,3 +333,171 @@ test("browser transport: stream_* WS messages match the helper shape", async () 
     delete globalThis.WebSocket;
   }
 });
+
+// ── Device addressing + unicast routing (contracts device-addressing.md) ───
+
+// (target, device address, expected) — transcribed from §4.2's example table.
+// This decides which devices a packet is unicast to, so it must agree with the
+// firmware's addressMatch(): disagreeing either skips a device that should have
+// played (silent loss) or writes to one that ignores the packet anyway.
+const MATCH_TABLE = [
+  ["", "player_1/pos_neck", true],                        // empty = all devices
+  ["player_1", "player_1/pos_neck", true],                // front match
+  ["player_1", "player_2/pos_neck", false],               // player mismatch
+  ["player_1/pos_neck", "player_1/pos_neck", true],       // exact
+  ["player_1/pos_neck", "player_1/pos_r_wrist", false],   // position mismatch
+  ["*/pos_neck", "player_1/pos_neck", true],              // wildcard
+  ["*/pos_neck", "player_2/pos_neck", true],
+  // Firmware only treats a segment that is entirely "*" as a wildcard
+  // (address_match.cpp: `t_len == 1 && *tp == '*'`), so "pos_*" is a literal.
+  ["player_1/pos_*", "player_1/pos_neck", false],
+  ["player_1/*", "player_1/pos_neck", true],
+  ["red", "red/player_1/pos_neck", true],
+  ["red/*/player_1", "red/alpha/player_1/pos_neck", true],
+  ["player_1/pos_neck/group_1", "player_1/pos_neck/group_1", true],
+  ["player_1/pos_neck/group_1", "player_1/pos_neck/group_2", false],
+  ["player_1/pos_neck", "player_1/pos_neck/group_1", true], // no group = any group
+  ["*/*/group_1", "player_2/pos_chest/group_1", true],      // group only
+  ["player_1/pos_neck/group_1", "player_1/pos_neck", false], // target longer
+  // The trap the positional rule sets: "group_2" lands in the player slot.
+  ["group_2", "player_1/pos_neck/group_2", false],
+  // Firmware's pointer walk ends at the terminator, so one trailing "/" is not
+  // an empty segment; splitting naively would drop a device it would accept.
+  ["player_1/", "player_1/pos_neck", true],
+  ["player_1//", "player_1/pos_neck", false],
+];
+
+test("addressMatches follows the spec table (and firmware)", () => {
+  for (const [target, address, expected] of MATCH_TABLE) {
+    assert.equal(
+      protocol.addressMatches(target, address), expected,
+      `target=${JSON.stringify(target)} address=${JSON.stringify(address)}`,
+    );
+  }
+});
+
+// A device's PONG reply (contracts §5.4): two int64s then the extended
+// null-terminated strings. The SDK only builds SDK->device packets, so the
+// reply is assembled here.
+function makePong({ deviceName = "dev", address = "player_1/pos_neck", firmware = "0.3.1" } = {}) {
+  const strs = new TextEncoder().encode(`${deviceName}\0${address}\0${firmware}\0`);
+  const payload = new Uint8Array(16 + strs.length);
+  new DataView(payload.buffer).setBigInt64(0, 0n, true);
+  new DataView(payload.buffer).setBigInt64(8, 0n, true);
+  payload.set(strs, 16);
+  return protocol.buildPacket(protocol.CMD_PONG, 1, payload);
+}
+
+// A transport that records where each datagram went instead of opening a socket.
+class RoutingProbe extends NodeUdpTransport {
+  constructor(opts = {}) { super({ keepalive: false, ...opts }); this.sends = []; }
+  async openSocket() {}
+  closeSocket() {}
+  sendBytes(pkt) { this.sends.push([pkt, null]); }        // null = broadcast
+  sendBytesTo(pkt, ip) { this.sends.push([pkt, ip]); }
+  saw(ip, address = "player_1/pos_neck") {
+    this.handleMessage(makePong({ address }), ip);
+  }
+  dests() { return this.sends.map(([, ip]) => ip); }
+}
+
+test("UDP transport: broadcasts until a device is known", async () => {
+  const t = new RoutingProbe();
+  await t.connect();
+  t.play("kit.evt", 1, "", 0);
+  assert.deepEqual(t.dests(), [null]);
+});
+
+test("UDP transport: unicasts to known devices, no double delivery", async () => {
+  const t = new RoutingProbe();
+  await t.connect();
+  t.saw("192.168.1.10");
+  t.saw("192.168.1.11", "player_2/pos_neck");
+  t.sends.length = 0;
+  t.play("kit.evt", 1, "", 0);
+  // One packet per device and nothing else: firmware older than the
+  // (src ip, seq) dedupe would fire the same PLAY twice.
+  assert.deepEqual(t.dests().sort(), ["192.168.1.10", "192.168.1.11"]);
+});
+
+test("UDP transport: target filters unicast destinations", async () => {
+  const t = new RoutingProbe();
+  await t.connect();
+  t.saw("192.168.1.10", "player_1/pos_neck/group_1");
+  t.saw("192.168.1.11", "player_2/pos_neck/group_1");
+  t.sends.length = 0;
+  t.play("kit.evt", 1, "player_1", 0);
+  assert.deepEqual(t.dests(), ["192.168.1.10"]);
+});
+
+test("UDP transport: a device with no reported address fails open", async () => {
+  const t = new RoutingProbe();
+  await t.connect();
+  t.handleMessage(protocol.buildPacket(protocol.CMD_PONG, 1, new Uint8Array(16)),
+    "192.168.1.10"); // bridge-form PONG: no extended address field
+  t.sends.length = 0;
+  t.play("kit.evt", 1, "player_9", 0);
+  assert.deepEqual(t.dests(), ["192.168.1.10"]);
+});
+
+test("UDP transport: all-mismatched commands fall back to broadcast", async () => {
+  // Not a skip: a stale cached address must not swallow a STOP, or a looping
+  // clip would never stop. The device re-applies the filter anyway.
+  const t = new RoutingProbe();
+  await t.connect();
+  t.saw("192.168.1.10", "player_1/pos_neck/group_1");
+  t.sends.length = 0;
+  t.stop("kit.evt", "player_7");
+  assert.deepEqual(t.dests(), [null]);
+});
+
+test("UDP transport: a device stops being a destination once its PONG ages out", async () => {
+  const t = new RoutingProbe({ deviceTtlMs: 0 });
+  await t.connect();
+  t.saw("192.168.1.10");
+  t.sends.length = 0;
+  await new Promise((r) => setTimeout(r, 5));
+  t.stopAll("");
+  assert.deepEqual(t.dests(), [null]);
+});
+
+test("UDP transport: unicast:false always broadcasts", async () => {
+  const t = new RoutingProbe({ unicast: false });
+  await t.connect();
+  t.saw("192.168.1.10");
+  t.sends.length = 0;
+  t.play("kit.evt", 1, "", 0);
+  assert.deepEqual(t.dests(), [null]);
+});
+
+test("UDP transport: PING stays broadcast (discovery)", async () => {
+  const t = new RoutingProbe();
+  await t.connect();
+  t.saw("192.168.1.10");
+  t.sends.length = 0;
+  t.ping();
+  assert.deepEqual(t.dests(), [null]);
+});
+
+test("UDP transport: stream snapshot is reused for DATA and END", async () => {
+  const t = new RoutingProbe();
+  await t.connect();
+  t.saw("192.168.1.10");
+  t.sends.length = 0;
+  t.streamBegin({ sampleRate: 16000, channels: 1, totalSamples: 10, gain: 1, target: "" });
+  t.streamData(0, new Uint8Array([0, 0]));
+  t.streamEnd();
+  assert.deepEqual(t.dests(), ["192.168.1.10", "192.168.1.10", "192.168.1.10"]);
+});
+
+test("UDP transport: a stream matching nobody is dropped, not broadcast", async () => {
+  // Hundreds of packets of airtime for devices that would ignore them; and a
+  // lost stream leaves nothing stuck, unlike a lost STOP.
+  const t = new RoutingProbe();
+  await t.connect();
+  t.saw("192.168.1.10", "player_1/pos_neck/group_1");
+  t.sends.length = 0;
+  t.streamBegin({ sampleRate: 16000, channels: 1, totalSamples: 10, gain: 1, target: "player_5" });
+  t.streamData(0, new Uint8Array([0, 0]));
+  assert.deepEqual(t.dests(), []);
+});

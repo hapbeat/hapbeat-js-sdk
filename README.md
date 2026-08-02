@@ -3,10 +3,10 @@
 Drive [Hapbeat](https://hapbeat.com) haptic devices from JavaScript / TypeScript.
 **One API, three transports:**
 
-- **Node** (Electron, servers, CLIs, creative-coding) → direct Wi-Fi **UDP** broadcast.
-- **React Native** (Android / iOS apps) → direct Wi-Fi **UDP** broadcast via the
-  optional [`react-native-udp`](https://www.npmjs.com/package/react-native-udp) — a
-  phone can open a real UDP socket, so **no helper** is needed.
+- **Node** (Electron, servers, CLIs, creative-coding) → direct Wi-Fi **UDP**.
+- **React Native** (Android / iOS apps) → direct Wi-Fi **UDP** via the optional
+  [`react-native-udp`](https://www.npmjs.com/package/react-native-udp) — a phone
+  can open a real UDP socket, so **no helper** is needed.
 - **Browser** (WebXR, three.js / Babylon.js / p5.js, React, jsPsych experiments) →
   relays through [hapbeat-helper](https://github.com/hapbeat/hapbeat-helper) over a
   local **WebSocket**, because browsers cannot open raw UDP sockets.
@@ -34,7 +34,7 @@ ESM-only (`"type": "module"`). The **browser** path also needs the helper daemon
 ```ts
 import { connect } from "@hapbeat/sdk";
 
-const hb = await connect({ appName: "MyApp" }); // opens UDP broadcast + keep-alive
+const hb = await connect({ appName: "MyApp" }); // opens the UDP socket + keep-alive
 hb.play("sample-kit.sine_100hz", { gain: 0.3 });           // fire by event id (gain 0..1)
 hb.play("sample-kit.sine_100hz");                          // gain omitted → kit/EventMap baseline
 hb.stopAll();
@@ -59,7 +59,7 @@ module singleton), then `hb.play(...)` from event handlers.
 ```ts
 import { connect } from "@hapbeat/sdk"; // resolves to the "react-native" build (Metro)
 
-const hb = await connect({ appName: "MyApp" }); // direct UDP broadcast from the phone
+const hb = await connect({ appName: "MyApp" }); // direct UDP from the phone
 hb.play("sample-kit.sine_100hz", { gain: 0.5 });
 ```
 
@@ -117,10 +117,31 @@ new `openStream` ends the previous live stream.
 ```ts
 for (const d of await hb.discover(1500)) console.log(d.ip, d.address);
 
-hb.play("sample-kit.sine_100hz", { target: "player_1/chest" }); // one device
-hb.play("sample-kit.sine_100hz", { target: "*/chest" });         // all chest devices
-hb.play("sample-kit.sine_100hz", { target: "" });                // broadcast (default)
+hb.play("sample-kit.sine_100hz", { target: "player_1/pos_neck" }); // one device
+hb.play("sample-kit.sine_100hz", { target: "*/pos_neck" });        // every neck device
+hb.play("sample-kit.sine_100hz", { target: "*/*/group_2" });       // every device in group 2
+hb.play("sample-kit.sine_100hz", { target: "" });                  // all devices (default)
 ```
+
+Matching is **positional**: segment *i* of the target is compared with segment
+*i* of the device address, `*` stands for one **whole** segment (`pos_*` is
+compared literally — use `player_1/*`), and a short target front-matches.
+Device addresses are always `player_<N>/<position>/group_<M>`, defaulting to
+`player_1` / `group_1`, so a group has to be written `*/*/group_2`: plain
+`group_2` is compared against the *player* slot and never matches.
+
+### How packets are sent
+
+The Node and React Native transports **unicast** commands and streams to every
+device that answered a PING, and broadcast only while no device is known. Wi-Fi
+APs hold broadcast frames until their next DTIM beacon (100–300 ms) whenever
+any client on the AP is power-saving, which is heard as late haptics and
+stuttering streams; unicast is not batched that way. The 5-second keep-alive
+PING is what keeps this table current, so leave `keepalive` on.
+
+Pass `{ unicast: false }` to always broadcast — worth it when many devices must
+fire in lockstep, since one broadcast reaches them all at once while N unicasts
+go out one after another. (In the browser, hapbeat-helper decides this.)
 
 ## Project layout (where the kit lives)
 
