@@ -10,6 +10,7 @@ Runnable references, smallest first.
 | [`node-minimal.mjs`](./node-minimal.mjs) | Node | `connect()` → `play(id)` → `close()` over UDP | a Hapbeat on the LAN + a deployed kit (for sound) |
 | [`browser-minimal.html`](./browser-minimal.html) | Browser | the same call over the helper WebSocket | `hapbeat-helper` running + HTTP server |
 | [`react-native/`](./react-native/) | Android/iOS app | helper-free direct UDP from the phone, command + streaming | `react-native-udp` + `fast-text-encoding`, a Hapbeat on the LAN |
+| [`verify-unicast.mjs`](./verify-unicast.mjs) | maintainers | **release check**: continuous 100 Hz sine, broadcast vs unicast A/B by ear, plus a power-cycle test | a Hapbeat on the LAN (no kit needed) |
 | [`games/`](./games/) | Browser | the full pattern: `EventMap` + kit manifest + the file-first/synth router, across an FPS and 3 mini-games | served over HTTP; helper for haptics |
 
 ## Before you run
