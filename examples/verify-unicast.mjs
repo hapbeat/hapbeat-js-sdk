@@ -21,7 +21,7 @@ const TONE_HZ = 100;
 const SAMPLE_RATE = 16000;
 const AMPLITUDE = 0.8;
 const GAIN = 0.6;
-const PHASE_SECONDS = 15;
+const PHASE_SECONDS = 5;   // long enough to hear, short enough to compare
 const ICMP_SECONDS = 90;
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });
