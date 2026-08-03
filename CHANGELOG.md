@@ -4,7 +4,7 @@
 形式は [Keep a Changelog](https://keepachangelog.com/) に、バージョン付けは
 [Semantic Versioning](https://semver.org/) に従います。
 
-## [0.3.0] - 2026-08-02
+## [0.3.0] - 2026-08-03
 
 Node / React Native transport（直接 UDP）のみが対象です。Browser transport は
 hapbeat-helper 経由のため、送信経路は helper 側が決めます。
@@ -125,6 +125,7 @@ hapbeat-helper 経由のため、送信経路は helper 側が決めます。
 - サンプル: `examples/node-minimal.mjs`、`examples/browser-minimal.html`、および
   `examples/games/` 配下のブラウザ触覚デモ集。
 
+[0.3.0]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/hapbeat/hapbeat-js-sdk/releases/tag/v0.1.0
