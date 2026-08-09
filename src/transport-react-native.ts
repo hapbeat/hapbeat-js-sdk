@@ -55,16 +55,19 @@ export class ReactNativeUdpTransport extends UdpTransportBase {
     });
   }
 
-  protected sendBytes(packet: Uint8Array): void {
-    this.sendBytesTo(packet, this.broadcastAddr);
-  }
+  // localSubnets() is deliberately not overridden: React Native has no
+  // `node:os`, and a phone or headset has one usable Wi-Fi interface anyway —
+  // the multi-homed case this guards against is a desktop with a virtual
+  // switch. The base class returns [], so this transport keeps sending to the
+  // limited broadcast exactly as before.
 
-  protected sendBytesTo(packet: Uint8Array, ip: string): void {
+  protected sendBytesTo(packet: Uint8Array, ip: string, bestEffort = false): void {
     // react-native-udp wants explicit (offset, length); it accepts a Uint8Array.
     this.socket?.send(packet, 0, packet.length, this.port, ip, (err) => {
       // One unreachable device (powered off since its last PONG) must not stop
-      // the packet reaching the others, so this only logs.
-      if (err) console.warn(`[hapbeat] udp send to ${ip} failed:`, err.message);
+      // the packet reaching the others, so this only reports.
+      if (err) this.noteSendFailed(ip, err.message, bestEffort);
+      else this.noteSendOk(ip);
     });
   }
 

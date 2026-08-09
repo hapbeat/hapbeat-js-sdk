@@ -393,6 +393,8 @@ class RoutingProbe extends NodeUdpTransport {
   constructor(opts = {}) { super({ keepalive: false, ...opts }); this.sends = []; }
   async openSocket() {}
   closeSocket() {}
+  // Pinned so these tests do not depend on the machine's real interfaces.
+  localSubnets() { return [{ address: "192.168.1.5", netmask: "255.255.255.0" }]; }
   sendBytes(pkt) { this.sends.push([pkt, null]); }        // null = broadcast
   sendBytesTo(pkt, ip) { this.sends.push([pkt, ip]); }
   saw(ip, address = "player_1/pos_neck") {
@@ -471,6 +473,9 @@ test("UDP transport: unicast:false always broadcasts", async () => {
 });
 
 test("UDP transport: PING stays broadcast (discovery)", async () => {
+  // Never unicast to the one device we happen to know — discovery has to keep
+  // reaching devices we have not heard from. (Which broadcast address it goes
+  // to once a device has answered is covered in broadcast.test.mjs.)
   const t = new RoutingProbe();
   await t.connect();
   t.saw("192.168.1.10");

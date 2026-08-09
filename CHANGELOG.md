@@ -4,6 +4,45 @@
 形式は [Keep a Changelog](https://keepachangelog.com/) に、バージョン付けは
 [Semantic Versioning](https://semver.org/) に従います。
 
+## [0.4.0] - 2026-08-09
+
+Unity SDK v0.4.0 で確定した接続まわりの修正を移植しました。Node / React Native
+transport（直接 UDP）が対象です。Browser transport は hapbeat-helper 経由のため
+送信経路は helper 側が決めます。
+
+### 修正（Fixed）
+
+- **マルチホーム PC でデバイスを 1 台も発見できない問題**を修正しました（Node）。
+  `255.255.255.255`（limited broadcast）は**インターフェイスメトリックが最小の
+  1 本からしか送出されません**。Hyper-V / WSL2 / Docker を入れると作られる仮想
+  アダプタは **LAN ケーブルを繋いでいなくても常時 Connected** で、Windows の既定で
+  Wi-Fi より優先されることがあります。この場合パケットは Hapbeat のいるネットワークに
+  一生届きません。ケーブルを挿していないため症状がマルチホームに見えないのが厄介な点です。
+  - 探索（PING / CONNECT_STATUS）を**ローカルの各サブネット宛て**へ送るようにしました。
+    宛先は `os.networkInterfaces()` が返す実マスクから `(ip & mask) | ~mask` で算出します
+    （/16 は `x.y.255.255`、/25 は `x.y.z.127` になるため `.255` 決め打ちにはできません）。
+    同一サブネットに NIC が 2 枚ある場合（Ethernet と Wi-Fi を同時に使うノート PC）は
+    宛先で重複排除します。
+  - **PONG が返ったサブネットに確定**し、以後のブロードキャストをそこへ向けます。
+    設定項目は増やしていません（`broadcastAddr` を明示した場合はその宛先をそのまま使います）。
+  - `255.255.255.255` は catch-all として常に候補に残します。SoftAP 構成、単一 NIC 環境、
+    および **React Native は従来どおり** limited broadcast のみで動きます（スマートフォンや
+    HMD は実質単一 NIC のため、`node:os` の無い環境で無理に実装していません）。
+  - **PLAY / STOP / STOP_ALL / STREAM_\* は従来どおり単一宛先**です。ファームウェア
+    v0.3.0 未満は PLAY/STOP の seq 重複排除を持たないため、再生コマンドを複数経路へ
+    送ると触覚が 2 回鳴ります。探索系と再生系で送信経路を分けています。
+- **送信エラーのログが埋め尽くされる問題**を修正しました。宛先ごとに障害 1 回だけ警告し、
+  復旧時に 1 行出します。ストリームは 1 秒あたり約 100 パケット送るため、抑制しないと
+  現場調査に使えるログが残りません。探索の一部の宛先が失敗するのは正常な状態
+  （Bluetooth PAN や Wi-Fi Direct のアダプタはブロードキャストを運べません）なので
+  警告しません。
+
+### 検証
+
+- `npm test` 45 件（マルチホーム宛先算出・重複排除・探索と再生の経路分離・
+  単一 NIC / React Native の非回帰・ログ抑制を含む）、`tsc --noEmit` 通過
+- **未検証**: Hapbeat 実機での疎通
+
 ## [0.3.0] - 2026-08-03
 
 Node / React Native transport（直接 UDP）のみが対象です。Browser transport は

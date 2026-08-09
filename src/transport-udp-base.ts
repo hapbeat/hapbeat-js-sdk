@@ -14,6 +14,94 @@ import type { Device, HapbeatOptions, Transport } from "./types.js";
 export const DEFAULT_UDP_PORT = 7700;
 export const DEFAULT_BROADCAST = "255.255.255.255";
 const KEEPALIVE_MS = 5000;
+
+/** A local IPv4 address with its netmask, as reported by the platform. */
+export interface LocalSubnet {
+  address: string;
+  netmask: string;
+}
+
+/**
+ * One address the SDK can broadcast to.
+ *
+ * `255.255.255.255` leaves a multi-homed host through the single interface with
+ * the lowest metric. On a machine running Hyper-V / WSL2 / Docker that is often
+ * an always-up virtual switch with no Hapbeat behind it — and no Ethernet cable
+ * is needed for that to happen, which is why the symptom looks nothing like
+ * "multi-homed". A subnet-directed address (`192.168.0.255`) resolves through
+ * the directly-connected route for its subnet instead, so the metric never
+ * applies. That is also why hapbeat-helper kept working on such a host: it
+ * finds devices over mDNS and unicasts, which resolves the same way.
+ */
+export interface BroadcastRoute {
+  addr: string;
+  /** Host-order network and mask; both 0 for the limited-broadcast catch-all. */
+  network: number;
+  mask: number;
+  limited: boolean;
+}
+
+function toUint32(dotted: string): number | null {
+  const parts = dotted.split(".");
+  if (parts.length !== 4) return null;
+  let value = 0;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const byte = Number(part);
+    if (byte > 255) return null;
+    value = (value * 256) + byte;
+  }
+  return value;
+}
+
+function toDotted(value: number): string {
+  return [24, 16, 8, 0].map((shift) => (value >>> shift) & 0xff).join(".");
+}
+
+/** Whether `ip` sits on this route's subnet. */
+export function routeContains(route: BroadcastRoute, ip: string): boolean {
+  if (route.limited || route.mask === 0) return false;
+  const value = toUint32(ip);
+  if (value === null) return false;
+  return ((value & route.mask) >>> 0) === route.network;
+}
+
+/**
+ * One destination per local IPv4 subnet, plus the limited broadcast.
+ *
+ * The address comes from each interface's real mask rather than being assumed
+ * to end in `.255`: a /16 broadcasts to `x.y.255.255` and a /25 to
+ * `x.y.z.127`, and the subnet itself is whatever the router hands out.
+ * Deduplicated by address — two interfaces on one subnet (a laptop docked over
+ * Ethernet while Wi-Fi is still up) would otherwise deliver every packet twice.
+ *
+ * The limited broadcast is always kept as a catch-all, so SoftAP setups and
+ * platforms whose interfaces cannot be enumerated (React Native) behave exactly
+ * as before.
+ */
+export function computeBroadcastRoutes(subnets: readonly LocalSubnet[]): BroadcastRoute[] {
+  const routes: BroadcastRoute[] = [];
+  const seen = new Set<string>();
+
+  for (const { address, netmask } of subnets) {
+    const ip = toUint32(address);
+    const mask = toUint32(netmask);
+    if (ip === null || mask === null || mask === 0) continue;
+    if (address.startsWith("127.")) continue;
+    // Reject a non-contiguous mask rather than guess at it: the broadcast
+    // address it produced would reach the wrong hosts.
+    const inverted = (~mask) >>> 0;
+    if ((inverted & (inverted + 1)) !== 0) continue;
+
+    const addr = toDotted(((ip & mask) | inverted) >>> 0);
+    if (seen.has(addr)) continue;
+    seen.add(addr);
+    routes.push({ addr, network: (ip & mask) >>> 0, mask, limited: false });
+  }
+
+  routes.push({ addr: DEFAULT_BROADCAST, network: 0, mask: 0, limited: true });
+  return routes;
+}
 /**
  * How long a device stays a unicast destination after its last PONG. Three
  * keep-alive PINGs' worth — long enough to ride out a couple of lost replies,
@@ -38,6 +126,23 @@ export abstract class UdpTransportBase implements Transport {
   private readonly devices = new Map<string, Device>();
   private keepaliveTimer?: ReturnType<typeof setInterval>;
   /**
+   * Candidate broadcast destinations, rebuilt on every connect() — a host's
+   * interfaces change when a laptop is docked, a VPN comes up or Wi-Fi moves to
+   * another network.
+   */
+  private routes: BroadcastRoute[] = [];
+  /** The route a device actually answered on; null until the first PONG. */
+  private lockedRoute: BroadcastRoute | null = null;
+  /**
+   * An explicit `broadcastAddr` is the caller naming the destination, so it is
+   * honoured verbatim: no enumeration, no fan-out, no route locking. That
+   * doubles as the escape hatch for pinning the destination by hand, which is
+   * why there is no separate setting.
+   */
+  private readonly autoRoutes: boolean;
+  /** Destinations currently in a failed state, so each outage is logged once. */
+  private readonly failedDestinations = new Set<string>();
+  /**
    * Destinations for the active stream session, snapshotted in streamBegin
    * (STREAM_DATA/END carry no target of their own). `null` = broadcast the
    * session; `[]` = the snapshot matched nobody, so send nothing.
@@ -48,6 +153,7 @@ export abstract class UdpTransportBase implements Transport {
     this.port = options.port ?? DEFAULT_UDP_PORT;
     this.bindPort = options.bindPort ?? 0; // ephemeral by default (DEC-036)
     this.broadcastAddr = options.broadcastAddr ?? DEFAULT_BROADCAST;
+    this.autoRoutes = this.broadcastAddr === DEFAULT_BROADCAST;
     this.appName = (options.appName ?? "").slice(0, protocol.MAX_APP_NAME_LEN);
     this.deviceName = options.deviceName ?? "";
     this.group = options.group ?? 0;
@@ -60,17 +166,123 @@ export abstract class UdpTransportBase implements Transport {
 
   /** Open the socket, enable broadcast, and route each datagram to handleMessage. */
   protected abstract openSocket(): Promise<void>;
-  /** Send raw bytes to (broadcastAddr, port). */
-  protected abstract sendBytes(packet: Uint8Array): void;
-  /** Send raw bytes to one device (ip, port). */
-  protected abstract sendBytesTo(packet: Uint8Array, ip: string): void;
+  /**
+   * Send raw bytes to one destination (ip, port).
+   *
+   * `bestEffort` marks one leg of a discovery fan-out, where a failure is
+   * routine rather than newsworthy — see `noteSendFailed`.
+   */
+  protected abstract sendBytesTo(packet: Uint8Array, ip: string, bestEffort?: boolean): void;
   /** Close the socket. */
   protected abstract closeSocket(): void;
+
+  /**
+   * Local IPv4 addresses with masks, used to derive subnet-directed broadcast
+   * destinations. Empty by default: a platform that cannot enumerate its
+   * interfaces (React Native) keeps the limited-broadcast behaviour it had.
+   */
+  protected localSubnets(): LocalSubnet[] {
+    return [];
+  }
+
+  // --- Broadcast destinations ---
+
+  /**
+   * The single address a broadcast currently goes to. Once a device has
+   * answered this is its subnet's broadcast address; before that (and whenever
+   * the caller named `broadcastAddr`) it is the limited broadcast, exactly as
+   * it has always been.
+   */
+  protected broadcastDestination(): string {
+    return this.lockedRoute?.addr ?? this.broadcastAddr;
+  }
+
+  /** Send to the single current broadcast destination. */
+  protected sendBytes(packet: Uint8Array): void {
+    this.sendBytesTo(packet, this.broadcastDestination());
+  }
+
+  /**
+   * Send on every candidate broadcast destination.
+   *
+   * Reserved for PING and CONNECT_STATUS. Both are idempotent, so a device
+   * reachable on two destinations simply receives the message twice with no
+   * visible effect — whereas duplicating PLAY would fire the haptic twice on
+   * firmware that predates sequence de-duplication. This fan-out is what
+   * reaches a device the limited broadcast never gets to, and the PONG it
+   * provokes is what pins playback to the right subnet.
+   */
+  private sendDiscovery(packet: Uint8Array): void {
+    // Already pinned to a subnet, or nothing enumerated to fan out over.
+    if (this.lockedRoute !== null || this.routes.length === 0) {
+      return this.sendBytes(packet);
+    }
+    for (const route of this.routes) this.sendBytesTo(packet, route.addr, true);
+  }
+
+  /**
+   * Pin broadcasts to the subnet a device actually replied from.
+   *
+   * First reply wins, and the choice lasts until the next connect(). With
+   * devices on two subnets at once this settles on whichever answered first;
+   * broadcasts do not cross subnets anyway, so the alternative is not reaching
+   * both, it is reaching neither reliably.
+   */
+  private lockRouteFor(ip: string): void {
+    if (this.lockedRoute !== null || this.routes.length === 0) return;
+    for (const route of this.routes) {
+      if (!routeContains(route, ip)) continue;
+      this.lockedRoute = route;
+      console.info(`[hapbeat] broadcasting to ${route.addr} (a device answered from ${ip}).`);
+      return;
+    }
+  }
+
+  // --- Send failure reporting ---
+
+  /**
+   * Report a failed send at most once per destination, per outage.
+   *
+   * A link that fails keeps failing, and stream chunks go out roughly 100 times
+   * a second — logging every one would bury the very lines an operator needs.
+   * Tracked per destination rather than globally: a host normally has an
+   * adapter that can never carry a broadcast (Bluetooth PAN, Wi-Fi Direct, an
+   * idle virtual switch), and one shared flag would flip between "failed" and
+   * "recovered" on every fan-out.
+   *
+   * `bestEffort` legs stay silent: trying a destination that turns out to be
+   * dead and letting the others through is exactly what the fan-out is for, and
+   * a failure there is not evidence that anything is wrong. Failures on the
+   * single destination that carries playback are reported.
+   */
+  protected noteSendFailed(dst: string, message: string, bestEffort = false): void {
+    if (this.failedDestinations.has(dst)) return;
+    this.failedDestinations.add(dst);
+    if (bestEffort) return;
+    console.warn(
+      `[hapbeat] udp send to ${dst} failed: ${message}. The socket stays open; ` +
+      "further send errors to this destination are silenced until it recovers.",
+    );
+  }
+
+  /**
+   * Note that a destination works again, once. Without this an unattended
+   * installation's log shows when haptics broke but never whether they
+   * came back.
+   */
+  protected noteSendOk(dst: string): void {
+    if (!this.failedDestinations.delete(dst)) return;
+    console.info(`[hapbeat] udp sending to ${dst} recovered.`);
+  }
 
   /** Subclasses call this for every received datagram. */
   protected handleMessage(msg: Uint8Array, ip: string): void {
     const pong = protocol.parsePong(msg);
     if (!pong) return;
+    // A reply proves which subnet the device is really on. Until this happens a
+    // broadcast still goes out limited, which on a multi-homed host may be
+    // leaving through an interface with no Hapbeat behind it.
+    this.lockRouteFor(ip);
     const dev: Device = this.devices.get(ip) ?? { ip, lastSeen: 0 };
     dev.name = pong.deviceName ?? dev.name;
     dev.address = pong.address ?? dev.address;
@@ -149,6 +361,9 @@ export abstract class UdpTransportBase implements Transport {
   // --- Transport surface (shared) ---
 
   async connect(): Promise<void> {
+    this.routes = this.autoRoutes ? computeBroadcastRoutes(this.localSubnets()) : [];
+    this.lockedRoute = null;
+    this.failedDestinations.clear();
     await this.openSocket();
     if (this.keepalive) this.startKeepalive();
   }
@@ -170,9 +385,13 @@ export abstract class UdpTransportBase implements Transport {
     this.sendRouted(protocol.buildStopAll(this.nextSeq(), target), target);
   }
 
-  /** Always broadcast: discovery has to reach devices we have not heard from. */
+  /**
+   * Discovery has to reach devices we have not heard from, so this fans out
+   * across every local subnet until one answers — which is what finds a Hapbeat
+   * the limited broadcast cannot reach on a multi-homed host.
+   */
   ping(): void {
-    this.sendBytes(protocol.buildPing(this.nextSeq(), Date.now() * 1000));
+    this.sendDiscovery(protocol.buildPing(this.nextSeq(), Date.now() * 1000));
   }
 
   streamBegin(meta: StreamMeta): void {
@@ -198,7 +417,9 @@ export abstract class UdpTransportBase implements Transport {
   }
 
   private connectStatus(connected: boolean): void {
-    this.sendBytes(
+    // Idempotent display state, so it can share the discovery fan-out and clear
+    // "app not connected" without waiting for a PONG first.
+    this.sendDiscovery(
       protocol.buildConnectStatus(this.nextSeq(), {
         connected,
         group: this.group,

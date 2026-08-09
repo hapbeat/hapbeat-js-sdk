@@ -8,8 +8,10 @@
  */
 
 import * as dgram from "node:dgram";
+import * as os from "node:os";
 
 import { UdpTransportBase } from "./transport-udp-base.js";
+import type { LocalSubnet } from "./transport-udp-base.js";
 import type { HapbeatOptions } from "./types.js";
 
 export class NodeUdpTransport extends UdpTransportBase {
@@ -55,15 +57,36 @@ export class NodeUdpTransport extends UdpTransportBase {
     });
   }
 
-  protected sendBytes(packet: Uint8Array): void {
-    this.sendBytesTo(packet, this.broadcastAddr);
+  /**
+   * Local IPv4 interfaces, so broadcasts can be addressed to a subnet rather
+   * than to 255.255.255.255 (see computeBroadcastRoutes for why that matters on
+   * a host running Hyper-V / WSL2 / Docker). `os.networkInterfaces` reports the
+   * real netmask, so nothing here has to assume a /24.
+   */
+  protected override localSubnets(): LocalSubnet[] {
+    const out: LocalSubnet[] = [];
+    try {
+      for (const infos of Object.values(os.networkInterfaces())) {
+        for (const info of infos ?? []) {
+          // Node <18.4 reports family as the number 4; newer versions use "IPv4".
+          const isIpv4 = info.family === "IPv4" || (info.family as unknown) === 4;
+          if (!isIpv4 || info.internal) continue;
+          out.push({ address: info.address, netmask: info.netmask });
+        }
+      }
+    } catch {
+      // Best effort: the limited broadcast still covers us.
+    }
+    return out;
   }
 
-  protected sendBytesTo(packet: Uint8Array, ip: string): void {
+  protected sendBytesTo(packet: Uint8Array, ip: string, bestEffort = false): void {
     this.socket?.send(packet, this.port, ip, (err) => {
-      // One unreachable device (powered off since its last PONG) must not stop
-      // the packet reaching the others, so this only logs.
-      if (err) console.warn(`[hapbeat] udp send to ${ip} failed:`, err.message);
+      // One unreachable destination (a device powered off since its last PONG,
+      // or an adapter that cannot carry a broadcast) must not stop the packet
+      // reaching the others, so this only reports.
+      if (err) this.noteSendFailed(ip, err.message, bestEffort);
+      else this.noteSendOk(ip);
     });
   }
 
