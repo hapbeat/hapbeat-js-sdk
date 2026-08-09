@@ -41,7 +41,10 @@ transport（直接 UDP）が対象です。Browser transport は hapbeat-helper 
 
 - `npm test` 45 件（マルチホーム宛先算出・重複排除・探索と再生の経路分離・
   単一 NIC / React Native の非回帰・ログ抑制を含む）、`tsc --noEmit` 通過
-- **未検証**: Hapbeat 実機での疎通
+- **Hapbeat 実機（duo_wl_v3 / fw 0.3.1）で疎通確認済み（Node）**:
+  探索がサブネット宛てに送られ、PONG でそのサブネットに確定し、PLAY / STOP が
+  デバイスへユニキャスト**各 1 データグラム**であることをソケット層で実測した。
+- **未検証**: React Native 実機（実装上は従来の limited broadcast のままで挙動不変）
 
 ## [0.3.0] - 2026-08-03
 
