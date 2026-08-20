@@ -5,6 +5,9 @@
   パンチ / ガード / 回避（リーン・ダック）を姿勢推定で取り、当たった・受けた・かわしたの
   違いを触覚で返す。コントローラを持たない＝手がふさがらない題材。
 
+  表示は Three.js の一人称 3D（自分の腕はボーンで描画・実カメラ映像はデバッグ PIP のみ）。
+  three と MediaPipe は CDN(jsdelivr) からバージョン固定で読む。
+
   触覚には helper（pipx install hapbeat-helper）が要る。無くても音と映像で最後まで遊べる。
   ES Modules + カメラ（getUserMedia）は HTTP/localhost が前提 — file:// では動かない:
       npm run dev
@@ -21,7 +24,8 @@
     <script type="importmap">
       {
         "imports": {
-          "@hapbeat/sdk": "../../../dist/browser.js"
+          "@hapbeat/sdk": "../../../dist/browser.js",
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
         }
       }
     </script>
