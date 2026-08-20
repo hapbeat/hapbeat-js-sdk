@@ -114,6 +114,43 @@ export const CONTENT = {
     usedBy: "fps", note: "歩行（足音はファイル 5 種からランダム）。敵銃撃の音/触覚をマスクする＝止まると気づきやすい。",
   },
   // 連続モード（~100Hz の方向触覚）の数値は fps/tuning.js の CONTINUOUS にまとめてある（波形+アルゴリズム両方）。
+
+  // ── 触覚ボクシング (boxing) — カメラ姿勢推定。pan は左右どちらの手/どちらから来た攻撃かで決まる ─
+  boxing_punch_hit: {
+    haptic: { kind: "blip", freq: 130, durMs: 120, gain: 0.85 },
+    audio: { kind: "tone", type: "square", freq: 260, durMs: 130, vol: 0.5, attack: 0.001, decay: 0.12 },
+    usedBy: "boxing", note: "自分のパンチが刺さった（敵の隙）。手の左右で L/R パン。",
+  },
+  boxing_punch_blocked: {
+    haptic: { kind: "blip", freq: 200, durMs: 60, gain: 0.35 },
+    audio: { kind: "tone", type: "triangle", freq: 420, durMs: 70, vol: 0.26, attack: 0.001, decay: 0.06 },
+    usedBy: "boxing", note: "敵のガードに当たった（軽い手応え）。刺さった時と明確に差をつける。",
+  },
+  boxing_player_hit: {
+    haptic: { kind: "double", freq: 110, durMs: 90, freq2: 75, durMs2: 190, gapMs: 30, gain: 1.0 },
+    audio: { kind: "tone", type: "sawtooth", freq: 140, durMs: 240, vol: 0.62, attack: 0.002, decay: 0.23 },
+    usedBy: "boxing", note: "被弾（最強）。攻撃が来た側に寄せてパン。",
+  },
+  boxing_block: {
+    haptic: { kind: "blip", freq: 95, durMs: 110, gain: 0.8 },
+    audio: { kind: "tone", type: "square", freq: 480, durMs: 110, vol: 0.42, attack: 0.001, decay: 0.1 },
+    usedBy: "boxing", note: "ガード成功（受け止めた『ぽこん』）。被弾とは別フィードバック。",
+  },
+  boxing_dodge: {
+    haptic: { kind: "blip", freq: 260, durMs: 55, gain: 0.3 },
+    audio: { kind: "tone", type: "sine", freq: 900, durMs: 160, vol: 0.2, attack: 0.004, decay: 0.15 },
+    usedBy: "boxing", note: "回避成功（空振りの風切り）。ごく軽い＝『当たらなかった』ことが触覚で分かる。",
+  },
+  boxing_ko: {
+    haptic: { kind: "double", freq: 140, durMs: 150, freq2: 70, durMs2: 320, gapMs: 60, gain: 1.0 },
+    audio: { kind: "tone", type: "sawtooth", freq: 180, durMs: 420, vol: 0.7, attack: 0.002, decay: 0.4 },
+    usedBy: "boxing", note: "KO 決着。最も長く重い一撃。",
+  },
+  boxing_bell: {
+    haptic: { kind: "blip", freq: 320, durMs: 90, gain: 0.45 },
+    audio: { kind: "arp", type: "triangle", notes: [1047, 1047, 1319], stepMs: 130, vol: 0.3, decay: 0.3 },
+    usedBy: "boxing", note: "ラウンド開始 / 終了のゴング。",
+  },
 };
 
 const clamp01 = (g) => (g < 0 ? 0 : g > 1 ? 1 : g);

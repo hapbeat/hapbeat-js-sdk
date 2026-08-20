@@ -1,0 +1,32 @@
+<!doctype html>
+<!--
+  触覚ボクシング — PC カメラ + MediaPipe Pose で全身操作する Hapbeat デモ。
+
+  パンチ / ガード / 回避（リーン・ダック）を姿勢推定で取り、当たった・受けた・かわしたの
+  違いを触覚で返す。コントローラを持たない＝手がふさがらない題材。
+
+  触覚には helper（pipx install hapbeat-helper）が要る。無くても音と映像で最後まで遊べる。
+  ES Modules + カメラ（getUserMedia）は HTTP/localhost が前提 — file:// では動かない:
+      npm run dev
+      # http://localhost:8170/examples/games/boxing/
+-->
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>触覚ボクシング — Hapbeat</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #070a10; overflow: hidden; }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "@hapbeat/sdk": "../../../dist/browser.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <script type="module" src="./boxing.js"></script>
+  </body>
+</html>

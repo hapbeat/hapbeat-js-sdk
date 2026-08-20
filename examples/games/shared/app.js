@@ -30,6 +30,15 @@ const LINK_DEMOS = [
     href: "fps/",
   },
   {
+    id: "boxing",
+    emoji: "🥊",
+    title: "触覚ボクシング",
+    en: "Haptic Boxing",
+    tag: "カメラで全身操作（MediaPipe Pose）",
+    desc: "PC カメラで姿勢を取り、パンチ・ガード・回避（リーン/ダック）で戦う。コントローラを持たないぶん、当たった/受けた/かわしたの違いは触覚で返る。カメラ許可が必要。",
+    href: "boxing/",
+  },
+  {
     id: "gamepad-test",
     emoji: "🎮",
     title: "入力確認",

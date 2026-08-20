@@ -1,0 +1,10 @@
+{
+  "_README": "つなぎ（EventMap）— 論理イベント → 触覚 Kit の eventId + 再生調整。kitEvent は demo-kit/fps-kit/fps-kit-manifest.json の stream_events/events のキーと一致（ボクシング専用 Kit は未作成のため fps-kit を流用した仮置き）。mode: clip(ホストが WAV を stream・既定) / fire(デバイス内蔵 clip)。gain は manifest intensity に掛かる倍率。directional=true の触覚は手／攻撃の左右で L/R パンする。音は event-content.js の boxing_* 側（現状は合成音）。",
+  "boxing_punch_hit":     { "kitEvent": "fps-kit.shot-player", "mode": "clip", "gain": 1.0, "loop": false, "target": "", "directional": true },
+  "boxing_punch_blocked": { "kitEvent": "fps-kit.block",       "mode": "clip", "gain": 0.5, "loop": false, "target": "", "directional": true },
+  "boxing_player_hit":    { "kitEvent": "fps-kit.damage",      "mode": "clip", "gain": 1.0, "loop": false, "target": "", "directional": true },
+  "boxing_block":         { "kitEvent": "fps-kit.block",       "mode": "clip", "gain": 1.0, "loop": false, "target": "" },
+  "boxing_dodge":         { "kitEvent": "fps-kit.footstep-0",  "mode": "clip", "gain": 0.45, "loop": false, "target": "" },
+  "boxing_ko":            { "kitEvent": "fps-kit.kill-enemy",  "mode": "clip", "gain": 1.0, "loop": false, "target": "" },
+  "boxing_bell":          { "kitEvent": "fps-kit.kill-enemy",  "mode": "clip", "gain": 0.4, "loop": false, "target": "" }
+}

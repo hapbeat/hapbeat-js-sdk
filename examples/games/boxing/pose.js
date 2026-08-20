@@ -1,0 +1,147 @@
+/**
+ * PoseTracker — カメラ取得 + MediaPipe PoseLandmarker のセットアップと毎フレーム推論。
+ *
+ * ゲーム側（boxing.js）は landmarks の中身だけを見ればよく、モデルのロード失敗・カメラ拒否は
+ * すべて `error`（日本語 1 行）に畳んで返す。例外は投げない = 描画ループが死なない。
+ *
+ * tasks-vision は CDN(jsdelivr) から ESM で直接読む。ビルド手順を増やさないための選択で、
+ * オフライン展示ではここをローカルパスに差し替える（README 参照）。
+ */
+
+const VISION_VERSION = "0.10.14";
+const VISION_MODULE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VISION_VERSION}/vision_bundle.mjs`;
+const VISION_WASM = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VISION_VERSION}/wasm`;
+const MODEL_URL =
+  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+
+/** MediaPipe Pose のランドマーク index（使うものだけ）。 */
+export const LM = {
+  nose: 0,
+  shoulderL: 11, shoulderR: 12,
+  elbowL: 13, elbowR: 14,
+  wristL: 15, wristR: 16,
+  hipL: 23, hipR: 24,
+};
+
+/** 描画用の骨格接続（デバッグ表示）。 */
+export const SKELETON = [
+  [LM.shoulderL, LM.shoulderR],
+  [LM.shoulderL, LM.elbowL], [LM.elbowL, LM.wristL],
+  [LM.shoulderR, LM.elbowR], [LM.elbowR, LM.wristR],
+  [LM.shoulderL, LM.hipL], [LM.shoulderR, LM.hipR], [LM.hipL, LM.hipR],
+];
+
+export class PoseTracker {
+  constructor() {
+    this.video = null;
+    this.landmarker = null;
+    this.stream = null;
+    this.ready = false;
+    this.error = "";        // 日本語 1 行。空なら正常
+    this.delegate = "";     // "GPU" / "CPU"（HUD 表示用）
+    this._lastVideoTime = -1;
+    this._last = null;      // 直近の推論結果（同一 videoTime なら再利用）
+  }
+
+  /**
+   * カメラ → モデルの順に初期化する。どちらかが落ちても throw せず `error` に理由を入れて false を返す。
+   * @param {HTMLVideoElement} video
+   */
+  async start(video, { width = 640, height = 480 } = {}) {
+    this.video = video;
+    if (!(await this._openCamera(video, width, height))) return false;
+    if (!(await this._loadModel())) return false;
+    this.ready = true;
+    this.error = "";
+    return true;
+  }
+
+  async _openCamera(video, width, height) {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      this.error = "カメラエラー: このブラウザは getUserMedia に対応していません（HTTPS か localhost で開いてください）";
+      return false;
+    }
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: width }, height: { ideal: height }, facingMode: "user" },
+        audio: false,
+      });
+    } catch (e) {
+      const name = e?.name ?? "";
+      this.error =
+        name === "NotAllowedError" ? "カメラエラー: 使用が許可されませんでした（ブラウザのカメラ許可を確認してください）"
+        : name === "NotFoundError" || name === "OverconstrainedError" ? "カメラエラー: カメラが見つかりません（接続を確認してください）"
+        : `カメラエラー: ${e?.message ?? e}`;
+      return false;
+    }
+    video.srcObject = this.stream;
+    video.playsInline = true;
+    video.muted = true;
+    try {
+      await video.play();
+    } catch (e) {
+      this.error = `カメラエラー: 映像を再生できません（${e?.message ?? e}）`;
+      return false;
+    }
+    return true;
+  }
+
+  async _loadModel() {
+    let mod;
+    try {
+      mod = await import(/* @vite-ignore */ VISION_MODULE);
+    } catch (e) {
+      this.error = `姿勢推定エラー: MediaPipe を読み込めません（オフライン？ ${e?.message ?? e}）`;
+      return false;
+    }
+    const { FilesetResolver, PoseLandmarker } = mod;
+    let fileset;
+    try {
+      fileset = await FilesetResolver.forVisionTasks(VISION_WASM);
+    } catch (e) {
+      this.error = `姿勢推定エラー: WASM を読み込めません（${e?.message ?? e}）`;
+      return false;
+    }
+    // GPU が使えない環境（古い GPU / ソフトウェアレンダリング）では CPU に落とす。
+    for (const delegate of ["GPU", "CPU"]) {
+      try {
+        this.landmarker = await PoseLandmarker.createFromOptions(fileset, {
+          baseOptions: { modelAssetPath: MODEL_URL, delegate },
+          runningMode: "VIDEO",
+          numPoses: 1,
+        });
+        this.delegate = delegate;
+        return true;
+      } catch (e) {
+        this.error = `姿勢推定エラー: モデルを初期化できません（${e?.message ?? e}）`;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 1 フレーム分の推論。映像が進んでいなければ前回結果を返す（同一 timestamp を投げると例外になるため）。
+   * @returns {{landmarks:Array, worldLandmarks:Array}|null}
+   */
+  detect(nowMs) {
+    if (!this.ready || !this.video || this.video.readyState < 2) return this._last;
+    if (this.video.currentTime === this._lastVideoTime) return this._last;
+    this._lastVideoTime = this.video.currentTime;
+    try {
+      const res = this.landmarker.detectForVideo(this.video, nowMs);
+      this._last = res?.landmarks?.length
+        ? { landmarks: res.landmarks[0], worldLandmarks: res.worldLandmarks?.[0] ?? null }
+        : null;
+    } catch (e) {
+      this.error = `姿勢推定エラー: ${e?.message ?? e}`;
+      this._last = null;
+    }
+    return this._last;
+  }
+
+  stop() {
+    for (const t of this.stream?.getTracks() ?? []) t.stop();
+    this.stream = null;
+    this.ready = false;
+  }
+}
