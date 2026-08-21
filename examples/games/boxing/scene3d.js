@@ -293,7 +293,8 @@ export class Scene3D {
     const h = pose.head;
     if (this.mode === "first") {
       this.camera.position.set(h.x + this.shake.x, h.y + v.first.up + this.shake.y, h.z + v.first.back);
-      this.camera.lookAt(enemy.head.x, enemy.head.y, enemy.head.z);
+      // わずかに下を向く（構えた自分の拳が画面下部に入るように）
+      this.camera.lookAt(enemy.head.x, enemy.head.y - (v.first.lookDown ?? 0), enemy.head.z);
     } else {
       // 背後やや上。頭の動きにはゆるく追従（頭球が画面内で動く＝避けたのが見える）
       this.camera.position.set(h.x * 0.45 + this.shake.x, h.y * 0.45 + v.third.up + this.shake.y, h.z + v.third.back);

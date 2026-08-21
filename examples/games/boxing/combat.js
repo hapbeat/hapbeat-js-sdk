@@ -78,15 +78,25 @@ export function buildPlayerPose(frame, cfg) {
      * 描画も判定もこの同じ位置を使うので「見えている通りに当たる」は保たれる。
      */
     const conv = cfg.convergence * reach;
+    /**
+     * 奥行き: 構え（reach=0）でも拳は体の前 guardForward [m] に出ている。
+     * ここを 0 にすると、胸の前でガードしていても 3D では手が体にめり込んで見える。
+     * reach はそこから前へ伸び、reach=1 で forwardMeters に達する。
+     */
+    const gf = cfg.guardForward ?? 0;
+    const wristFwd = gf + reach * Math.max(0, cfg.forwardMeters - gf);
+    const elbowFwd = gf * 0.5 + reach * Math.max(0, cfg.forwardMeters - gf) * cfg.elbowFrac;
+    // 構えでは拳を少し持ち上げる（顎の前）。伸ばすほど 0 に戻る。
+    const lift = (cfg.guardHeight ?? 0) * (1 - reach);
     const place = (off, fwd, convScale) => {
       const k = conv * convScale;
       return v3(
         lerp(shoulder.x + off.x * SW * cfg.lateralGain, cfg.aim.x, k),
-        lerp(shoulder.y - off.y * SW * cfg.lateralGain, cfg.aim.y, k),
-        shoulder.z - reach * cfg.forwardMeters * fwd,
+        lerp(shoulder.y - off.y * SW * cfg.lateralGain + lift, cfg.aim.y, k),
+        shoulder.z - fwd,
       );
     };
-    out[side] = { elbow: place(arm.elbow, cfg.elbowFrac, 0.4), wrist: place(arm.wrist, 1, 1), reach };
+    out[side] = { elbow: place(arm.elbow, elbowFwd, 0.4), wrist: place(arm.wrist, wristFwd, 1), reach };
   }
   // 胴の当たり判定カプセル（上端＝肩の中点 / 下端＝そこから torsoLength 下）。
   // 敵が胴を狙ってくるので、腕で止めるか上体ごとどけるかの的になる。

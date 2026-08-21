@@ -429,14 +429,14 @@ function setState(next) {
       <h1>🥊 触覚ボクシング</h1>
       <p>カメラの前に立って、体で戦う。<br>
       <b>殴る</b>＝拳をカメラへ突き出す　<b>守る</b>＝腕を頭の前に上げる　<b>避ける</b>＝上体を振る／しゃがむ</p>
-      <p style="color:#8b97a6">スタート後、<b>2 秒のカウントダウン</b>のあいだに<b>両拳を胸の前に構えて</b>ください。<br>
+      <p style="color:#8b97a6">スタート後、<b>カウントダウン（3・2・1）</b>のあいだに<b>両拳を胸の前に構えて</b>ください。<br>
       その姿勢が「腕を伸ばしていない状態」の基準になります。<br>
       画面は自分の背後から。青く光る球とカプセルが自分の頭と胴の当たり判定。<br>
       敵は頭か胴を狙って腕を伸ばしてくるので、腕で止めるか、体ごと動かして外す。<br>
       全身が映るように 1.5〜2m 離れて立ってください。${GAME.testMode ? "<br>（テストモード: 勝敗を出さず、体力が尽きても自動で回復して続きます）" : ""}</p>
       <div class="actions"><button class="primary" id="cardStart">スタート（Space）</button></div>`);
     card.querySelector("#cardStart").onclick = () => startFight();
-    setStatus("スタート → 2 秒のカウントダウン → 構えを計測（約 1.5 秒）");
+    setStatus(`スタート → ${Math.round(TUNING.calibCountdownMs / 1000)} 秒のカウントダウン → 構えを計測（約 1.5 秒）`);
   } else if (next === "COUNTDOWN") {
     hideCard();
     countdownUntilMs = performance.now() + TUNING.calibCountdownMs;
@@ -561,6 +561,14 @@ function drawSignalBars() {
   ctx.fillText(`dist ${(lastDebug.distanceRatio ?? 1).toFixed(2)}  step ${(playerPose?.step ?? 0).toFixed(2)}m`
     + `  cam ${res ? `${res.width}x${res.height} (${(res.width / res.height).toFixed(2)})` : "?"}`
     + `${lastDebug.hands ? "  hand21 OK" : "  hand21 なし"}`, 14 * s, y);
+  y += rowH;
+  // 距離比の内訳（肩幅 / 体幹 / 顔 / 骨格 bbox）。どれかが崩れていないか見るため。
+  const dp = lastDebug.distParts;
+  if (dp) {
+    ctx.fillStyle = "#8b97a6";
+    const fmt = (v) => (v == null ? "--" : v.toFixed(2));
+    ctx.fillText(`  肩 ${fmt(dp.shoulder)}  体幹 ${fmt(dp.torso)}  顔 ${fmt(dp.face)}  骨格 ${fmt(dp.frame)}`, 14 * s, y);
+  }
   y += rowH * 1.2;
   for (const side of ["left", "right"]) {
     const d = lastDebug[side];

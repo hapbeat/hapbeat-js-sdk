@@ -144,10 +144,11 @@ const frameAt = (distanceRatio, reach = 0) => ({
   },
 });
 
-test("距離比 → 前後移動: 1.0 は原点、1.3 で約 +0.4m 前、範囲外はクランプされる", () => {
+test("距離比 → 前後移動: 1.0 は原点、1.15（半歩）で約 +0.4m 前、範囲外はクランプされる", () => {
   assert.ok(Math.abs(buildPlayerPose(frameAt(1.0), COMBAT.rig).head.z) < 1e-9);
-  const stepped = buildPlayerPose(frameAt(1.3), COMBAT.rig);
-  assert.ok(Math.abs(stepped.head.z + 0.4) < 0.03, `head.z=${stepped.head.z.toFixed(3)}（-0.4 付近のはず）`);
+  // 見かけが 15% 大きくなる = 半歩踏み込んだくらい。ここで 0.4m 動くのが狙い。
+  const stepped = buildPlayerPose(frameAt(1.15), COMBAT.rig);
+  assert.ok(Math.abs(stepped.head.z + 0.39) < 0.04, `head.z=${stepped.head.z.toFixed(3)}（-0.39 付近のはず）`);
   assert.ok(stepped.torsoTop.z < 0 && stepped.right.wrist.z < 0, "体全体が前に出ていない");
   const back = buildPlayerPose(frameAt(0.7), COMBAT.rig);
   assert.ok(back.head.z > 0, "下がると後ろへ動く");
@@ -157,10 +158,10 @@ test("距離比 → 前後移動: 1.0 は原点、1.3 で約 +0.4m 前、範囲�
 
 test("踏み込むと間合いが詰まる: 同じリーチでも敵の頭までの距離が縮む", () => {
   const enemyHead = v3(0, COMBAT.enemy.headY, -COMBAT.enemyDist);
-  const at = (ratio) => dist(buildPlayerPose(frameAt(ratio, 0.6), COMBAT.rig).right.wrist, enemyHead);
-  const base = at(1.0), stepIn = at(1.3);
+  const at = (ratio) => dist(buildPlayerPose(frameAt(ratio, 0.35), COMBAT.rig).right.wrist, enemyHead);
+  const base = at(1.0), stepIn = at(1.15);
   assert.ok(stepIn < base - 0.3, `踏み込みで間合いが詰まらない (${base.toFixed(3)} → ${stepIn.toFixed(3)})`);
-  assert.ok(at(0.8) > base, "下がっても間合いが変わらない");
+  assert.ok(at(0.85) > base, "下がっても間合いが変わらない");
 });
 
 test("画像空間 z 信号は『構え時からの差分』で見る: 構えで 0、伸ばしきりで ~1", () => {
@@ -234,4 +235,36 @@ test("見失った信号は合成から外れる（保持しない）", () => {
   // 手を見失い（handModel/handSize = null）、構えに戻して z も戻った状態
   const back = { angle: 1, shorten: 0, handSize: null, handModel: null, depthZ: 0 };
   assert.ok(combineSignals(back, cfg) < 0.2, "見失った手の値が残って高いままになる");
+});
+
+// ── 手の「面積」信号と、構え姿勢のリグ ────────────────────────────────────────
+test("凸包面積: 正方形・三角形が正しく、距離の 2 乗で効く（sqrt で長さ比に戻る）", async () => {
+  const { convexHullArea, bboxArea } = await import("../examples/games/boxing/filters.js");
+  const square = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }, { x: 0.5, y: 0.5 }];
+  assert.ok(Math.abs(convexHullArea(square) - 1) < 1e-9, "正方形の面積が 1 にならない");
+  assert.ok(Math.abs(convexHullArea([{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 0, y: 2 }]) - 2) < 1e-9);
+  assert.equal(convexHullArea([{ x: 0, y: 0 }, { x: 1, y: 1 }]), 0, "2 点では面積なし");
+  // 一直線（退化）は bbox にフォールバック
+  assert.ok(convexHullArea([{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }]) >= 0);
+  assert.equal(bboxArea([{ x: 0, y: 0 }, { x: 2, y: 3 }]), 6);
+  // カメラに 1.5 倍近づく = 見かけ 1.5 倍 → 面積 2.25 倍 → sqrt で 1.5 倍に戻る
+  const near = square.map((p) => ({ x: p.x * 1.5, y: p.y * 1.5 }));
+  assert.ok(Math.abs(Math.sqrt(convexHullArea(near) / convexHullArea(square)) - 1.5) < 1e-9);
+});
+
+test("構えのリグ: reach=0 でも拳は体より前にあり、reach=1 で敵に届く", () => {
+  const guard = buildPlayerPose(frameAt(1.0, 0), COMBAT.rig);
+  const rig = COMBAT.rig;
+  // 拳が体（胴カプセル）より前（-Z）に出ていること = 体にめり込まない
+  assert.ok(guard.right.wrist.z < guard.torsoTop.z - 0.2,
+    `構えで拳が体にめり込んでいる (wrist.z=${guard.right.wrist.z.toFixed(3)} torso.z=${guard.torsoTop.z.toFixed(3)})`);
+  assert.ok(Math.abs((guard.shoulders.right.z - guard.right.wrist.z) - rig.guardForward) < 1e-9,
+    "構えの前方距離が guardForward と一致しない");
+  assert.ok(guard.right.elbow.z > guard.right.wrist.z, "肘が拳より前に出ている（腕が裏返っている）");
+  // 伸ばしきりは従来どおり敵の頭に届く
+  const full = buildPlayerPose(frameAt(1.0, 1), COMBAT.rig);
+  const contact = COMBAT.player.gloveRadius + COMBAT.enemy.headRadius;
+  assert.ok(dist(full.right.wrist, v3(0, COMBAT.enemy.headY, -COMBAT.enemyDist)) <= contact,
+    "伸ばしきっても敵の頭に届かない");
+  assert.ok(full.right.wrist.z < guard.right.wrist.z, "reach を上げても前に出ない");
 });

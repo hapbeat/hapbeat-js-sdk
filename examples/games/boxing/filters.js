@@ -74,3 +74,43 @@ export function weightedMedian(pairs) {
   }
   return items[items.length - 1][0];
 }
+
+/**
+ * 点群の凸包面積（Andrew's monotone chain）。手の 21 点の「広がり」を測るのに使う。
+ * 面積は距離の 2 乗で効くので、長さ 1 本（手のひら長など）より S/N が良い。
+ * 3 点未満や退化した場合は bbox 面積にフォールバックする。
+ * @param {{x:number,y:number}[]} pts
+ * @returns {number} 面積（入力座標系の 2 乗）
+ */
+export function convexHullArea(pts) {
+  const p = (pts ?? []).filter((q) => q && Number.isFinite(q.x) && Number.isFinite(q.y));
+  if (p.length < 3) return 0;
+  const sorted = [...p].sort((a, b) => (a.x - b.x) || (a.y - b.y));
+  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const build = (arr) => {
+    const out = [];
+    for (const q of arr) {
+      while (out.length >= 2 && cross(out[out.length - 2], out[out.length - 1], q) <= 0) out.pop();
+      out.push(q);
+    }
+    out.pop();
+    return out;
+  };
+  const hull = [...build(sorted), ...build([...sorted].reverse())];
+  if (hull.length < 3) return bboxArea(p);
+  let a2 = 0;
+  for (let i = 0; i < hull.length; i++) {
+    const q = hull[i], r = hull[(i + 1) % hull.length];
+    a2 += q.x * r.y - r.x * q.y;
+  }
+  const area = Math.abs(a2) / 2;
+  return area > 1e-12 ? area : bboxArea(p);
+}
+
+/** 退化時のフォールバック（軸並行バウンディングボックスの面積）。 */
+export function bboxArea(pts) {
+  if (!pts?.length) return 0;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const q of pts) { x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); }
+  return Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+}
