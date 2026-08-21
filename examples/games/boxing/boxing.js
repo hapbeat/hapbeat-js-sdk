@@ -23,7 +23,7 @@
 import { ArcadeBridge } from "../shared/hapbeat-bridge.js";
 import { ContentRouter } from "../shared/content-router.js";
 import { Fx } from "../shared/fx.js";
-import { PoseTracker, SKELETON } from "./pose.js";
+import { PoseTracker, SKELETON, HAND_CONNECTIONS } from "./pose.js";
 import { GestureTracker } from "./gestures.js";
 import { TUNING, COMBAT, GAME } from "./tuning.js";
 import { buildPlayerPose, attackPathT, enemyGlovePos, resolveEnemyGlove, resolvePlayerGlove, v3, dist } from "./combat.js";
@@ -527,8 +527,12 @@ function drawSignalBars() {
   }
 }
 
-/** デバッグ PIP: 実カメラ映像（ミラー）+ 2D スケルトン。オーバーレイなのでレイアウト不動。 */
-function drawPip(landmarks) {
+/**
+ * デバッグ PIP: 実カメラ映像（ミラー）+ pose スケルトン（紫）+ 手の 21 点（緑）。
+ * 手が検出できているかを PIP だけで判断できるように、pose とは別色で重ねる。
+ * オーバーレイ配置なのでレイアウトは動かない。
+ */
+function drawPip(landmarks, hands) {
   if (!pipOn || !pose.ready || video.readyState < 2) return;
   const W = hudCanvas.width, H = hudCanvas.height;
   const frac = state === "FIGHT" || state === "RESULT" ? 0.16 : 0.28;
@@ -550,6 +554,22 @@ function drawPip(landmarks) {
     }
     ctx.fillStyle = "#ffd479";
     for (const lm of landmarks) { ctx.beginPath(); ctx.arc(lm.x * w, lm.y * h, Math.max(1.5, w / 90), 0, Math.PI * 2); ctx.fill(); }
+  }
+  // 手（HandLandmarker）: 検出できた手だけを緑で重ねる。出ていなければ手は取れていない。
+  for (const hand of hands ?? []) {
+    const lm = hand.landmarks;
+    if (!lm?.length) continue;
+    ctx.strokeStyle = "rgba(76,195,138,0.95)";
+    ctx.lineWidth = Math.max(1.2, w / 150);
+    for (const [a, b] of HAND_CONNECTIONS) {
+      if (!lm[a] || !lm[b]) continue;
+      ctx.beginPath();
+      ctx.moveTo(lm[a].x * w, lm[a].y * h);
+      ctx.lineTo(lm[b].x * w, lm[b].y * h);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "#7dffc0";
+    for (const p of lm) { ctx.beginPath(); ctx.arc(p.x * w, p.y * h, Math.max(1.2, w / 130), 0, Math.PI * 2); ctx.fill(); }
   }
   ctx.restore();
   ctx.strokeStyle = "rgba(124,92,255,0.55)";
@@ -626,7 +646,7 @@ function frame(nowMs) {
   fx.draw(ctx);
   if (state === "FIGHT" || state === "RESULT") drawHud();
   drawSignalBars();
-  drawPip(result?.landmarks);
+  drawPip(result?.landmarks, hands);
 }
 
 // ── 起動 ─────────────────────────────────────────────────────────────────────

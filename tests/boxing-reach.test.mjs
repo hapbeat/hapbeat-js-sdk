@@ -178,3 +178,14 @@ test("手の見かけサイズのスケール: 前へ 0.6m でほぼ 1.0 にな�
   assert.equal(mapRange(0.949, c.minRatio, c.maxRatio), 0, "真横に伸ばした腕を拾ってしまう");
   assert.ok(mapRange(1.343, c.minRatio, c.maxRatio) > 0.9, "前へ 0.6m で 1 に届かない");
 });
+
+test("手の骨格（デバッグ PIP 用）は 21 点の範囲に収まり、5 本指すべてを含む", async () => {
+  const { HAND_CONNECTIONS, HL } = await import("../examples/games/boxing/pose.js");
+  for (const [a, b] of HAND_CONNECTIONS) {
+    assert.ok(a >= 0 && a <= 20 && b >= 0 && b <= 20, `範囲外の index: ${a}-${b}`);
+    assert.notEqual(a, b);
+  }
+  const touched = new Set(HAND_CONNECTIONS.flat());
+  for (const tip of [4, 8, 12, 16, 20]) assert.ok(touched.has(tip), `指先 ${tip} が描かれない`);
+  assert.ok(touched.has(HL.wrist) && touched.has(HL.middleMcp), "手のひら長に使う点が描かれない");
+});

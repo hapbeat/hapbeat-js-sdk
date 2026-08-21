@@ -19,6 +19,16 @@ const HAND_MODEL_URL =
 /** HandLandmarker の 21 点のうち使うもの。 */
 export const HL = { wrist: 0, thumbTip: 4, indexMcp: 5, middleMcp: 9, pinkyMcp: 17, middleTip: 12 };
 
+/** 手の骨格（デバッグ PIP 表示用）。手首から 5 本の指へ。 */
+export const HAND_CONNECTIONS = [
+  [0, 1], [1, 2], [2, 3], [3, 4],            // 親指
+  [0, 5], [5, 6], [6, 7], [7, 8],            // 人差し指
+  [9, 10], [10, 11], [11, 12],               // 中指
+  [13, 14], [14, 15], [15, 16],              // 薬指
+  [0, 17], [17, 18], [18, 19], [19, 20],     // 小指
+  [5, 9], [9, 13], [13, 17],                 // 手のひら
+];
+
 /** MediaPipe Pose のランドマーク index（使うものだけ）。 */
 export const LM = {
   nose: 0,
