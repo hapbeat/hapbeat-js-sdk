@@ -24,6 +24,7 @@ import { ArcadeBridge } from "../shared/hapbeat-bridge.js";
 import { ContentRouter } from "../shared/content-router.js";
 import { Fx } from "../shared/fx.js";
 import { PoseTracker, SKELETON, HAND_CONNECTIONS } from "./pose.js";
+import { createTrackerSource, frameToPlayerInput } from "./tracker-source.js";
 import { GestureTracker } from "./gestures.js";
 import { TUNING, COMBAT, GAME } from "./tuning.js";
 import { buildPlayerPose, buildEnemyPose, attackPathT, enemyGlovePos, resolveEnemyGlove, resolvePlayerGlove, v3, dist } from "./combat.js";
@@ -117,6 +118,7 @@ root.innerHTML = `
     <div class="t">状態</div>
     <div style="font-size:12px;margin:4px 0">Helper: <span id="conn" class="badge off">未接続</span></div>
     <div style="font-size:12px;margin:4px 0">推論: <span id="delegate" class="badge off">未初期化</span></div>
+    <div style="font-size:12px;margin:4px 0">入力: <span id="srcBadge" class="badge off">未接続</span></div>
     <button id="recBtn">📝 10 秒記録して CSV 保存</button>
     <button id="recalBtn">構えを取り直す</button>
     <button id="testBtn">触覚テスト</button>
@@ -230,6 +232,8 @@ if (MUTED) {
 // ── pose / gesture / 3D ──────────────────────────────────────────────────────
 const pose = new PoseTracker();
 const gestures = new GestureTracker(TUNING);
+/** 入力ソース（深度トラッカー or Web カメラ）。tracker-source.js が切り替える。 */
+let tracker = null;
 const fx = new Fx();
 let scene = null;
 
@@ -612,7 +616,7 @@ function drawSignalBars() {
   const res = pose.resolution;
   ctx.fillText(`dist ${(lastDebug.distanceRatio ?? 1).toFixed(2)}  step ${(playerPose?.step ?? 0).toFixed(2)}m`
     + `  cam ${res ? `${res.width}x${res.height} (${(res.width / res.height).toFixed(2)})` : "?"}`
-    + `  yaw ${(lastDebug.yawDeg ?? 0).toFixed(0)}°`
+    + `  yaw ${(lastDebug.yawDeg ?? 0).toFixed(0)}°  入力 ${tracker?.label ?? "-"}`
     + `${lastDebug.hands ? "  hand21 OK" : "  hand21 なし"}`, 14 * s, y);
   y += rowH;
   // 距離比の内訳（肩幅 / 体幹 / 顔 / 骨格 bbox）。どれかが崩れていないか見るため。
@@ -706,11 +710,15 @@ function frame(nowMs) {
   if (Math.round(root.clientWidth) !== cssW || Math.round(root.clientHeight) !== cssH) resize();
 
   // ── 姿勢推定 → 体基準 2D → 3D の体 ──
-  const result = pose.ready ? pose.detect(nowMs) : null;
-  const hands = pose.ready ? pose.detectHands(nowMs) : null; // 2 フレームに 1 回だけ推論される
-  const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 4 / 3;
+  const frame = tracker ? tracker.poll(nowMs) : null;
+  const result = frame?.landmarks ? { landmarks: frame.landmarks, worldLandmarks: frame.worldLandmarks } : null;
+  const hands = frame?.hands ?? null;
+  const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 16 / 9;
   const g = gestures.update(result, nowMs, rawDt, { aspect, calibrating: state === "CALIB", hands });
-  playerPose = g.frame ? buildPlayerPose(g.frame, COMBAT.rig) : null;
+  // 深度トラッカーがあれば実測の 3D をそのまま使い、無ければ 2D からの推定（従来経路）
+  const tracked = frame?.xyz ? frameToPlayerInput(frame, COMBAT.rig) : null;
+  const input = tracked ?? g.frame;
+  playerPose = input ? buildPlayerPose(input, COMBAT.rig) : null;
   gestureArms = g.frame?.arms ?? null;
   lastDebug = g.debug;
   recordFrame(nowMs, g);
@@ -794,7 +802,14 @@ function fail(message) {
   resize();
   requestAnimationFrame(frame);
   setStatus("カメラ・3D・姿勢推定モデルを準備中…");
-  if (!(await pose.start(video, { width: 1280, height: 720 }))) { fail(pose.error); return; }
+  const picked = await createTrackerSource({
+    pose, video,
+    url: new URLSearchParams(location.search).get("tracker") || "ws://localhost:8770",
+    startOpts: { width: 1280, height: 720 },
+    onLost: () => { setStatus("深度トラッカーとの接続が切れました — Web カメラに切り替えます", "warn"); },
+  });
+  tracker = picked.source;
+  if (!picked.ok) { fail(pose.error || tracker.error || "入力を開始できません"); return; }
   try {
     const { Scene3D } = await import("./scene3d.js");
     scene = new Scene3D(glCanvas, COMBAT);
@@ -805,6 +820,9 @@ function fail(message) {
     return;
   }
   delegateEl.className = "badge on";
-  delegateEl.textContent = pose.delegate;
+  delegateEl.textContent = pose.delegate || "外部";
+  const srcBadge = root.querySelector("#srcBadge");
+  srcBadge.className = "badge on";
+  srcBadge.textContent = tracker.label;
   setState("TITLE");
 })();

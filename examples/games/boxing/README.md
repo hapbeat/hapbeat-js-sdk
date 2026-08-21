@@ -272,8 +272,22 @@ boxing/
   pose.js        # カメラ + MediaPipe PoseLandmarker（失敗は日本語 1 行に畳む）
   gestures.js    # ランドマーク → 体基準 2D フレーム + 前方リーチ + パンチ検出
   tuning.js      # ★ 閾値・バランスの集約先
+  tracker-source.js # 入力層（Web カメラ / 外部トラッカーの切替とフレーム変換）
+  tracker/       # 外部トラッカー（Python・深度カメラ用）と PROTOCOL.md
   eventmap.json  # 論理イベント → Kit の eventId + gain/pan
 ```
+
+### 入力ソース（Web カメラ / 深度カメラ）
+
+姿勢の入力は差し替えられる。起動時に外部トラッカー（`ws://localhost:8770`）へ繋ぎに行き、
+**繋がればそれを使い、繋がらなければ Web カメラ**で動く（途中で切れても Web カメラへ戻る）。
+今どちらを使っているかは ⚙ メニューの「入力」とデバッグ表示に出る。
+
+- 外部トラッカー: [`tracker/`](./tracker/)（Python）。プロトコルは [`tracker/PROTOCOL.md`](./tracker/PROTOCOL.md)。
+  深度カメラ（OAK-D Lite）から**本物の 3D（メートル）**が来ると、単眼の奥行き推定
+  （手のサイズ・肘角度・画像 z）は使わず、**実測の手首位置をそのまま IK の目標**にする。
+  前後の立ち位置も実測の胴の z を使う。骨長は固定なので、実測が多少暴れても腕は伸び縮みしない。
+- 接続先は `?tracker=ws://...` で差し替えられる。
 
 ### 検証用の URL パラメータ
 
@@ -313,7 +327,10 @@ MediaPipe 公式アセット `storage.googleapis.com/mediapipe-assets/pose.jpg` 
 - 前方リーチは 2D からの**推定**。5 信号のメディアンと安定化でかなり抑えたが、
   照明・服装・体格で効きは変わる。誤爆するときは `reach.weights` で `handSize` を厚くする、
   `punch.swing.deltaMin` を上げる、`reach.guardLock.maxReach` を下げる。
-- 敵は回避しない（ガードの開閉のみ）。プレイヤーの攻撃は伸ばしきれば当たる設計。
+- 敵は回避しない（ガードの開閉と足さばきのみ）。本格的な AI と人型アセットは別途。
+- **腕の骨長は固定**（伸びない）。届かない間合いでは当たらないので、踏み込むか相手が詰めてくるのを待つ。
+- 深度カメラ経路（`tracker/tracker.py --source oak`）は**ハード未入手のため未検証**。
+  Web カメラ経路（`--source webcam`）と、プロトコルのパース・座標変換・IK は検証済み。
 - **HandLandmarker は実カメラでのみ検証可能**。`?fakecam=1` のサンプル写真には検出可能な手が
   写っておらず（IMAGE モードでも 0 検出）、この経路だけは実機確認が要る。手が取れない間は
   自動的に他の信号だけで動く（pose の 4 点版と画像 z が代替する）。

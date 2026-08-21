@@ -61,8 +61,11 @@ export function buildPlayerPose(frame, cfg) {
   const rootX = (frame.root?.x ?? 0) * SW * (cfg.rootGain ?? 0);
   // 前後移動: 見かけサイズ比（1.0 = 構え位置 / >1 = 近づいた）を z のオフセットに変換する。
   // 体ごと敵の方（-Z）へ動くので、踏み込めば届き、下がれば届かない＝間合いが生まれる。
-  const step = clamp((( frame.distanceRatio ?? 1) - 1) * cfg.stepMetersPerRatio,
-    cfg.stepClamp[0], cfg.stepClamp[1]);
+  // 深度トラッカーがあれば実測の前後移動 [m] をそのまま使い、無ければ見かけサイズ比から換算する
+  const step = clamp(
+    frame.stepMeters != null ? frame.stepMeters : ((frame.distanceRatio ?? 1) - 1) * cfg.stepMetersPerRatio,
+    cfg.stepClamp[0], cfg.stepClamp[1],
+  );
   const head = v3(rootX + frame.head.x * SW * cfg.headGain, -frame.head.y * SW * cfg.headGain, -step);
   // 体幹ヨー（+ = 右肩が前）。頭（＝一人称の視線）は一部だけ追従させる。
   const yaw = frame.yaw ?? 0;
@@ -105,13 +108,16 @@ export function buildPlayerPose(frame, cfg) {
     const elbowFwd = gf * 0.5 + reach * Math.max(0, cfg.forwardMeters - gf) * cfg.elbowFrac;
     // 構えでは拳を少し持ち上げる（顎の前）。伸ばすほど 0 に戻る。
     const lift = (cfg.guardHeight ?? 0) * (1 - reach);
-    // 手首の「目標」。2D の見かけ位置 + reach 由来の奥行き（+ 狙点への寄せ）。
+    // 手首の「目標」。深度トラッカーがあれば実測の 3D 位置（肩中点基準）をそのまま使う。
     const aimX = cfg.aim.x + rootX;
-    const target = v3(
+    const target = arm.target
+      ? v3(shoulder.x + arm.target.x - sign * cfg.shoulderHalf, head.y + arm.target.y, head.z + arm.target.z)
+      : v3(
       lerp(shoulder.x + arm.wrist.x * SW * cfg.lateralGain, aimX, conv),
       lerp(shoulder.y - arm.wrist.y * SW * cfg.lateralGain + lift, cfg.aim.y, conv),
       shoulder.z - wristFwd,
     );
+
     // 肘は「外・下」へ張り出す（実測の 2D 肘位置を向きのヒントに使う）
     const hint = v3(sign * 1, -1 + arm.elbow.y * 0.5, 0.35);
     const ik = solveIK(shoulder, target, cfg.bones.upperArm, cfg.bones.foreArm, hint);
