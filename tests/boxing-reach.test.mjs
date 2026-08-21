@@ -268,3 +268,21 @@ test("構えのリグ: reach=0 でも拳は体より前にあり、reach=1 で�
     "伸ばしきっても敵の頭に届かない");
   assert.ok(full.right.wrist.z < guard.right.wrist.z, "reach を上げても前に出ない");
 });
+
+// キャリブレーション開始経路の回帰テスト。
+// 「取り直し」がカウントダウンを飛ばして直接 CALIB に入ってしまう退行が実機で起きたので、
+// 経路がひとつ（COUNTDOWN → CALIB）に保たれていることをソースレベルで固定する。
+test("キャリブは必ず COUNTDOWN 経由: CALIB へ直接入る経路が無い", async () => {
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../examples/games/boxing/boxing.js", import.meta.url), "utf8");
+  const calibEntries = [...src.matchAll(/setState\("CALIB"\)/g)];
+  assert.equal(calibEntries.length, 1, "CALIB へ入る箇所が 1 つではない（カウントダウンを飛ばす経路がある）");
+  // その 1 箇所はカウントダウン満了の分岐であること
+  const line = src.slice(0, calibEntries[0].index).split("\n").pop();
+  assert.match(line, /left <= 0/, "CALIB への遷移がカウントダウン満了以外から呼ばれている");
+  // 「構えを取り直す」ボタンは COUNTDOWN に入る
+  const handler = src.match(/recalBtn"\)\.onclick[\s\S]{0,200}?\n\};/);
+  assert.ok(handler, "recalBtn のハンドラが見つからない");
+  assert.match(handler[0], /setState\("COUNTDOWN"\)/, "取り直しがカウントダウンを通らない");
+  assert.doesNotMatch(handler[0], /recalibrate\(\)/, "recalibrate が二重に呼ばれている（CALIB 遷移側で呼ばれる）");
+});

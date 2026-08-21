@@ -149,7 +149,13 @@ root.querySelector("#m_haptic").onchange = (e) => bridge.setMaster("haptic", e.t
 root.querySelector("#testBtn").onclick = () => { unlockAudio(); bridge.testHaptic(); };
 root.querySelector("#menuBtn").onclick = () => { location.href = "../"; };
 root.querySelector("#recBtn").onclick = () => startRecording(10);
-root.querySelector("#recalBtn").onclick = () => { gestures.recalibrate(); if (state === "FIGHT") setState("CALIB"); };
+// 押してから画面の前に戻って構える時間が要るので、スタートと同じ COUNTDOWN → CALIB を通す。
+// recalibrate() は CALIB 遷移時に呼ばれるのでここでは呼ばない（二重呼び出しにしない）。
+root.querySelector("#recalBtn").onclick = () => {
+  if (!pose.ready) return;
+  menuEl.classList.add("hidden");
+  setState("COUNTDOWN");
+};
 
 /**
  * 診断用の信号レコーダー。10 秒ぶんの各信号を貯めて CSV で落とす。
@@ -440,6 +446,10 @@ function setState(next) {
   } else if (next === "COUNTDOWN") {
     hideCard();
     countdownUntilMs = performance.now() + TUNING.calibCountdownMs;
+    // 取り直し中に殴られないよう、敵はいったん構えに戻して待たせる
+    enemy.phase = "idle";
+    enemy.attack = null;
+    enemy.nextAtMs = countdownUntilMs + GAME.idleGapMs[0];
   } else if (next === "CALIB") {
     hideCard();
     gestures.recalibrate();
