@@ -499,16 +499,22 @@ function drawSignalBars() {
   const W = hudCanvas.width, H = hudCanvas.height;
   const s = Math.min(W, H) / 620;
   const rowH = 13 * s, w = 120 * s;
-  let y = H * 0.26;
+  let y = H * 0.22;
   ctx.font = `${Math.round(10 * s)}px system-ui, sans-serif`;
   ctx.textAlign = "left";
+  // 前後距離（1.00 = 構え位置）と、それを換算した踏み込み量
+  ctx.fillStyle = "#ffd479";
+  ctx.fillText(`dist ${(lastDebug.distanceRatio ?? 1).toFixed(2)}  step ${(playerPose?.step ?? 0).toFixed(2)}m`
+    + `${lastDebug.hands ? "  hand21" : ""}`, 14 * s, y);
+  y += rowH * 1.2;
   for (const side of ["left", "right"]) {
     const d = lastDebug[side];
     if (!d) continue;
     ctx.fillStyle = d.swing ? "#ffd479" : "#8b97a6";
     ctx.fillText(`${side}${d.swing ? " SWING" : ""}${lastDebug.guardLocked ? " guard-lock" : ""}`, 14 * s, y);
     y += rowH * 0.9;
-    for (const [k, v] of [["angle", d.angle], ["shorten", d.shorten], ["hand", d.handSize], ["raw", d.raw], ["reach", d.reach]]) {
+    for (const [k, v] of [["angle", d.angle], ["shorten", d.shorten], ["hand4", d.handSize],
+      ["hand21", d.handModel], ["imgZ", d.depthZ], ["raw", d.raw], ["reach", d.reach]]) {
       ctx.fillStyle = "rgba(42,49,60,0.85)";
       ctx.fillRect(52 * s, y - rowH * 0.62, w, rowH * 0.55);
       ctx.fillStyle = k === "reach" ? "#7c5cff" : k === "raw" ? "#4cc38a" : "#6cd1ff";
@@ -564,8 +570,9 @@ function frame(nowMs) {
 
   // ── 姿勢推定 → 体基準 2D → 3D の体 ──
   const result = pose.ready ? pose.detect(nowMs) : null;
+  const hands = pose.ready ? pose.detectHands(nowMs) : null; // 2 フレームに 1 回だけ推論される
   const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 4 / 3;
-  const g = gestures.update(result, nowMs, rawDt, { aspect, calibrating: state === "CALIB" });
+  const g = gestures.update(result, nowMs, rawDt, { aspect, calibrating: state === "CALIB", hands });
   playerPose = g.frame ? buildPlayerPose(g.frame, COMBAT.rig) : null;
   gestureArms = g.frame?.arms ?? null;
   lastDebug = g.debug;

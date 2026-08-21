@@ -40,10 +40,29 @@ export const TUNING = {
   reach: {
     angle: { minDeg: 70, maxDeg: 165 },
     shorten: { minRatio: 0.35, maxRatio: 0.95 },
-    handSize: { minRatio: 0.95, maxRatio: 1.6 },
+    /**
+     * 手の見かけサイズ比（構え時＝1.0）。ピンホール投影モデルの実測:
+     *   構え 1.00 / 真横に伸ばす 0.95 / 前へ 0.3m 1.11 / 0.45m 1.21 / 0.6m 1.34 / 0.75m 1.50
+     * 前方 0.6m でほぼ 1.0 になるよう上端を 1.35 にしてある（1.6 だと伸ばしきっても 0.6 止まりだった）。
+     */
+    handSize: { minRatio: 0.98, maxRatio: 1.35 },   // pose の 4 点（手首・親指・人差指・小指）版
+    handModel: { minRatio: 0.98, maxRatio: 1.35 },  // HandLandmarker の手のひら長（手首→中指 MCP）版
+    /**
+     * pose の画像空間 z（肩→手首の手前方向の差 / 肩幅）。worldLandmarks.z とは別物。
+     * モデル実測: 構え 0.32 / 真横 0.05 / 前 0.3m 0.79 / 0.45m 1.18 / 0.6m 1.58
+     * 構えで 0 になるよう下端 0.35、前方 0.6m で ~1.0 になるよう上端 1.5。
+     */
+    depthZ: { minRatio: 0.35, maxRatio: 1.5 },
     /** "median"（重み付きメディアン・外れ値に強い） / "weighted"（重み和） / "max"（出やすい） */
     combine: "median",
-    weights: { angle: 0.3, shorten: 0.25, handSize: 0.45 },
+    /**
+     * 重み。ピンホール投影モデルで「前へ伸ばす」を「構え / 真横へ伸ばす」から分離できる度合いを
+     * 測った結果（大きいほど良い）:
+     *   depthZ +0.59 / handSize・handModel +0.53 / shorten +0.30 / angle +0.00
+     * angle は真横に伸ばしても 1.0 になるので単独では使い物にならず、shorten は伸ばしきると
+     * 逆に戻る（非単調）。よって手のサイズと画像 z を主、角度と短縮率を補助にする。
+     */
+    weights: { angle: 0.15, shorten: 0.15, handSize: 0.3, handModel: 0.5, depthZ: 0.4 },
 
     /** ── 安定化（この 4 段でガード中の「震えて伸びる」を潰す） ── */
     deadband: 0.05,        // これ未満の変化は完全に無視
@@ -72,6 +91,19 @@ export const TUNING = {
     swing: { windowMs: 150, deltaMin: 0.28, reachMin: 0.6, endReach: 0.45, maxMs: 450, cooldownMs: 350 },
   },
 
+  /**
+   * 前後移動（踏み込み / 下がり）。構え時の見かけサイズに対する比で距離を推定する。
+   * 肩幅・体幹縦長・顔幅の 3 つの比のメディアン（腕を上げた等で 1 つ崩れても効かない）。
+   */
+  distance: {
+    weights: { shoulder: 1, torso: 0.8, face: 1 },
+    /** 推定値の許容範囲（顔が隠れた等の暴れを抑える）。 */
+    ratioClamp: [0.6, 1.8],
+    deadband: 0.015,
+    /** じわじわ動いて見えないように強めに平滑化する。 */
+    oneEuro: { minCutoff: 0.5, beta: 0.02, dCutoff: 1.0 },
+  },
+
   /** 左右のリーン（肩中点 x の基準からのずれ / 肩幅）。入り閾値 > 抜け閾値でチャタリング防止。 */
   lean: { enterRatio: 0.45, exitRatio: 0.3 },
   /** ダッキング（鼻 y が基準から下がった量 / 肩幅）。 */
@@ -97,6 +129,14 @@ export const COMBAT = {
     lateralGain: 1.0,
     /** reach=1 でグローブが前へ進む距離。敵の頭（1.2m）に届く値にしておく。 */
     forwardMeters: 1.15,
+    /**
+     * 前後移動: distanceRatio 1.0 からのずれ 1 あたり何メートル動くか。
+     * 既定では ratio 1.3（半歩踏み込んだくらい）で約 +0.4m 前に出る。
+     * 上げるほど「少し動いただけで大きく踏み込む」。
+     */
+    stepMetersPerRatio: 1.33,
+    /** 前後移動の範囲 [後ろ, 前]（メートル）。敵にめり込まないよう前側を制限する。 */
+    stepClamp: [-0.35, 0.7],
     elbowFrac: 0.45,
     /**
      * 伸ばしきった時にどれだけ狙点へ寄せるか（0=肩から真っ直ぐ / 1=完全に狙点へ）。

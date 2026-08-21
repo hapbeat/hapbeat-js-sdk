@@ -13,10 +13,17 @@ const VISION_MODULE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VI
 const VISION_WASM = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VISION_VERSION}/wasm`;
 const MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+const HAND_MODEL_URL =
+  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+
+/** HandLandmarker の 21 点のうち使うもの。 */
+export const HL = { wrist: 0, thumbTip: 4, indexMcp: 5, middleMcp: 9, pinkyMcp: 17, middleTip: 12 };
 
 /** MediaPipe Pose のランドマーク index（使うものだけ）。 */
 export const LM = {
   nose: 0,
+  // 目・耳（顔の見かけ幅＝前後距離の推定に使う）
+  eyeL: 2, eyeR: 5, earL: 7, earR: 8,
   shoulderL: 11, shoulderR: 12,
   elbowL: 13, elbowR: 14,
   wristL: 15, wristR: 16,
@@ -153,12 +160,42 @@ export class PoseTracker {
           numPoses: 1,
         });
         this.delegate = delegate;
+        // 手のモデルは「あれば使う」扱い。落ちても pose だけで動く（リーチ推定の精度が下がるだけ）。
+        try {
+          this.handLandmarker = await mod.HandLandmarker.createFromOptions(fileset, {
+            baseOptions: { modelAssetPath: HAND_MODEL_URL, delegate },
+            runningMode: "VIDEO",
+            numHands: 2,
+          });
+        } catch (e) {
+          this.handError = String(e?.message ?? e);
+        }
         return true;
       } catch (e) {
         this.error = `姿勢推定エラー: モデルを初期化できません（${e?.message ?? e}）`;
       }
     }
     return false;
+  }
+
+  /**
+   * 手のランドマーク（21 点 × 最大 2）。pose より重いので handEveryNth フレームに 1 回だけ回し、
+   * 間のフレームは直前結果を返す。モデルが無い環境では常に null。
+   * @returns {{landmarks:Array, handedness:string}[]|null}
+   */
+  detectHands(nowMs, everyNth = 2) {
+    if (!this.handLandmarker || !this.ready || this.video?.readyState < 2) return this._hands ?? null;
+    if ((this._handTick = (this._handTick ?? 0) + 1) % everyNth !== 0) return this._hands ?? null;
+    try {
+      const res = this.handLandmarker.detectForVideo(this.video, nowMs + 0.5); // pose と同 timestamp を避ける
+      this._hands = (res?.landmarks ?? []).map((landmarks, i) => ({
+        landmarks,
+        handedness: res.handednesses?.[i]?.[0]?.categoryName ?? "",
+      }));
+    } catch {
+      /* 手の推論だけ失敗しても pose の結果は使い続ける */
+    }
+    return this._hands ?? null;
   }
 
   /**

@@ -2,9 +2,11 @@
  * reach.js — 前方リーチ（0=引いている / 1=伸び切り）の合成・安定化・「突いた」判定。純関数。
  *
  * 単眼カメラに本物の奥行きは無いので、2D から取れる 3 つの手がかりを合成する:
- *   angle    肘角度（伸びるほど 1）
- *   shorten  前腕の 2D 長さ / 構え時の長さ（カメラを向くほど短く映る）
- *   handSize 手の 2D スパン / 構え時のスパン（カメラに近いほど大きく映る）
+ *   angle     肘角度（伸びるほど 1）
+ *   shorten   前腕の 2D 長さ / 構え時の長さ（カメラを向くほど短く映る）
+ *   handSize  手の 2D スパン / 構え時（pose の 4 点版）
+ *   handModel HandLandmarker の手のひら長 / 構え時（取れる時はこれが主信号）
+ *   depthZ    pose の画像空間 z（肩→手首の手前方向の差 / 肩幅）
  *
  * そのままだと関節のプルプルがそのままリーチの揺れになり、ガード中に静止していても
  * 「伸びた」と誤判定する。そこで 4 段で殺す:
@@ -23,12 +25,12 @@ export const mapRange = (v, a, b) => clamp((v - a) / (b - a || 1e-6), 0, 1);
 
 /**
  * 3 信号 → 生のリーチ 0..1。
- * @param {{angle:number|null, shorten:number|null, handSize:number|null}} sig 各 0..1（取れない信号は null）
- * @param {{combine:"max"|"weighted"|"median", weights:{angle:number,shorten:number,handSize:number}}} cfg
+ * @param {Object<string, number|null>} sig 各 0..1（取れない信号は null）
+ * @param {{combine:"max"|"weighted"|"median", weights:Object<string, number>}} cfg
  */
 export function combineSignals(sig, cfg) {
   const pairs = [];
-  for (const k of ["angle", "shorten", "handSize"]) {
+  for (const k of Object.keys(cfg.weights)) {   // 信号の増減は tuning の weights だけで効く
     const v = sig[k];
     if (v == null || !Number.isFinite(v)) continue;
     pairs.push([clamp(v, 0, 1), cfg.weights[k] ?? 0]);

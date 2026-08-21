@@ -10,7 +10,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { OneEuro, slew, deadband, weightedMedian } from "../examples/games/boxing/filters.js";
 import { combineSignals, ReachFilter, SwingDetector, isGuardLocked } from "../examples/games/boxing/reach.js";
-import { TUNING } from "../examples/games/boxing/tuning.js";
+import { TUNING, COMBAT as _COMBAT } from "../examples/games/boxing/tuning.js";
+const COMBAT_REACH = TUNING.reach;
 
 const DT = 1 / 30;
 /** 再現可能な擬似乱数（テストを毎回同じ結果にする）。 */
@@ -124,4 +125,56 @@ test("可視性が落ちたフレームは直前値を保持する（腕が飛�
   for (let i = 0; i < 60; i++) r = filter.update(0.8, DT, {});
   const held = filter.update(0.0, DT, { visible: false });
   assert.equal(held, r, "見えていないフレームで値が動いた");
+});
+
+// ── 前後移動（踏み込み）と、再スケールした奥行き信号 ────────────────────────────
+// 単眼なので「見かけの体格が大きくなった＝近づいた」で距離を推定する。
+// 比 → メートルの換算と、その結果として間合いが変わることを守る。
+import { buildPlayerPose, dist, v3 } from "../examples/games/boxing/combat.js";
+const COMBAT = _COMBAT;
+import { mapRange } from "../examples/games/boxing/reach.js";
+
+const frameAt = (distanceRatio, reach = 0) => ({
+  head: { x: 0, y: 0 }, distanceRatio,
+  arms: {
+    left: { elbow: { x: -0.35, y: 0.35 }, wrist: { x: -0.2, y: 0.1 }, reach: 0 },
+    right: { elbow: { x: 0.35, y: 0.35 }, wrist: { x: 0.2, y: 0.1 }, reach },
+  },
+});
+
+test("距離比 → 前後移動: 1.0 は原点、1.3 で約 +0.4m 前、範囲外はクランプされる", () => {
+  assert.ok(Math.abs(buildPlayerPose(frameAt(1.0), COMBAT.rig).head.z) < 1e-9);
+  const stepped = buildPlayerPose(frameAt(1.3), COMBAT.rig);
+  assert.ok(Math.abs(stepped.head.z + 0.4) < 0.03, `head.z=${stepped.head.z.toFixed(3)}（-0.4 付近のはず）`);
+  assert.ok(stepped.torsoTop.z < 0 && stepped.right.wrist.z < 0, "体全体が前に出ていない");
+  const back = buildPlayerPose(frameAt(0.7), COMBAT.rig);
+  assert.ok(back.head.z > 0, "下がると後ろへ動く");
+  const far = buildPlayerPose(frameAt(3.0), COMBAT.rig); // 異常値でも敵にめり込まない
+  assert.ok(-far.head.z <= COMBAT.rig.stepClamp[1] + 1e-9);
+});
+
+test("踏み込むと間合いが詰まる: 同じリーチでも敵の頭までの距離が縮む", () => {
+  const enemyHead = v3(0, COMBAT.enemy.headY, -COMBAT.enemyDist);
+  const at = (ratio) => dist(buildPlayerPose(frameAt(ratio, 0.6), COMBAT.rig).right.wrist, enemyHead);
+  const base = at(1.0), stepIn = at(1.3);
+  assert.ok(stepIn < base - 0.3, `踏み込みで間合いが詰まらない (${base.toFixed(3)} → ${stepIn.toFixed(3)})`);
+  assert.ok(at(0.8) > base, "下がっても間合いが変わらない");
+});
+
+test("画像空間 z 信号のスケール: 構えで 0、伸ばしきりで ~1（モデル実測値を基準）", () => {
+  const c = COMBAT_REACH.depthZ;
+  // ピンホール投影モデルで測った (肩z - 手首z)/肩幅 の実測値
+  assert.equal(mapRange(0.316, c.minRatio, c.maxRatio), 0, "構えで 0 にならない");
+  assert.equal(mapRange(0.053, c.minRatio, c.maxRatio), 0, "真横に伸ばした腕を拾ってしまう");
+  const mid = mapRange(0.789, c.minRatio, c.maxRatio);   // 前へ 0.3m
+  const full = mapRange(1.579, c.minRatio, c.maxRatio);  // 前へ 0.6m
+  assert.ok(mid > 0.25 && mid < 0.6, `中間が飽和 / 鈍すぎ (${mid.toFixed(2)})`);
+  assert.ok(full > 0.95, `伸ばしきりで 1 に届かない (${full.toFixed(2)})`);
+});
+
+test("手の見かけサイズのスケール: 前へ 0.6m でほぼ 1.0 になる", () => {
+  const c = COMBAT_REACH.handModel;
+  assert.equal(mapRange(1.0, c.minRatio, c.maxRatio) < 0.1, true, "構えで 0 付近にならない");
+  assert.equal(mapRange(0.949, c.minRatio, c.maxRatio), 0, "真横に伸ばした腕を拾ってしまう");
+  assert.ok(mapRange(1.343, c.minRatio, c.maxRatio) > 0.9, "前へ 0.6m で 1 に届かない");
 });

@@ -56,13 +56,17 @@ export const bezier2 = (p0, p1, p2, t) => lerpV(lerpV(p0, p1, t), lerpV(p1, p2, 
  */
 export function buildPlayerPose(frame, cfg) {
   const SW = cfg.shoulderWidthM;
-  const head = v3(frame.head.x * SW * cfg.headGain, -frame.head.y * SW * cfg.headGain, 0);
+  // 前後移動: 見かけサイズ比（1.0 = 構え位置 / >1 = 近づいた）を z のオフセットに変換する。
+  // 体ごと敵の方（-Z）へ動くので、踏み込めば届き、下がれば届かない＝間合いが生まれる。
+  const step = clamp((( frame.distanceRatio ?? 1) - 1) * cfg.stepMetersPerRatio,
+    cfg.stepClamp[0], cfg.stepClamp[1]);
+  const head = v3(frame.head.x * SW * cfg.headGain, -frame.head.y * SW * cfg.headGain, -step);
   const out = { head, shoulders: {} };
   for (const [side, sign] of [["left", -1], ["right", 1]]) {
     const arm = frame.arms?.[side];
     // 肩は頭に部分的に追従（体ごと傾く）。左右位置は肩幅の半分で固定。
     const shoulder = v3(head.x * cfg.shoulderFollow + sign * cfg.shoulderHalf,
-      head.y * cfg.shoulderFollow - cfg.shoulderDrop, cfg.shoulderBack);
+      head.y * cfg.shoulderFollow - cfg.shoulderDrop, cfg.shoulderBack - step);
     out.shoulders[side] = shoulder;
     if (!arm) { out[side] = { elbow: shoulder, wrist: shoulder, reach: 0 }; continue; }
     const reach = clamp(arm.reach ?? 0, 0, 1);
@@ -91,6 +95,7 @@ export function buildPlayerPose(frame, cfg) {
     (out.shoulders.left.z + out.shoulders.right.z) / 2);
   out.torsoTop = sm;
   out.torsoBottom = v3(sm.x, sm.y - cfg.torsoLength, sm.z);
+  out.step = step;   // 前後移動量 [m]（HUD / デバッグ表示用）
   return out;
 }
 
