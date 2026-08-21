@@ -26,11 +26,11 @@ import { Fx } from "../shared/fx.js";
 import { PoseTracker, SKELETON, HAND_CONNECTIONS } from "./pose.js";
 import { createTrackerSource, frameToPlayerInput } from "./tracker-source.js";
 import { GestureTracker } from "./gestures.js";
-import { TUNING, COMBAT, GAME } from "./tuning.js";
-import { buildPlayerPose, buildEnemyPose, attackPathT, enemyGlovePos, resolveEnemyGlove, resolvePlayerGlove, v3, dist } from "./combat.js";
+import { TUNING, COMBAT, GAME, AI } from "./tuning.js";
+import { buildPlayerPose, buildEnemyPose, attackPathT, enemyGlovePos, resolveEnemyGlove, resolvePlayerGlove, v3, dist, lerpV } from "./combat.js";
+import { EnemyAI } from "./enemy-ai.js";
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
-const lerp = (a, b, t) => a + (b - a) * t;
 
 // ── bridge / router（触覚と音） ───────────────────────────────────────────────
 const bridge = new ArcadeBridge();
@@ -252,26 +252,55 @@ let resetAtMs = 0;          // テストモードの自動回復時刻
 let countdownUntilMs = 0;   // キャリブ前カウントダウンの終了時刻
 let lastDebug = null;       // 判定デバッグのプロット用
 
-/** 敵。idle → attack（接近→打撃→戻り）。攻撃中はガードが開く＝頭を狙える。 */
+/**
+ * 敵の体の状態。**何をするかは enemy-ai.js（EnemyAI）が決める**。ここはその intents を
+ * 位置・経路に落とすだけ（idle → 予備動作 → 打撃 → 戻り）。
+ */
 const enemy = {
-  phase: "idle",       // "idle" | "approach" | "strike" | "retract"
+  phase: "idle",       // "idle" | "approach"（予備動作） | "strike" | "retract"
   root: { x: 0, z: -COMBAT.enemyDist },  // 立ち位置（間合いはプレイヤー root との距離で決まる）
-  strafeDir: 1, strafeUntilMs: 0,
-  nextAtMs: 0,
   startedMs: 0,
-  attack: null,        // { kind, side, hand }
-  from: v3(), aim: v3(),
+  attack: null,        // EnemyAI が出した attack intent
+  cfg: null,           // その攻撃の経路パラメータ（telegraph/strike/recover を反映）
+  from: v3(), windup: v3(), aim: v3(),
   glove: { left: v3(), right: v3() },
+  guardMode: "high",   // "high" | "low" | "open"（位置で効く。腕がそこに無ければ通る）
+  yaw: 0,              // 予備動作で入れる体幹のひねり（見た目のみ）
   resolved: false,
+  outcome: null,       // "hit" | "block" | "feint"（未設定＝空振り）
+  feintDone: false,
+  retractScale: 1,     // 戻りの開始位置（途中で止めた時に前へワープしないため）
   minHeadDist: Infinity,
+  intents: null,
 };
+/** 敵の意思決定。乱数は差し替え可能（テストは tests/boxing-enemy-ai.test.mjs で決定的に回す）。 */
+const ai = new EnemyAI(AI, Math.random);
+
+/** 敵を構えに戻し、AI の履歴（フェーズ・被弾数・癖の学習）も初期化する。 */
+function resetEnemy(nowMs) {
+  enemy.phase = "idle";
+  enemy.attack = null;
+  enemy.resolved = false;
+  enemy.outcome = null;
+  enemy.guardMode = "high";
+  enemy.yaw = 0;
+  enemy.intents = null;
+  ai.reset(nowMs);
+}
 /** プレイヤーの手ごとの接触状態（1 スイング 1 回にするための立ち上がり検出）。 */
 const punchContact = { left: { on: false, lastMs: -1e9 }, right: { on: false, lastMs: -1e9 } };
+/** スイングの立ち上がり / 空振り検出（AI へ渡すイベントの元）。 */
+const swingWatch = { left: { on: false, hit: false }, right: { on: false, hit: false } };
 
-function ramp() { return clamp(elapsed / GAME.rampSec, 0, 1); }
-function approachMs() { return lerp(COMBAT.attack.approachMs[0], COMBAT.attack.approachMs[1], ramp()); }
-function idleGapMs() { return lerp(GAME.idleGapMs[0], GAME.idleGapMs[1], ramp()); }
-function attackCfg() { return { ...COMBAT.attack, approachMs: approachMs() }; }
+/** attack intent（EnemyAI）→ 経路パラメータ。予備動作 = approach、隙 = retract。 */
+function attackCfgFor(atk) {
+  return {
+    ...COMBAT.attack,
+    approachMs: Math.max(1, atk.telegraphMs),
+    strikeMs: atk.strikeMs,
+    retractMs: atk.recoverMs,
+  };
+}
 
 const enemyHeadPos = () => v3(enemy.root.x, COMBAT.enemy.headY, enemy.root.z);
 /** 敵の腕が届く最大距離（骨長の和）。攻撃を始めるかの判断に使う。 */
@@ -280,29 +309,31 @@ const enemyArmReach = () => COMBAT.enemy.bones.upperArm + COMBAT.enemy.bones.for
 const playerRoot = () => (playerPose ? { x: playerPose.head.x, z: playerPose.head.z } : { x: 0, z: 0 });
 
 /**
- * 敵の足さばき。目標間合いへ速度制限つきで寄る / 下がる + ゆっくり左右に回る。
- * 本格的な AI は別途。ここは「間合いが意味を持つ」ための最小限。
+ * 敵の足さばき。**寄る / 下がる / 回る の判断は EnemyAI（intents.footwork）**で、
+ * ここはそれを速度制限つきの root 移動に落とすだけ。
+ * 目標間合いはフェーズごとのバイアス（攻勢は詰める / 守勢は離れる）が乗る。
  */
-function updateFootwork(dt, nowMs) {
+function updateFootwork(dt, intents) {
   const f = COMBAT.footwork;
   const p = playerRoot();
   const dx = enemy.root.x - p.x, dz = enemy.root.z - p.z;
   const d = Math.hypot(dx, dz) || 1e-6;
   const ux = dx / d, uz = dz / d;              // プレイヤー → 敵の単位ベクトル
-  const err = d - f.preferredDist;
-  if (Math.abs(err) > f.deadZone) {
+  const fw = intents?.footwork ?? "hold";
+  let target = f.preferredDist + (intents?.distBias ?? 0);
+  if (fw === "approach") target -= f.deadZone;   // 詰めたい時は目標を内側へ寄せる
+  else if (fw === "retreat") target += f.deadZone;
+  const err = d - target;
+  if (Math.abs(err) > f.deadZone * 0.5) {
     const step = Math.sign(err) * f.speed * dt; // + なら離れているので近づく（-方向へ）
     enemy.root.x -= ux * step;
     enemy.root.z -= uz * step;
   }
-  if (nowMs > enemy.strafeUntilMs) {
-    enemy.strafeDir = Math.random() < 0.5 ? -1 : 1;
-    const [lo, hi] = f.strafeSwitchSec;
-    enemy.strafeUntilMs = nowMs + (lo + Math.random() * (hi - lo)) * 1000;
-  }
-  // 視線に直交する向き＝左右に回り込む
-  enemy.root.x += -uz * enemy.strafeDir * f.strafeSpeed * dt;
-  enemy.root.z += ux * enemy.strafeDir * f.strafeSpeed * dt;
+  // 視線に直交する向き＝左右に回り込む（スリップ中は footworkScale が上がって素早く外す）
+  const dir = fw === "circleL" ? -1 : fw === "circleR" ? 1 : 0;
+  const sp = f.strafeSpeed * (intents?.footworkScale ?? 1);
+  enemy.root.x += -uz * dir * sp * dt;
+  enemy.root.z += ux * dir * sp * dt;
   enemy.root.x = clamp(enemy.root.x, f.clampX[0], f.clampX[1]);
   enemy.root.z = clamp(enemy.root.z, f.clampZ[0], f.clampZ[1]);
 }
@@ -314,25 +345,35 @@ function inAttackRange(aim, hand) {
   const shoulder = v3(h.x + sign * COMBAT.enemy.arm.shoulderX, h.y + COMBAT.enemy.arm.shoulderY, h.z + COMBAT.enemy.arm.shoulderZ);
   return dist(shoulder, aim) <= enemyArmReach() * COMBAT.footwork.attackRangeFactor;
 }
-/** 敵グローブの構え位置（ガード時は頭の前、開いている時は下がる）。 */
-function enemyGuardPos(side, open) {
+/**
+ * 敵グローブの構え位置。**ガードの高低は位置そのもの**で、
+ * high=頭の前（頭を守る＝胴が開く） / low=胴の前（胴を守る＝頭が開く） / open=下ろす（両方開く）。
+ */
+function enemyGuardPos(side, mode = "high") {
   const h = enemyHeadPos();
-  const g = open ? COMBAT.enemy.open : COMBAT.enemy.guard;
+  const e = COMBAT.enemy;
+  const g = mode === "open" ? e.open : mode === "low" ? e.guardLow : e.guard;
   const sign = side === "left" ? -1 : 1;
   return v3(h.x + sign * g.x, h.y + g.y, h.z + g.z);
 }
 
-/** 経路（フック/ストレート）・使う腕・狙う場所（頭/胴）をそれぞれランダムに決める。 */
-function pickAttack() {
-  const w = GAME.attackWeights;
-  let r = Math.random() * (w.hookLeft + w.hookRight + w.straight);
-  let path;
-  if ((r -= w.hookLeft) < 0) path = { kind: "hook", side: -1, hand: "left" };
-  else if ((r -= w.hookRight) < 0) path = { kind: "hook", side: 1, hand: "right" };
-  else path = { kind: "straight", side: 0, hand: Math.random() < 0.5 ? "left" : "right" };
-  const t = COMBAT.attack.aimTarget;
-  path.target = Math.random() * (t.head + t.torso) < t.head ? "head" : "torso";
-  return path;
+/**
+ * 予備動作でグローブを引く位置（フックは大きく横へ、ボディは腰を落とす）。
+ * 予告はテキストではなく**この動き**。ここから狙点へ向かって出てくる。
+ */
+function windupPos(from, atk) {
+  const w = AI.windup;
+  const sign = atk.hand === "left" ? -1 : 1;
+  return v3(from.x + sign * (w.out[atk.kind] ?? 0.08), from.y - (w.drop[atk.kind] ?? 0), from.z - w.back);
+}
+
+/** 攻撃中のグローブ位置。予備動作の前半は「引き」、後半は既存の経路（直線 / 弧）。 */
+function enemyAttackGlove(s) {
+  const cfg = enemy.cfg;
+  const wEnd = cfg.approachFrac * AI.windup.fracOfTelegraph;
+  if (s <= wEnd && wEnd > 1e-6) return lerpV(enemy.from, enemy.windup, s / wEnd);
+  const t = (s - wEnd) / Math.max(1e-6, 1 - wEnd);
+  return enemyGlovePos(enemy.windup, enemy.aim, t, enemy.attack, cfg);
 }
 
 /** 狙点（攻撃開始時に固定する）。胴狙いは胸〜腹あたり。 */
@@ -346,52 +387,109 @@ function aimPoint(atk) {
   return pose.head;
 }
 
-function startAttack(nowMs) {
-  const atk = pickAttack();
+/** EnemyAI が出した attack intent を、実際の経路（予備動作 → 打撃 → 戻り）として始める。 */
+function startAttack(nowMs, atk) {
   const j = COMBAT.attack.aimJitter;
   enemy.attack = atk;
+  enemy.cfg = attackCfgFor(atk);
   enemy.startedMs = nowMs;
-  enemy.from = enemyGuardPos(atk.hand, false);
+  enemy.from = enemyGuardPos(atk.hand, enemy.guardMode);
+  enemy.windup = windupPos(enemy.from, atk);
   // 狙点は「攻撃を始めた瞬間」の頭 / 胴の位置に固定する＝あとから体を振れば避けられる
   const t = aimPoint(atk);
   enemy.aim = v3(t.x + (Math.random() * 2 - 1) * j, t.y + (Math.random() * 2 - 1) * j, t.z);
   enemy.resolved = false;
+  enemy.outcome = null;
+  enemy.feintDone = false;
+  enemy.retractScale = 1;
   enemy.minHeadDist = Infinity;
   enemy.phase = "approach";
 }
 
+/**
+ * AI を 1 フレーム進めて intents を得る。ここで渡す ctx は
+ * **既存の判定結果（間合い・プレイヤーの構え・スイング）だけ**で作る。
+ */
+function updateAi(nowMs, dt, g) {
+  const p = playerRoot();
+  const d = Math.hypot(enemy.root.x - p.x, enemy.root.z - p.z);
+  const intents = ai.update({
+    nowMs,
+    dist: d,
+    preferredDist: COMBAT.footwork.preferredDist,
+    deadZone: COMBAT.footwork.deadZone,
+    inRange: !!playerPose && (inAttackRange(playerPose.head, "left") || inAttackRange(playerPose.head, "right")),
+    handInRange: {
+      left: !!playerPose && inAttackRange(playerPose.head, "left"),
+      right: !!playerPose && inAttackRange(playerPose.head, "right"),
+    },
+    busy: enemy.phase !== "idle",
+    player: buildPlayerState(g),
+    hp: { self: enemyHp / GAME.enemyHp, player: playerHp / GAME.playerHp },
+    elapsed,
+  }, dt);
+  enemy.intents = intents;
+  return intents;
+}
+
 /** 敵の攻撃を 1 フレーム進め、位置ベースで ガード / 被弾 / 空振り を判定する。 */
-function updateEnemy(nowMs) {
-  const cfg = attackCfg();
+function updateEnemy(nowMs, intents) {
   if (enemy.phase === "idle") {
-    for (const side of ["left", "right"]) enemy.glove[side] = enemyGuardPos(side, false);
-    // 腕が届く間合いに入っていなければ打たずに待つ（足さばきで詰める）
-    if (nowMs >= enemy.nextAtMs && playerPose && inAttackRange(playerPose.head, "right")) startAttack(nowMs);
+    enemy.guardMode = intents?.guard ?? "high";
+    enemy.yaw = 0;
+    for (const side of ["left", "right"]) enemy.glove[side] = enemyGuardPos(side, enemy.guardMode);
+    // 打つ / 打たないの判断は AI が持つ（間合いは ctx.inRange / handInRange で渡してある）。
+    // ここで二重に弾くと、AI 側は「打った」つもりで履歴を進めるのに何も起きない状態になる。
+    const atk = intents?.attack;
+    if (atk && playerPose) startAttack(nowMs, atk);
     return;
   }
-  const { s, phase } = attackPathT(nowMs - enemy.startedMs, cfg);
+  const cfg = enemy.cfg;
+  const atk = enemy.attack;
+  const raw = attackPathT(nowMs - enemy.startedMs, cfg);
+  const phase = raw.phase;
   enemy.phase = phase === "done" ? "idle" : phase;
   if (phase === "done") {
     // 当たらずに終わった: 頭のすぐ横を通っていれば「かわした」
-    if (!enemy.resolved && enemy.minHeadDist < cfg.dodgeNear) onDodge();
+    if (!enemy.resolved && !atk.feint && enemy.minHeadDist < cfg.dodgeNear) onDodge();
+    ai.noteEvent({ type: "attackEnd", nowMs, kind: atk.kind, target: atk.target,
+      outcome: enemy.outcome ?? (atk.feint ? "feint" : "miss") });
     enemy.attack = null;
-    enemy.nextAtMs = nowMs + idleGapMs();
+    enemy.yaw = 0;
     return;
   }
-  const hand = enemy.attack.hand;
+  // 戻りは「今いた位置」から戻す（途中で止めた時に前へワープしない）
+  const s = phase === "retract" ? raw.s * enemy.retractScale : raw.s;
+  const hand = atk.hand;
   const other = hand === "left" ? "right" : "left";
-  enemy.glove[hand] = enemyGlovePos(enemy.from, enemy.aim, s, enemy.attack, cfg);
-  enemy.glove[other] = enemyGuardPos(other, true); // 攻撃中は反対の手も下がる＝隙
+  enemy.glove[hand] = enemyAttackGlove(s);
+  enemy.glove[other] = enemyGuardPos(other, "open"); // 攻撃中は反対の手も下がる＝隙
+  // 予備動作では体幹を入れる（打つ手の肩がこちらへ出る。見た目のみで判定には効かない）
+  const windupT = clamp(s / Math.max(1e-6, cfg.approachFrac * AI.windup.fracOfTelegraph), 0, 1);
+  enemy.yaw = -(hand === "left" ? -1 : 1) * AI.windup.yaw * windupT;
 
+  // フェイント: 予備動作の途中で捨てる（判定は最初から持たない）
+  if (atk.feint) {
+    if (!enemy.feintDone && nowMs - enemy.startedMs >= cfg.approachMs * atk.feintCancelFrac) {
+      enemy.feintDone = true;
+      enemy.outcome = "feint";
+      retractNow(nowMs, cfg, s);
+    }
+    return;
+  }
   if (!playerPose || enemy.resolved) return;
   enemy.minHeadDist = Math.min(enemy.minHeadDist, dist(enemy.glove[hand], playerPose.head));
   const hit = resolveEnemyGlove(enemy.glove[hand], COMBAT.enemy.gloveRadius, playerPose, COMBAT);
-  if (hit === "block") { enemy.resolved = true; onBlock(); retractNow(nowMs, cfg); }
-  else if (hit) { enemy.resolved = true; onPlayerHit(hit); retractNow(nowMs, cfg); }
+  if (hit === "block") { enemy.resolved = true; enemy.outcome = "block"; onBlock(); retractNow(nowMs, cfg, s); }
+  else if (hit) { enemy.resolved = true; enemy.outcome = "hit"; onPlayerHit(hit); retractNow(nowMs, cfg, s); }
 }
 
-/** 判定が付いたら残りの接近をやめて戻りに入る（当たった後も突き進むと不自然）。 */
-function retractNow(nowMs, cfg) {
+/**
+ * 判定が付いた / フェイントを捨てた時は、残りの接近をやめて戻りに入る。
+ * `sNow` を渡して**今いる位置から**戻す（そうしないと戻り開始で拳が狙点まで飛ぶ）。
+ */
+function retractNow(nowMs, cfg, sNow) {
+  enemy.retractScale = clamp(sNow, 0, 1);
   enemy.startedMs = nowMs - (cfg.approachMs + cfg.strikeMs);
 }
 
@@ -431,15 +529,45 @@ function updatePlayerPunches(nowMs) {
     const what = eligible ? resolvePlayerGlove(arm.wrist, COMBAT.player.gloveRadius, enemyPose, COMBAT) : null;
     if (what && !c.on && nowMs - c.lastMs > COMBAT.punchHit.cooldownMs) {
       c.lastMs = nowMs;
-      onPlayerPunchLanded(side, what);
+      swingWatch[side].hit = true;
+      onPlayerPunchLanded(side, what, nowMs);
     }
     c.on = !!what;
+    // スイングの立ち上がり / 終わりを AI に渡す（カウンターの抽選と、空振りの検知）
+    const w = swingWatch[side];
+    if (swinging && !w.on) { w.on = true; w.hit = false; ai.noteEvent({ type: "playerSwingStart", nowMs, side }); }
+    else if (!swinging && w.on) {
+      w.on = false;
+      if (!w.hit) ai.noteEvent({ type: "playerWhiff", nowMs, side });
+    }
   }
 }
 
-function onPlayerPunchLanded(side, what) {
+/**
+ * AI に渡すプレイヤーの状態。**既存の検出結果だけ**から作る（新しい推定は増やさない）。
+ * ガードの高低は「拳が頭のそばにあるか / 下がっているか」＝ 3D の位置で見る。
+ */
+function buildPlayerState(g) {
+  const swinging = !!(gestureArms?.left?.swingActive || gestureArms?.right?.swingActive);
+  const st = { guardHigh: false, guardLow: false, swinging, lean: g?.lean ?? 0, ducking: !!g?.duck,
+    stepIn: false, stepBack: false };
+  if (!playerPose) return st;
+  const drop = AI.playerGuard.highDropM;
+  const wrists = [playerPose.left.wrist, playerPose.right.wrist];
+  const headY = playerPose.head.y;
+  st.guardHigh = !swinging && wrists.every((w) => w.y > headY - drop);
+  st.guardLow = !swinging && wrists.every((w) => w.y <= headY - drop);
+  const step = playerPose.step ?? 0;
+  st.stepIn = step > AI.playerGuard.stepThresholdM;
+  st.stepBack = step < -AI.playerGuard.stepThresholdM;
+  return st;
+}
+
+function onPlayerPunchLanded(side, what, nowMs) {
   const pan = side === "left" ? -0.6 : 0.6;
   const x = hudCanvas.width * (0.5 + (side === "left" ? -0.12 : 0.12));
+  // 食らった部位を AI へ。頭に続けて入ると気絶し、胴に入るとガードを下げてくる
+  if (what !== "guard") ai.noteEvent({ type: "tookHit", nowMs, part: what });
   if (what === "guard") {
     enemyHp = Math.max(0, enemyHp - GAME.damage.blocked);
     score += GAME.score.blocked;
@@ -495,9 +623,7 @@ function setState(next) {
     hideCard();
     countdownUntilMs = performance.now() + TUNING.calibCountdownMs;
     // 取り直し中に殴られないよう、敵はいったん構えに戻して待たせる
-    enemy.phase = "idle";
-    enemy.attack = null;
-    enemy.nextAtMs = countdownUntilMs + GAME.idleGapMs[0];
+    resetEnemy(countdownUntilMs);
   } else if (next === "CALIB") {
     hideCard();
     gestures.recalibrate();
@@ -505,9 +631,7 @@ function setState(next) {
   } else if (next === "FIGHT") {
     hideCard();
     setStatus("");
-    enemy.phase = "idle";
-    enemy.attack = null;
-    enemy.nextAtMs = performance.now() + GAME.idleGapMs[0];
+    resetEnemy(performance.now());
     bridge.fire("boxing_bell");
   }
 }
@@ -518,7 +642,7 @@ function startFight() {
   playerHp = GAME.playerHp; enemyHp = GAME.enemyHp;
   timeLeft = GAME.roundSec; score = 0; combo = 0; bestCombo = 0; elapsed = 0;
   flash = 0; hitstopUntil = 0; slowMoUntil = 0; enemyHurt = 0; resetAtMs = 0;
-  enemy.phase = "idle"; enemy.attack = null; enemy.resolved = false;
+  resetEnemy(performance.now());
   enemy.root = { x: 0, z: -COMBAT.enemyDist };
   setState("COUNTDOWN");
 }
@@ -622,6 +746,13 @@ function drawSignalBars() {
     + `  yaw ${(lastDebug.yawDeg ?? 0).toFixed(0)}°  入力 ${tracker?.label ?? "-"}`
     + `${lastDebug.hands ? "  hand21 OK" : "  hand21 なし"}`, 14 * s, y);
   y += rowH;
+  // 敵 AI: フェーズ / 下位ステート / 今の攻撃 / 難度（予備動作の倍率）
+  ctx.fillStyle = "#c9a4ff";
+  const atk = enemy.attack;
+  ctx.fillText(`AI ${ai.describe()}  guard ${enemy.guardMode}`
+    + `  atk ${atk ? `${atk.kind}/${atk.target}/${atk.hand} tel${atk.telegraphMs}` : "-"}`
+    + `  foot ${enemy.intents?.footwork ?? "-"}  tele×${AI.telegraphLengthScale}`, 14 * s, y);
+  y += rowH;
   // 距離比の内訳（肩幅 / 体幹 / 顔 / 骨格 bbox）。どれかが崩れていないか見るため。
   const dp = lastDebug.distParts;
   if (dp) {
@@ -713,13 +844,15 @@ function frame(nowMs) {
   if (Math.round(root.clientWidth) !== cssW || Math.round(root.clientHeight) !== cssH) resize();
 
   // ── 姿勢推定 → 体基準 2D → 3D の体 ──
-  const frame = tracker ? tracker.poll(nowMs) : null;
-  const result = frame?.landmarks ? { landmarks: frame.landmarks, worldLandmarks: frame.worldLandmarks } : null;
-  const hands = frame?.hands ?? null;
+  // 変数名を `frame` にしない: この関数自身の名前を隠して 1 行目の
+  // requestAnimationFrame(frame) が TDZ で落ちる（ループが 1 フレームで止まる）。
+  const srcFrame = tracker ? tracker.poll(nowMs) : null;
+  const result = srcFrame?.landmarks ? { landmarks: srcFrame.landmarks, worldLandmarks: srcFrame.worldLandmarks } : null;
+  const hands = srcFrame?.hands ?? null;
   const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 16 / 9;
   const g = gestures.update(result, nowMs, rawDt, { aspect, calibrating: state === "CALIB", hands });
   // 深度トラッカーがあれば実測の 3D をそのまま使い、無ければ 2D からの推定（従来経路）
-  const tracked = frame?.xyz ? frameToPlayerInput(frame, COMBAT.rig) : null;
+  const tracked = srcFrame?.xyz ? frameToPlayerInput(srcFrame, COMBAT.rig) : null;
   const input = tracked ?? g.frame;
   playerPose = input ? buildPlayerPose(input, COMBAT.rig) : null;
   gestureArms = g.frame?.arms ?? null;
@@ -744,17 +877,17 @@ function frame(nowMs) {
     // テストモード: HP が尽きたら少し待って全回復し、そのまま続行（勝敗は出さない）
     if (resetAtMs && nowMs >= resetAtMs) {
       playerHp = GAME.playerHp; enemyHp = GAME.enemyHp; combo = 0; resetAtMs = 0;
-      enemy.phase = "idle"; enemy.attack = null; enemy.resolved = false;
-      enemy.nextAtMs = nowMs + GAME.idleGapMs[0];
+      resetEnemy(nowMs);
     }
     // ラウンド中に出すテキストは、姿勢を見失った時の警告だけ
     if (!g.visible && pose.ready) setStatus("姿勢を見失いました — フレーム内に戻ってください", "warn");
     else if (statusEl.textContent) setStatus("");
     if (dt > 0) {
-      updateFootwork(dt, nowMs);
-      updateEnemy(nowMs);
+      const intents = updateAi(nowMs, dt, g);
+      updateFootwork(dt, intents);
+      updateEnemy(nowMs, intents);
       enemyPose = buildEnemyPose(enemy.root, enemy.glove, COMBAT);
-      enemyPose.guardUp = enemy.phase === "idle";
+      enemyPose.guardUp = enemy.phase === "idle" && enemy.guardMode !== "open";
       updatePlayerPunches(nowMs);
     }
     if (!GAME.testMode && state === "FIGHT" && timeLeft <= 0) endRound("time");
@@ -769,12 +902,13 @@ function frame(nowMs) {
     scene.setShake(fx.ox * 0.0012, fx.oy * 0.0012);
     if (!enemyPose) {
       enemyPose = buildEnemyPose(enemy.root, enemy.glove, COMBAT);
-      enemyPose.guardUp = enemy.phase === "idle";
+      enemyPose.guardUp = enemy.phase === "idle" && enemy.guardMode !== "open";
     }
     scene.update({
       pose: playerPose,
       enemy: { ...enemyPose, gloves: { left: enemyPose.left.wrist, right: enemyPose.right.wrist },
-        activeHand: enemy.attack?.hand ?? null, phase: enemy.phase },
+        activeHand: AI.telegraphGlow ? (enemy.attack?.hand ?? null) : null, phase: enemy.phase,
+        yaw: enemy.yaw },
       hurt: enemyHurt,
     });
     scene.render();

@@ -170,14 +170,57 @@ reach=1 でグローブが敵の頭（1.2m 先）に届くようスケールし�
 
 ## 戦い方
 
-敵は `構え（ガード）→ 接近 → 打ち込み → 戻り` を繰り返す。
+敵は `構え（ガード）→ 予備動作 → 打ち込み → 戻り` を繰り返す。
+**何を出すかは [`enemy-ai.js`](./enemy-ai.js)**（純ロジック）が決め、boxing.js はそれを位置と経路に落とす。
 
-- **接近**（700〜1000ms、難易度で短縮）: **腕（肩→肘→グローブ）が伸びてくる**。
-  これが予告。文字は出ない。フックは横から回り込み、ストレートは正面から。
-- **狙いは頭か胴をランダム**（既定 50/50・`attack.aimTarget`）。頭は上げたガードで、
-  胴は前腕を下げたボディガードで止める。どちらも体ごと横へ逃げれば空振りにできる
-  （胴は的が大きいぶんシビア）。
-- **打ち込み**（130ms）: 最後の 3 割を一気に詰める。
+### 攻守のフェーズ（メリハリ）
+
+ずっと同じ密度で殴られると「強い / 弱い」しか残らないので、山と谷を作ってある。
+
+| フェーズ | 長さ | 中身 |
+|---|---|---|
+| OBSERVE | 3〜5s | 様子見。ジャブだけで間合いを測る |
+| AGGRESSIVE | 4〜8s | 攻勢。攻撃間隔が短くガードが薄い |
+| DEFENSIVE | 3〜6s | 守勢。ガードを固めて回り込み、フェイントで打たせてカウンターを待つ |
+| FATIGUE | 2〜4s | 疲れ。被弾 3 発 or 空振り 3 連で突入。予備動作が長く腕が下がる＝**決め時** |
+
+既定は**台本モード**（`AI.script`）で、最初の 25 秒は 観察 → 攻勢 → 守勢 → 攻勢 の順に固定する。
+`false` にすると最初から抽選のみ。
+
+### 攻撃と予備動作
+
+**予告は動き**。打つ前にグローブを引き（フックは大きく横へ、ボディは腰を落とす）、
+体幹を入れてから出てくる。文字の予告は出さない。
+
+| 攻撃 | 予備動作 | 判定 | 隙（＝殴り返せる時間） |
+|---|---|---|---|
+| ジャブ | 350ms | 100ms | 300ms |
+| ストレート | 550ms | 150ms | 400ms |
+| フック | 1000ms | 200ms | 700ms |
+| ボディ | 900ms | 150ms | 600ms |
+| コンビネーション | 1 発目だけ | 各 100〜200ms | 最後だけ 800ms |
+| フェイント | 500ms（60% で捨てる） | なし | 300ms |
+| カウンター | 100ms | 100ms | 500ms |
+
+すべて `AI.telegraphLengthScale`（既定 1.2）倍。**難しすぎると感じたらここを上げる。**
+
+### プレイヤーの動きへの反応
+
+| こちらの動き | 敵の反応 |
+|---|---|
+| 頭を続けてガードする | 胴（ボディ）へ切り替える |
+| 空振りする | 次の攻撃を前倒し |
+| パンチを出す | 確率でスリップ → カウンター |
+| 下がる | 詰めてくる |
+| 詰めすぎる | 守勢なら下がる / 攻勢ならその間合いでフックとボディ |
+| ガードを上げたまま固まる | フェイントが増え、崩れたらコンビネーション |
+| 同じ側にばかり逃げる | その逃げ先の手で打ってくる |
+| 頭に短時間で 2 発入れる | 気絶（腕が下がって頭が開く） |
+
+- **狙いは頭か胴**。頭は上げたガードで、胴は前腕を下げたボディガードで止める。
+  どちらも体ごと横へ逃げれば空振りにできる（胴は的が大きいぶんシビア）。
+  敵のガードも高 / 低 / 開が**位置として**変わるので、開いている方を殴る。
+- **打ち込み**: 最後の 3 割を一気に詰める。
 - **判定**は毎フレームの位置関係で決まる:
   腕（グローブ球 / 前腕カプセル）に当たれば `boxing_block` ／ 頭・胴に当たれば
   `boxing_player_hit`（頭は HP -12・胴は -7。赤ビネット・強い触覚）／
@@ -246,16 +289,37 @@ reach=1 でグローブが敵の頭（1.2m 先）に届くようスケールし�
 | `rig.shoulderWidthM` / `shoulderHalf` / `shoulderDrop` / `lateralGain` | 体格 |
 | `view.mode` / `third` / `first` | 既定視点と、カメラの引き・高さ |
 | `player.headRadius` / `gloveRadius` / `forearmRadius` | 自分の判定サイズ（ガードのしやすさ） |
-| `enemy.headRadius` / `torso*` / `guard` / `open` | 敵の判定サイズとガード位置 |
-| `attack.approachMs` / `strikeMs` / `retractMs` / `approachFrac` | 攻撃の見える速さ（**難しすぎる時は approachMs を上げる**） |
+| `enemy.headRadius` / `torso*` / `guard` / `guardLow` / `open` | 敵の判定サイズと、ガード高 / ボディガード / 開いた時の腕の位置 |
+| `attack.approachFrac` | 経路のうち予備動作で進む割合（残りを打撃で一気に詰める。時間は `AI.attacks`） |
 | `attack.hookArc` / `aimJitter` / `dodgeNear` | フックの弧・狙点のばらつき・回避成立の距離 |
-| `attack.aimTarget` / `torsoAimFrac` | 頭 / 胴を狙う比率と、胴を狙う高さ |
+| `attack.torsoAimFrac` | 胴を狙う高さ（頭 / 胴の比率は `AI.headTargetRate`） |
 | `enemy.arm.*` | 敵の肩の位置と腕の曲げ方（見た目のみ。判定はグローブ球） |
 | `player.torsoRadius` / `rig.torsoLength` | 自分の胴の当たり判定（ボディの当たりやすさ） |
 | `punchHit.minReach` / `cooldownMs` / `requireSwing` | 当たり判定を取り始めるリーチ・1 スイング 1 回の間隔・スイング窓に限定するか |
 
+**`AI`** — 敵の意思決定（[`enemy-ai.js`](./enemy-ai.js)）。**敵が強すぎ / 弱すぎ・単調に感じたらここ**。
+
+| キー | 意味 |
+|---|---|
+| `telegraphLengthScale` | 予備動作の一括倍率。**難しすぎるなら上げる**（初見の来場者は 1.2〜1.5） |
+| `attackFrequency` / `phaseAttackScale` | 攻撃間隔 [s] と、フェーズごとの倍率（攻勢で短く / 疲れで長く） |
+| `attacks.<kind>.telegraphMs` / `strikeMs` / `recoverMs` | 攻撃ごとの 予備動作 / 判定 / 隙。**殴り返す隙が無いなら `recoverMs`** |
+| `script` / `scriptPhases` | 台本モードと、その並び（初見に必ず攻守と山場を見せる） |
+| `phaseDurations` | 台本を使い切った後の各フェーズの長さ [s] |
+| `fatigueTriggerDamage` / `fatigueTriggerWhiffs` / `fatigueTelegraphScale` | 山場（FATIGUE）へ落ちる条件と、その間の予備動作の伸び |
+| `guardRate` / `guardHoldMs` / `defensiveGuardBonus` | ガードを上げている割合と、その持続 |
+| `counterChance` / `counterCooldownMs` / `slipMs` | スリップ → カウンターの頻度と速さ |
+| `feintRate` / `feintCancelFrac` | フェイントの頻度と、予備動作のどこで捨てるか |
+| `attackWeights.<PHASE>` | フェーズごとの攻撃種の抽選比 |
+| `closeDist` / `aggressiveCloseIn` / `defensiveBackOff` | 間合いの詰め / 引き（フェーズごとのバイアス [m]） |
+| `reaction.*` | プレイヤーの癖への反応（頭ガード連続 → 胴 / 静止 → フェイント / リーンの偏り） |
+| `stun.*` | 気絶（頭への連続被弾）の条件と長さ |
+| `windup.*` | 予備動作でグローブを引く量・体幹を入れる量（＝予告の見え方） |
+| `telegraphGlow` | 予備動作中の控えめな発光（視覚補助。切っても遊べる） |
+| `playerGuard.highDropM` / `stepThresholdM` | プレイヤーの構え・前後移動の読み取り閾値 |
+
 **`GAME`** — `testMode`（既定 true・勝敗なしの無限ループ）/ `testResetDelayMs` /
-`roundSec` / HP / `idleGapMs` / `rampSec` / `damage.*`（`playerHit` 頭 / `playerBody` 胴）/ `score.*` / 演出。
+`roundSec` / HP / `damage.*`（頭 / 胴 / ガード）/ `score.*` / 演出。
 
 ---
 
@@ -264,7 +328,8 @@ reach=1 でグローブが敵の頭（1.2m 先）に届くようスケールし�
 ```
 boxing/
   index.html     # 独立ページ（import map → ../../../dist/browser.js, three@0.160.0）
-  boxing.js      # ゲーム本体（状態遷移・敵 AI・判定の呼び出し・HUD/PIP・触覚配線）
+  boxing.js      # ゲーム本体（状態遷移・intents → 経路・判定の呼び出し・HUD/PIP・触覚配線）
+  enemy-ai.js    # ★ 敵の意思決定（フェーズ / 攻撃抽選 / 反応。純関数クラス・node でテスト）
   combat.js      # ★ 体の合成と当たり判定（純関数。node で単体テストできる）
   filters.js     # ★ 1€ フィルタ / スルーレート / デッドバンド / 重み付きメディアン（純関数）
   reach.js       # ★ リーチ 3 信号の合成・安定化・スイング検出（純関数）

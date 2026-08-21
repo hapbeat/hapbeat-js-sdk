@@ -133,7 +133,7 @@ test("敵側: 腕（グローブ/前腕/上腕）に当たれば guard、開い�
 });
 
 test("攻撃の進行: approach → strike → retract → done、経路端は from / aim に一致", () => {
-  const cfg = { ...COMBAT.attack, approachMs: 800 };
+  const cfg = { ...COMBAT.attack, approachMs: 800, strikeMs: 130, retractMs: 300 };
   assert.equal(attackPathT(0, cfg).phase, "approach");
   assert.equal(attackPathT(400, cfg).phase, "approach");
   assert.ok(attackPathT(799, cfg).s < cfg.approachFrac + 1e-6, "approach 中は経路の approachFrac まで");
@@ -180,7 +180,7 @@ function simulateAttack({ pose, attack = { kind: "straight", side: 0 }, from, ai
 }
 
 test("接近してくる敵グローブ: 腕を頭の前に置けば block、下ろしていれば hit", () => {
-  const cfg = { ...COMBAT.attack, approachMs: 800 };
+  const cfg = { ...COMBAT.attack, approachMs: 800, strikeMs: 130, retractMs: 300 };
   const head = v3(0, 0, 0);
   const from = v3(COMBAT.enemy.guard.x, COMBAT.enemy.guard.y, -COMBAT.enemyDist + COMBAT.enemy.guard.z);
   const guarding = {
@@ -198,7 +198,7 @@ test("接近してくる敵グローブ: 腕を頭の前に置けば block、下
 });
 
 test("狙点は攻撃開始時の頭に固定される: あとで頭をどければ空振り（dodge）になる", () => {
-  const cfg = { ...COMBAT.attack, approachMs: 800 };
+  const cfg = { ...COMBAT.attack, approachMs: 800, strikeMs: 130, retractMs: 300 };
   const aimedAt = v3(0, 0, 0);                       // 攻撃開始時にここを狙われた
   const from = v3(COMBAT.enemy.guard.x, COMBAT.enemy.guard.y, -COMBAT.enemyDist + COMBAT.enemy.guard.z);
   const armsDown = (head) => ({
@@ -218,7 +218,7 @@ test("狙点は攻撃開始時の頭に固定される: あとで頭をどけれ
 });
 
 test("胴狙い: 前腕を下げていれば block、上げたままなら胴に入る", () => {
-  const cfg = { ...COMBAT.attack, approachMs: 800 };
+  const cfg = { ...COMBAT.attack, approachMs: 800, strikeMs: 130, retractMs: 300 };
   const head = v3(0, 0, 0);
   const torsoTop = v3(0, -0.24, 0.06);
   const torsoBottom = v3(0, -0.24 - COMBAT.rig.torsoLength, 0.06);
@@ -237,7 +237,7 @@ test("胴狙い: 前腕を下げていれば block、上げたままなら胴に
 });
 
 test("胴狙いも体ごと横へ逃げれば当たらない（headGain / shoulderFollow の効き）", () => {
-  const cfg = { ...COMBAT.attack, approachMs: 800 };
+  const cfg = { ...COMBAT.attack, approachMs: 800, strikeMs: 130, retractMs: 300 };
   const straight = buildPlayerPose(frame(0, 0, { x: 0, y: 0 }), COMBAT.rig);
   const bodyAim = v3(straight.torsoTop.x,
     straight.torsoTop.y + (straight.torsoBottom.y - straight.torsoTop.y) * COMBAT.attack.torsoAimFrac,

@@ -254,6 +254,11 @@ export const COMBAT = {
     forearmRadius: 0.065, upperArmRadius: 0.07,
     /** ガード時のグローブ位置（頭の前に構える）。 */
     guard: { x: 0.15, y: -0.04, z: 0.2 },
+    /**
+     * ボディガード（腕を下げて胴を守る）。頭が開くので、こちらは頭を狙える。
+     * ガードの高低は**位置だけ**で効く（腕がそこにあるから止まる / 無いから通る）。
+     */
+    guardLow: { x: 0.17, y: -0.34, z: 0.19 },
     /** 攻撃中・硬直中に下がるガード位置（＝頭が狙える隙）。 */
     open: { x: 0.28, y: -0.42, z: 0.06 },
   },
@@ -292,17 +297,16 @@ export const COMBAT = {
     attackRangeFactor: 1.15,
   },
 
+  /**
+   * 攻撃の**経路の形**。時間（予備動作 / 判定 / 隙）は攻撃ごとに違うので `AI.attacks` が持ち、
+   * boxing.js が attackCfgFor() でここに重ねる。
+   */
   attack: {
-    /** 近づいてくる時間（見てから反応できる速さ）。難易度で [開始, 最終] を補間。 */
-    approachMs: [1000, 700],
-    strikeMs: 130,
-    retractMs: 300,
+    /** 経路のうち予備動作で進む割合（残りを打撃で一気に詰める）。 */
     approachFrac: 0.7,
     hookArc: 0.55, hookRise: 0.12,
     aimJitter: 0.05,
     dodgeNear: 0.32,
-    /** 狙う場所の抽選比（頭 / 胴）。 */
-    aimTarget: { head: 1, torso: 1 },
     /** 胴を狙う時、胴カプセルのどの高さを狙うか（0=肩 / 1=下端）。 */
     torsoAimFrac: 0.4,
   },
@@ -331,10 +335,6 @@ export const GAME = {
   playerHp: 100,
   enemyHp: 100,
 
-  /** 硬直明けから次の攻撃までの待ち [ms]。時間経過で短くなる。 */
-  idleGapMs: [1200, 600],
-  rampSec: 45,
-
   /**
    * ダメージは左右対称（プレイヤー / 敵とも 頭 > 胴 > ガード）。
    * 部位は当たり判定（頭球 / 胴カプセル / 腕カプセル）で決まる。
@@ -349,6 +349,135 @@ export const GAME = {
 
   hitstopMs: 80,
   koSlowMo: { durationMs: 1400, timeScale: 0.25 },
-  /** 攻撃の経路の抽選比。 */
-  attackWeights: { hookLeft: 1, hookRight: 1, straight: 1.2 },
+};
+
+/**
+ * 敵 AI（enemy-ai.js）の難度・行動パラメータ。
+ *
+ * 数値の根拠は `dev-notes/demos/boxing-demo-ai-design.md`（workspace 側）。
+ * 予備動作長 = 人の反応時間 (~0.25s) + 体を動かす時間 + 難度バッファ、という組み立てで、
+ * 大技ほど長い＝「速いのに読める」を狙っている。**すべて実機プレイテストで詰める前提の叩き台**。
+ *
+ * 難しすぎる → `telegraphLengthScale` を上げる / `attackFrequency` を広げる。
+ * 手応えが無い → `telegraphLengthScale` を下げる / `attackFrequency` を狭める / `guardRate` を上げる。
+ */
+export const AI = {
+  /** ラウンド開始からの最初の攻撃までの間（構えを確認する時間）。 */
+  openingDelayMs: 1500,
+
+  /**
+   * 台本モード: 最初の 25 秒だけフェーズの並びを固定して「攻める / 守る / 疲れる」を必ず見せる。
+   * false にすると最初から抽選のみ。
+   */
+  script: true,
+  scriptPhases: [["OBSERVE", 5], ["AGGRESSIVE", 7], ["DEFENSIVE", 6], ["AGGRESSIVE", 7]],
+  /** 台本を使い切った後の各フェーズの長さ [s]。 */
+  phaseDurations: { OBSERVE: [3, 5], AGGRESSIVE: [4, 8], DEFENSIVE: [3, 6], FATIGUE: [2, 4] },
+  /** フェーズが切り替わった直後の間（切り替わりが見えるように一拍置く）。 */
+  phaseSwitchDelayMs: 350,
+
+  /** FATIGUE（隙だらけの山場）への突入条件。 */
+  fatigueTriggerDamage: 3,   // この回数食らったら
+  fatigueTriggerWhiffs: 3,   // または空振りがこれだけ続いたら
+  fatigueTelegraphScale: 1.5,
+  fatigueAttackChance: 0.35, // 疲れている間はそもそもあまり打ってこない
+
+  /** 攻撃の間隔 [s]（フェーズごとに倍率がかかる）。 */
+  attackFrequency: [1.5, 2.5],
+  phaseAttackScale: { OBSERVE: 1.6, AGGRESSIVE: 0.75, DEFENSIVE: 1.5, FATIGUE: 2.5 },
+  /** 空振りを見たら次を前倒しする（差し込みどころを突く）。 */
+  whiffPunishDelayMs: 350,
+
+  /** 予備動作の一括倍率。初見の来場者には 1.2〜1.5 が目安。 */
+  telegraphLengthScale: 1.2,
+
+  /**
+   * 攻撃ごとの 予備動作 / 判定 / 隙 [ms]。
+   * telegraph は「見えている時間」、recover は「こちらが殴り返せる時間」。
+   */
+  attacks: {
+    jab:      { telegraphMs: 350,  strikeMs: 100, recoverMs: 300 },
+    straight: { telegraphMs: 550,  strikeMs: 150, recoverMs: 400 },
+    hook:     { telegraphMs: 1000, strikeMs: 200, recoverMs: 700 },
+    body:     { telegraphMs: 900,  strikeMs: 150, recoverMs: 600 },
+    feint:    { telegraphMs: 500,  strikeMs: 100, recoverMs: 300 },
+    counter:  { telegraphMs: 100,  strikeMs: 100, recoverMs: 500 },
+    /** コンビネーション: 2 発目以降は予備動作なし・間も詰める。隙は最後だけ大きい。 */
+    combo:    { followTelegraphMs: 0, linkRecoverMs: 90, recoverMs: 800 },
+  },
+  comboSequence: ["jab", "straight", "hook"],
+  comboLength: [2, 3],
+
+  /** フェイント: 予備動作の途中で捨てる（過剰ガード / 空振りを誘う）。 */
+  feintRate: 0.15,
+  feintCancelFrac: 0.6,
+
+  /** スリップ → カウンター。プレイヤーのスイング開始で抽選する。 */
+  counterChance: 0.22,
+  counterCooldownMs: 3000,
+  slipMs: 220,
+  slipSpeedScale: 2.4,
+
+  /** ガード（構えている間）。high = 頭の前 / low = 胴の前 / open = 下ろす。 */
+  guardRate: 0.7,
+  guardHoldMs: 700,
+  defensiveGuardBonus: 0.25,
+  aggressiveGuardScale: 0.7,
+
+  /** 狙う場所（body 以外）。頭を狙う確率。 */
+  headTargetRate: 0.6,
+
+  /** 足さばき: フェーズごとの間合いの寄せ / 引き [m]。 */
+  closeDist: 0.55,
+  aggressiveCloseIn: 0.08,
+  defensiveBackOff: 0.12,
+  fatigueBackOff: 0.18,
+  defensiveStrafeScale: 1.5,
+  strafeSwitchSec: [2.0, 4.0],
+
+  /** 攻撃種の抽選比（フェーズごと）。 */
+  attackWeights: {
+    OBSERVE:    { jab: 1 },
+    AGGRESSIVE: { jab: 1, straight: 1, hook: 0.9, body: 0.8, combo: 0.7 },
+    DEFENSIVE:  { jab: 0.8, straight: 0.4, hook: 0.3, body: 0.3 },
+    FATIGUE:    { jab: 1, straight: 0.3 },
+  },
+
+  /** プレイヤーの行動への反応（design doc §5 の表）。 */
+  reaction: {
+    headWindow: 3,        // 直近この回数の頭狙いを見て
+    headBlockedMin: 2,    // これだけ止められていたら胴に切り替える
+    bodyBoost: 3, bodyFloor: 0.5,
+    guardStaticMs: 1500,  // ガードを上げたままこれだけ静止したら
+    feintBoost: 2.5,      // フェイントを増やす
+    leanTauSec: 1.2,      // リーンの偏りの時定数
+    leanBiasMin: 0.5,     // これを超えたら「同じ側にばかり逃げる癖」とみなす
+    lowGuardHoldMs: 2500, // 胴を打たれたらこの間は低いガードに切り替える
+  },
+
+  /**
+   * プレイヤーの構えの読み取り（既存の検出結果から作る。新しい推定は増やさない）。
+   * highDropM: 拳が頭からこれ以上下がっていれば「低いガード」とみなす [m]。
+   * stepThresholdM: 前後移動をふみこみ / 下がりと読む量 [m]。
+   */
+  playerGuard: { highDropM: 0.28, stepThresholdM: 0.12 },
+
+  /** 頭に短時間で連続被弾したら気絶（腕が下がって頭が開く＝決めどころ）。 */
+  stun: { hits: 2, windowMs: 1500, durationMs: 1200, footworkScale: 0.4 },
+
+  /**
+   * 予備動作の見せ方: 打つ前にグローブを引く / 横へ回す（テキストの予告は出さない）。
+   * `fracOfTelegraph` は「予備動作のうち何割を引く動きに使うか」。
+   */
+  windup: {
+    fracOfTelegraph: 0.45,
+    back: 0.16,                                                   // 手前（+Z）へ引く量 [m]
+    out: { hook: 0.34, body: 0.10, jab: 0.05, straight: 0.10, feint: 0.34, counter: 0.03 },
+    drop: { body: 0.20, hook: -0.04 },                            // 上下のずらし [m]（body は腰を落とす）
+    /** 予備動作中に体幹を入れる量 [rad]（人型モデルのひねり。判定には影響しない）。 */
+    yaw: 0.3,
+  },
+
+  /** 予備動作中にグローブを控えめに光らせる（視覚補助。切っても遊べる）。 */
+  telegraphGlow: true,
 };
