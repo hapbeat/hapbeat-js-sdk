@@ -11,35 +11,68 @@
     "url": "git+https://github.com/hapbeat/hapbeat-js-sdk.git"
   },
   "bugs": "https://github.com/hapbeat/hapbeat-js-sdk/issues",
-  "keywords": ["hapbeat", "haptics", "udp", "osc", "webxr", "three.js", "vr", "react-native", "creative-coding"],
+  "keywords": [
+    "hapbeat",
+    "haptics",
+    "udp",
+    "osc",
+    "webxr",
+    "three.js",
+    "vr",
+    "react-native",
+    "creative-coding"
+  ],
   "main": "./dist/node.js",
   "module": "./dist/node.js",
   "types": "./dist/node.d.ts",
   "exports": {
     ".": {
-      "node": { "types": "./dist/node.d.ts", "default": "./dist/node.js" },
-      "react-native": { "types": "./dist/react-native.d.ts", "default": "./dist/react-native.js" },
-      "browser": { "types": "./dist/browser.d.ts", "default": "./dist/browser.js" },
-      "default": { "types": "./dist/browser.d.ts", "default": "./dist/browser.js" }
+      "node": {
+        "types": "./dist/node.d.ts",
+        "default": "./dist/node.js"
+      },
+      "react-native": {
+        "types": "./dist/react-native.d.ts",
+        "default": "./dist/react-native.js"
+      },
+      "browser": {
+        "types": "./dist/browser.d.ts",
+        "default": "./dist/browser.js"
+      },
+      "default": {
+        "types": "./dist/browser.d.ts",
+        "default": "./dist/browser.js"
+      }
     }
   },
   "sideEffects": false,
-  "publishConfig": { "access": "public" },
-  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test",
     "dev": "npm run build && node scripts/dev-server.mjs",
     "serve": "node scripts/dev-server.mjs --no-watch",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "fetch:boxing-assets": "node scripts/fetch-boxing-assets.mjs"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "peerDependencies": {
     "react-native-udp": ">=4"
   },
   "peerDependenciesMeta": {
-    "react-native-udp": { "optional": true }
+    "react-native-udp": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "^22",

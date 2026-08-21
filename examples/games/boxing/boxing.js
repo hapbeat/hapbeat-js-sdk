@@ -119,6 +119,8 @@ root.innerHTML = `
     <div style="font-size:12px;margin:4px 0">Helper: <span id="conn" class="badge off">未接続</span></div>
     <div style="font-size:12px;margin:4px 0">推論: <span id="delegate" class="badge off">未初期化</span></div>
     <div style="font-size:12px;margin:4px 0">入力: <span id="srcBadge" class="badge off">未接続</span></div>
+    <div class="t">クレジット</div>
+    <div id="credits" style="font-size:10.5px;line-height:1.6;color:#8b97a6">読み込み中…</div>
     <button id="recBtn">📝 10 秒記録して CSV 保存</button>
     <button id="recalBtn">構えを取り直す</button>
     <button id="testBtn">触覚テスト</button>
@@ -245,6 +247,7 @@ let elapsed = 0, hitstopUntil = 0, slowMoUntil = 0, flash = 0, enemyHurt = 0;
 let playerPose = null;      // combat.buildPlayerPose の結果（判定・描画で共用）
 let gestureArms = null;     // gestures の arms（スイング中かの参照用）
 let enemyPose = null;       // combat.buildEnemyPose の結果（判定・描画で共用）
+let assetStatus = null;     // 外部アセット（HDRI / 人型）の読み込み結果
 let resetAtMs = 0;          // テストモードの自動回復時刻
 let countdownUntilMs = 0;   // キャリブ前カウントダウンの終了時刻
 let lastDebug = null;       // 判定デバッグのプロット用
@@ -815,6 +818,15 @@ function fail(message) {
     scene = new Scene3D(glCanvas, COMBAT);
     scene.resize(cssW, cssH);
     scene.setDebug(debugOn);
+    // 外部アセット（CC0）。未配置でも 404 を投げずにプリミティブのまま続行する。
+    const present = async (url) => {
+      try { return (await fetch(url, { method: "HEAD" })).ok ? url : null; } catch { return null; }
+    };
+    const [hdri, playerGlb, enemyGlb] = await Promise.all([
+      present("assets/wrestling_gym_2k.hdr").then((u) => u ?? present("assets/wrestling_gym_1k.hdr")),
+      present("assets/player.glb"), present("assets/enemy.glb"),
+    ]);
+    assetStatus = await scene.loadAssets({ hdri, player: playerGlb, enemy: enemyGlb });
   } catch (e) {
     fail(`3D 表示エラー: Three.js を読み込めません（オフライン？ ${e?.message ?? e}）`);
     return;
@@ -824,5 +836,15 @@ function fail(message) {
   const srcBadge = root.querySelector("#srcBadge");
   srcBadge.className = "badge on";
   srcBadge.textContent = tracker.label;
+  // CC0 でも出典は出す（未配置ならその旨と入手方法）
+  root.querySelector("#credits").innerHTML = [
+    assetStatus?.hdri
+      ? '背景 HDRI: <b>Wrestling Gym</b> — Sergej Majboroda / <a href="https://polyhaven.com/a/wrestling_gym" target="_blank" style="color:#9ab">Poly Haven</a>（CC0）'
+      : "背景 HDRI: 未配置（<code>npm run fetch:boxing-assets</code>）",
+    assetStatus?.player || assetStatus?.enemy
+      ? '人型: <b>Universal Base Characters</b> — <a href="https://quaternius.com/packs/universalbasecharacters.html" target="_blank" style="color:#9ab">Quaternius</a>（CC0）'
+      : "人型: 未配置（プリミティブ表示中・assets/README 参照）",
+    "リングは簡易ジオメトリで自作",
+  ].join("<br>");
   setState("TITLE");
 })();

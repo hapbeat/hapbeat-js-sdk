@@ -24,3 +24,6 @@ CLAUDE.md
 instructions/
 .claude/
 examples/games/demo-kit/**/.studio-cache.json
+
+# boxing デモの外部アセット（CC0）はコミットしない。scripts/fetch-boxing-assets.mjs で取得する。
+examples/games/boxing/assets/

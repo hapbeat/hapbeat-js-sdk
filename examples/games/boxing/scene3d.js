@@ -15,6 +15,7 @@
  */
 
 import * as THREE from "three";
+import { boneLocalRotation, matchBoneName, fitScale, vsub, vlen } from "./bones.js";
 
 const UP = new THREE.Vector3(0, 1, 0);
 const FLOOR_DROP = 1.55;   // プレイヤーの目線から床まで [m]
@@ -61,31 +62,69 @@ export class Scene3D {
     rim.position.set(-1.5, 1.2, -2.4);
     this.scene.add(rim);
 
+    this.humanoids = { player: null, enemy: null };
     this._buildRing();
     this._buildEnemy();
     this._buildPlayer();
     this._buildDebug();
   }
 
+  /**
+   * リング。マット + 4 本のポスト + 3 段ロープ + コーナーパッド（すべて簡易ジオメトリの自作）。
+   * 両者の立ち位置を囲む位置（原点と敵の中間）に置く。
+   */
   _buildRing() {
-    this.floor = new THREE.Mesh(
-      new THREE.CircleGeometry(6, 48),
-      new THREE.MeshStandardMaterial({ color: 0x1b2433, roughness: 0.95 }),
+    const g = new THREE.Group();
+    const R = this.cfg.ring ?? { half: 2.6, postHeight: 1.35, ropeYs: [0.45, 0.8, 1.15] };
+    const floorY = -FLOOR_DROP;
+    const mat = new THREE.Mesh(
+      new THREE.BoxGeometry(R.half * 2, 0.12, R.half * 2),
+      new THREE.MeshStandardMaterial({ color: 0x2c3a52, roughness: 0.95 }),
     );
-    this.floor.rotation.x = -Math.PI / 2;
-    this.floor.position.y = -FLOOR_DROP;
-    this.scene.add(this.floor);
-    this.ropes = new THREE.Group();
-    for (let i = 0; i < 3; i++) {
-      const rope = new THREE.Mesh(
-        new THREE.TorusGeometry(3.2, 0.02, 6, 40),
-        new THREE.MeshStandardMaterial({ color: 0x7c5cff, emissive: 0x2a1f6b, roughness: 0.6 }),
-      );
-      rope.rotation.x = -Math.PI / 2;
-      rope.position.y = -FLOOR_DROP + 0.45 + i * 0.35;
-      this.ropes.add(rope);
+    mat.position.set(0, floorY - 0.06, 0);
+    g.add(mat);
+    // 場外（会場の床）— HDRI が入る前でも地平線が見えるように広めに敷く
+    const apron = new THREE.Mesh(
+      new THREE.CircleGeometry(14, 40),
+      new THREE.MeshStandardMaterial({ color: 0x11161f, roughness: 1 }),
+    );
+    apron.rotation.x = -Math.PI / 2;
+    apron.position.y = floorY - 0.13;
+    g.add(apron);
+
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x9aa8bd, roughness: 0.4, metalness: 0.5 });
+    const padMat = new THREE.MeshStandardMaterial({ color: 0xd24a4a, roughness: 0.7 });
+    const ropeMat = new THREE.MeshStandardMaterial({ color: 0xe8eef8, roughness: 0.6 });
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, R.postHeight, 10), postMat);
+        post.position.set(sx * R.half, floorY + R.postHeight / 2, sz * R.half);
+        g.add(post);
+        const pad = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, R.postHeight * 0.75, 12), padMat);
+        pad.position.set(sx * R.half, floorY + R.postHeight * 0.42, sz * R.half);
+        g.add(pad);
+      }
     }
-    this.scene.add(this.ropes);
+    // ロープ: 4 辺 × 3 段
+    for (const y of R.ropeYs) {
+      for (const axis of ["x", "z"]) {
+        for (const s2 of [-1, 1]) {
+          const len = R.half * 2;
+          const rope = new THREE.Mesh(
+            new THREE.BoxGeometry(axis === "x" ? len : 0.03, 0.03, axis === "x" ? 0.03 : len),
+            ropeMat,
+          );
+          rope.position.set(axis === "x" ? 0 : s2 * R.half, floorY + y, axis === "x" ? s2 * R.half : 0);
+          g.add(rope);
+        }
+      }
+    }
+    // リングの中心は両者の中間あたり（プレイヤーが原点、敵が -enemyDist）
+    g.position.z = -this.cfg.enemyDist / 2;
+    this.ring = g;
+    this.scene.add(g);
+    this.floor = mat;      // 既存コードの参照先を保つ
+    this.ropes = g;
   }
 
   _buildEnemy() {
@@ -200,6 +239,135 @@ export class Scene3D {
     this.scene.add(this.dbg);
   }
 
+  // ── 外部アセット（CC0）。無ければプリミティブ表現のまま動く ──────────────────
+  /**
+   * HDRI 背景と人型モデルを読み込む。**すべて任意**で、失敗しても例外にせず
+   * プリミティブ表現のまま続行する（アセットは git に入れていないため未配置が普通）。
+   * @param {{hdri?:string, player?:string, enemy?:string}} urls
+   * @returns {Promise<{hdri:boolean, player:boolean, enemy:boolean, errors:string[]}>}
+   */
+  async loadAssets(urls = {}) {
+    const result = { hdri: false, player: false, enemy: false, errors: [] };
+    if (urls.hdri) {
+      try {
+        const { RGBELoader } = await import("three/addons/loaders/RGBELoader.js");
+        const tex = await new RGBELoader().loadAsync(urls.hdri);
+        tex.mapping = THREE.EquirectangularReflectionMapping;
+        this.scene.environment = tex;
+        this.scene.background = tex;
+        this.scene.fog = null;                       // 背景が入ったらフォグは邪魔
+        this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        this.renderer.toneMappingExposure = this.cfg.env?.exposure ?? 0.9;
+        result.hdri = true;
+      } catch (e) { result.errors.push(`HDRI: ${e?.message ?? e}`); }
+    }
+    for (const who of ["player", "enemy"]) {
+      if (!urls[who]) continue;
+      try {
+        const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
+        const gltf = await new GLTFLoader().loadAsync(urls[who]);
+        const rig = this._prepareHumanoid(gltf.scene, who);
+        if (rig) { this.humanoids[who] = rig; result[who] = true; }
+        else result.errors.push(`${who}: ボーンが見つかりません`);
+      } catch (e) { result.errors.push(`${who}: ${e?.message ?? e}`); }
+    }
+    this._syncPrimitiveVisibility();
+    return result;
+  }
+
+  /** モデルからボーンを拾い、体格を測って、ゲーム側の寸法に合わせる。 */
+  _prepareHumanoid(model, who) {
+    const bones = {};
+    const want = [
+      ["hips", null], ["spine", null], ["chest", null], ["neck", null], ["head", null],
+      ["shoulder", "left"], ["shoulder", "right"],
+      ["upperArm", "left"], ["upperArm", "right"],
+      ["lowerArm", "left"], ["lowerArm", "right"],
+      ["hand", "left"], ["hand", "right"],
+    ];
+    model.traverse((o) => {
+      if (!o.isBone) return;
+      for (const [kind, side] of want) {
+        const key = side ? `${kind}${side === "left" ? "L" : "R"}` : kind;
+        if (!bones[key] && matchBoneName(o.name, kind, side)) bones[key] = o;
+      }
+    });
+    if (!bones.upperArmL || !bones.upperArmR || !bones.lowerArmL || !bones.lowerArmR) return null;
+
+    model.updateWorldMatrix(true, true);
+    const wp = (b) => { const v = new THREE.Vector3(); b.getWorldPosition(v); return { x: v.x, y: v.y, z: v.z }; };
+    const shoulderSpan = vlen(vsub(wp(bones.upperArmL), wp(bones.upperArmR)));
+    const armLength = vlen(vsub(wp(bones.upperArmL), wp(bones.lowerArmL)))
+      + vlen(vsub(wp(bones.lowerArmL), wp(bones.handL ?? bones.lowerArmL)));
+    const target = {
+      shoulderSpan: this.cfg.rig.shoulderHalf * 2,
+      armLength: this.cfg.rig.bones.upperArm + this.cfg.rig.bones.foreArm,
+    };
+    const scale = fitScale({ shoulderSpan, armLength }, target);
+    model.scale.setScalar(scale);
+    // 休め姿勢での骨の向き（この向きを「向けたい向き」へ回す）
+    const restDir = {};
+    for (const side of ["L", "R"]) {
+      restDir[`upperArm${side}`] = this._localDir(bones[`upperArm${side}`], bones[`lowerArm${side}`]);
+      restDir[`lowerArm${side}`] = this._localDir(bones[`lowerArm${side}`], bones[`hand${side}`] ?? bones[`lowerArm${side}`]);
+    }
+    this.scene.add(model);
+    return { model, bones, restDir, scale, who };
+  }
+
+  /** 親ボーンのローカル空間で見た「子へ向かう向き」（＝休め姿勢の骨の向き）。 */
+  _localDir(bone, child) {
+    if (!bone || !child || bone === child) return { x: 0, y: 1, z: 0 };
+    const v = child.position.clone().normalize();   // 子の position は親ローカル
+    return { x: v.x, y: v.y, z: v.z };
+  }
+
+  /**
+   * 人型が入ったら、その側のプリミティブの体は隠す（当たり判定の可視化は残す）。
+   * プレイヤー側は視点によって出し分けがあるので update() 側で毎フレーム判断する。
+   */
+  _syncPrimitiveVisibility() {
+    if (this.humanoids.enemy) {
+      this.enemyHead.visible = false;
+      this.enemyTorso.visible = false;
+      for (const side of ["left", "right"]) {
+        const a = this.enemyArms[side];
+        for (const m of [a.shoulder, a.elbow, a.upper, a.fore]) m.visible = false;
+      }
+    }
+  }
+
+  /**
+   * 合成ポーズ（位置）→ ボーン回転。位置を直接置かず、親から順に回す。
+   * 当たり判定は今まで通りデータ側で行い、ここは表示だけ。
+   */
+  _driveHumanoid(rig, pose, facing) {
+    const { model, bones, restDir } = rig;
+    // 立ち位置: 肩の中点の真下に置き、相手の方を向かせる
+    const mid = {
+      x: (pose.shoulders.left.x + pose.shoulders.right.x) / 2,
+      z: (pose.shoulders.left.z + pose.shoulders.right.z) / 2,
+    };
+    model.position.set(mid.x, -FLOOR_DROP, mid.z);
+    model.rotation.set(0, facing + (pose.yaw ?? 0) * 0.5, 0);
+    model.updateWorldMatrix(true, true);
+
+    const q = new THREE.Quaternion();
+    const apply = (bone, restLocal, targetDir) => {
+      if (!bone || !bone.parent) return;
+      bone.parent.getWorldQuaternion(q);
+      const local = boneLocalRotation(restLocal, targetDir, { x: q.x, y: q.y, z: q.z, w: q.w });
+      bone.quaternion.set(local.x, local.y, local.z, local.w);
+      bone.updateWorldMatrix(false, true);
+    };
+    for (const [side, key] of [["left", "L"], ["right", "R"]]) {
+      const arm = pose[side];
+      if (!arm) continue;
+      apply(bones[`upperArm${key}`], restDir[`upperArm${key}`], vsub(arm.elbow, pose.shoulders[side]));
+      apply(bones[`lowerArm${key}`], restDir[`lowerArm${key}`], vsub(arm.wrist, arm.elbow));
+    }
+  }
+
   // ── 更新 ───────────────────────────────────────────────────────────────────
   resize(w, h) {
     this.renderer.setSize(w, h, false);
@@ -243,6 +411,15 @@ export class Scene3D {
       this.enemyGloves[side].mat.emissive.setRGB(glow, glow * 0.45, 0);
     }
 
+    // ── 人型モデル（あれば）──
+    if (this.humanoids.enemy) this._driveHumanoid(this.humanoids.enemy, enemy, 0);
+    if (this.humanoids.player && pose) {
+      this._driveHumanoid(this.humanoids.player, pose, Math.PI); // プレイヤーは -Z（敵）を向く
+      // 一人称では自分の頭・胴が視界を塞ぐので隠す（腕だけ見せる）
+      const headBone = this.humanoids.player.bones.head;
+      if (headBone) headBone.scale.setScalar(this.mode === "first" ? 0.001 : 1);
+    }
+
     // ── プレイヤー ──
     if (!pose) { this.rig.visible = false; return; }
     this.rig.visible = true;
@@ -250,9 +427,13 @@ export class Scene3D {
     setV(this.pHeadHit, pose.head);
     // 頭球と体は一人称では見えると邪魔なので隠す
     const third = this.mode === "third";
-    this.pHead.visible = third;
-    this.pHeadHit.visible = third;
+    const modeled = !!this.humanoids.player;   // 人型が入っていれば素の体は出さない
+    this.pHead.visible = third && !modeled;
+    this.pHeadHit.visible = third;             // 当たり判定の可視化は残す
     this.pTorsoHit.visible = third;
+    for (const m of [...Object.values(this.pShoulders), ...Object.values(this.pElbows), ...Object.values(this.pBones)]) {
+      m.visible = m.visible && !modeled;
+    }
     this.pBones.neck.visible = third;
     this.pBones.spine.visible = third;
 

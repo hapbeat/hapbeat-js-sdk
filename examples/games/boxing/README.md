@@ -272,10 +272,38 @@ boxing/
   pose.js        # カメラ + MediaPipe PoseLandmarker（失敗は日本語 1 行に畳む）
   gestures.js    # ランドマーク → 体基準 2D フレーム + 前方リーチ + パンチ検出
   tuning.js      # ★ 閾値・バランスの集約先
+  bones.js       # 合成ポーズ → 人型モデルのボーン回転（純関数）
   tracker-source.js # 入力層（Web カメラ / 外部トラッカーの切替とフレーム変換）
+  assets/        # 外部アセット（git 管理外。npm run fetch:boxing-assets で取得）
   tracker/       # 外部トラッカー（Python・深度カメラ用）と PROTOCOL.md
   eventmap.json  # 論理イベント → Kit の eventId + gain/pan
 ```
+
+### 見た目のアセット（CC0・任意）
+
+背景 HDRI と人型モデルは**外部アセット**で、リポジトリには入れていない（バイナリのため）。
+**未配置でも動く** — その場合はプリミティブ（球とカプセル）で表示される。
+
+```bash
+npm run fetch:boxing-assets        # 背景 HDRI を取得（--1k で軽い版）
+```
+
+| アセット | 取得 | 出典 / ライセンス |
+|---|---|---|
+| 背景 HDRI **Wrestling Gym** | ✅ 自動（Poly Haven API） | Sergej Majboroda / [Poly Haven](https://polyhaven.com/a/wrestling_gym) / CC0 |
+| 人型 **Universal Base Characters** | ⚠️ **手動** | [Quaternius](https://quaternius.com/packs/universalbasecharacters.html) / CC0 |
+| リング（マット・ポスト・ロープ・コーナーパッド） | — | Three.js の簡易ジオメトリで自作 |
+
+人型は itch.io のダウンロードボタン経由で配布されていて直リンクが無いため、自動取得できない:
+
+1. <https://quaternius.itch.io/universal-base-characters> から **glTF 版**をダウンロード（CC0・0 円でも可）
+2. zip を `examples/games/boxing/assets/downloads/` に置く
+3. `npm run fetch:boxing-assets` をもう一度実行すると `player.glb` / `enemy.glb` を取り出す
+   （手動で置く場合はその 2 つの名前で `assets/` 直下へ）
+
+モデルが入ると、**当たり判定はそのまま**（位置ベースの合成ポーズ）で、メッシュのボーンだけを
+その姿勢に合わせて回す（[`bones.js`](./bones.js)）。肩幅と腕長がゲーム側の寸法に合うよう自動スケール。
+出典は ⚙ メニューの「クレジット」と `assets/CREDITS.md` にも出る（CC0 でも出典は残す）。
 
 ### 入力ソース（Web カメラ / 深度カメラ）
 
