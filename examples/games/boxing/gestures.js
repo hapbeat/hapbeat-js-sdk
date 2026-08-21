@@ -232,7 +232,9 @@ export class GestureTracker {
 
     // ── リーチ推定 + スイング検出 ────────────────────────────────────────────
     const frame = {
-      head: { x: (nose.x - this.base.midX) / w, y: (nose.y - this.base.noseY) / w },
+      // head は「体（肩中点）に対する」頭の位置＝リーン / ダック。体ごとの移動は root。
+      head: { x: (nose.x - midX) / w, y: (nose.y - this.base.noseY) / w },
+      root: { x: (midX - this.base.midX) / w },
       distanceRatio: this.distanceRatio,   // 1.0 = 構え位置 / >1 = 近づいた
       yaw: this.yaw,                        // 体幹ひねり [rad]（+ = 右肩が前）
       arms: {},

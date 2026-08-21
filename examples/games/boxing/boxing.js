@@ -26,7 +26,7 @@ import { Fx } from "../shared/fx.js";
 import { PoseTracker, SKELETON, HAND_CONNECTIONS } from "./pose.js";
 import { GestureTracker } from "./gestures.js";
 import { TUNING, COMBAT, GAME } from "./tuning.js";
-import { buildPlayerPose, attackPathT, enemyGlovePos, resolveEnemyGlove, resolvePlayerGlove, v3, dist } from "./combat.js";
+import { buildPlayerPose, buildEnemyPose, attackPathT, enemyGlovePos, resolveEnemyGlove, resolvePlayerGlove, v3, dist } from "./combat.js";
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -240,6 +240,7 @@ let timeLeft = GAME.roundSec, score = 0, combo = 0, bestCombo = 0;
 let elapsed = 0, hitstopUntil = 0, slowMoUntil = 0, flash = 0, enemyHurt = 0;
 let playerPose = null;      // combat.buildPlayerPose の結果（判定・描画で共用）
 let gestureArms = null;     // gestures の arms（スイング中かの参照用）
+let enemyPose = null;       // combat.buildEnemyPose の結果（判定・描画で共用）
 let resetAtMs = 0;          // テストモードの自動回復時刻
 let countdownUntilMs = 0;   // キャリブ前カウントダウンの終了時刻
 let lastDebug = null;       // 判定デバッグのプロット用
@@ -247,6 +248,8 @@ let lastDebug = null;       // 判定デバッグのプロット用
 /** 敵。idle → attack（接近→打撃→戻り）。攻撃中はガードが開く＝頭を狙える。 */
 const enemy = {
   phase: "idle",       // "idle" | "approach" | "strike" | "retract"
+  root: { x: 0, z: -COMBAT.enemyDist },  // 立ち位置（間合いはプレイヤー root との距離で決まる）
+  strafeDir: 1, strafeUntilMs: 0,
   nextAtMs: 0,
   startedMs: 0,
   attack: null,        // { kind, side, hand }
@@ -263,7 +266,47 @@ function approachMs() { return lerp(COMBAT.attack.approachMs[0], COMBAT.attack.a
 function idleGapMs() { return lerp(GAME.idleGapMs[0], GAME.idleGapMs[1], ramp()); }
 function attackCfg() { return { ...COMBAT.attack, approachMs: approachMs() }; }
 
-const enemyHeadPos = () => v3(0, COMBAT.enemy.headY, -COMBAT.enemyDist);
+const enemyHeadPos = () => v3(enemy.root.x, COMBAT.enemy.headY, enemy.root.z);
+/** 敵の腕が届く最大距離（骨長の和）。攻撃を始めるかの判断に使う。 */
+const enemyArmReach = () => COMBAT.enemy.bones.upperArm + COMBAT.enemy.bones.foreArm;
+/** プレイヤーの立ち位置（root）。頭の水平位置で代表する。 */
+const playerRoot = () => (playerPose ? { x: playerPose.head.x, z: playerPose.head.z } : { x: 0, z: 0 });
+
+/**
+ * 敵の足さばき。目標間合いへ速度制限つきで寄る / 下がる + ゆっくり左右に回る。
+ * 本格的な AI は別途。ここは「間合いが意味を持つ」ための最小限。
+ */
+function updateFootwork(dt, nowMs) {
+  const f = COMBAT.footwork;
+  const p = playerRoot();
+  const dx = enemy.root.x - p.x, dz = enemy.root.z - p.z;
+  const d = Math.hypot(dx, dz) || 1e-6;
+  const ux = dx / d, uz = dz / d;              // プレイヤー → 敵の単位ベクトル
+  const err = d - f.preferredDist;
+  if (Math.abs(err) > f.deadZone) {
+    const step = Math.sign(err) * f.speed * dt; // + なら離れているので近づく（-方向へ）
+    enemy.root.x -= ux * step;
+    enemy.root.z -= uz * step;
+  }
+  if (nowMs > enemy.strafeUntilMs) {
+    enemy.strafeDir = Math.random() < 0.5 ? -1 : 1;
+    const [lo, hi] = f.strafeSwitchSec;
+    enemy.strafeUntilMs = nowMs + (lo + Math.random() * (hi - lo)) * 1000;
+  }
+  // 視線に直交する向き＝左右に回り込む
+  enemy.root.x += -uz * enemy.strafeDir * f.strafeSpeed * dt;
+  enemy.root.z += ux * enemy.strafeDir * f.strafeSpeed * dt;
+  enemy.root.x = clamp(enemy.root.x, f.clampX[0], f.clampX[1]);
+  enemy.root.z = clamp(enemy.root.z, f.clampZ[0], f.clampZ[1]);
+}
+
+/** その狙点が今の立ち位置から腕の長さで届くか（届かないなら踏み込みを待つ）。 */
+function inAttackRange(aim, hand) {
+  const sign = hand === "left" ? -1 : 1;
+  const h = enemyHeadPos();
+  const shoulder = v3(h.x + sign * COMBAT.enemy.arm.shoulderX, h.y + COMBAT.enemy.arm.shoulderY, h.z + COMBAT.enemy.arm.shoulderZ);
+  return dist(shoulder, aim) <= enemyArmReach() * COMBAT.footwork.attackRangeFactor;
+}
 /** 敵グローブの構え位置（ガード時は頭の前、開いている時は下がる）。 */
 function enemyGuardPos(side, open) {
   const h = enemyHeadPos();
@@ -315,7 +358,8 @@ function updateEnemy(nowMs) {
   const cfg = attackCfg();
   if (enemy.phase === "idle") {
     for (const side of ["left", "right"]) enemy.glove[side] = enemyGuardPos(side, false);
-    if (nowMs >= enemy.nextAtMs) startAttack(nowMs);
+    // 腕が届く間合いに入っていなければ打たずに待つ（足さばきで詰める）
+    if (nowMs >= enemy.nextAtMs && playerPose && inAttackRange(playerPose.head, "right")) startAttack(nowMs);
     return;
   }
   const { s, phase } = attackPathT(nowMs - enemy.startedMs, cfg);
@@ -356,7 +400,7 @@ function onDodge() {
 }
 function onPlayerHit(where = "head") {
   const head = where === "head";
-  playerHp = Math.max(0, playerHp - (head ? GAME.damage.playerHit : GAME.damage.playerBody));
+  playerHp = Math.max(0, playerHp - (head ? GAME.damage.head : GAME.damage.torso));
   combo = 0;
   flash = head ? 1 : 0.7;
   fx.shake(head ? 18 : 12);
@@ -370,18 +414,14 @@ function onPlayerHit(where = "head") {
  * 同じ手はクールダウン中は再判定しない（1 スイング 1 回）。
  */
 function updatePlayerPunches(nowMs) {
-  if (!playerPose) return;
-  const guardUp = enemy.phase === "idle";
-  const target = { head: enemyHeadPos(), gloves: enemy.glove, guardUp,
-    torsoTop: v3(0, COMBAT.enemy.torsoTopY, -COMBAT.enemyDist),
-    torsoBottom: v3(0, COMBAT.enemy.torsoBottomY, -COMBAT.enemyDist) };
+  if (!playerPose || !enemyPose) return;
   for (const side of ["left", "right"]) {
     const arm = playerPose[side];
     const c = punchContact[side];
     // 当たり判定は「スイング中」だけ有効。ガード中に静止して腕が伸びていても当たらない。
     const swinging = !COMBAT.punchHit.requireSwing || !!gestureArms?.[side]?.swingActive;
     const eligible = swinging && arm.reach >= COMBAT.punchHit.minReach;
-    const what = eligible ? resolvePlayerGlove(arm.wrist, COMBAT.player.gloveRadius, target, COMBAT) : null;
+    const what = eligible ? resolvePlayerGlove(arm.wrist, COMBAT.player.gloveRadius, enemyPose, COMBAT) : null;
     if (what && !c.on && nowMs - c.lastMs > COMBAT.punchHit.cooldownMs) {
       c.lastMs = nowMs;
       onPlayerPunchLanded(side, what);
@@ -394,17 +434,17 @@ function onPlayerPunchLanded(side, what) {
   const pan = side === "left" ? -0.6 : 0.6;
   const x = hudCanvas.width * (0.5 + (side === "left" ? -0.12 : 0.12));
   if (what === "guard") {
-    enemyHp = Math.max(0, enemyHp - GAME.damage.punchBlocked);
-    score += GAME.score.punchBlocked;
+    enemyHp = Math.max(0, enemyHp - GAME.damage.blocked);
+    score += GAME.score.blocked;
     bridge.fire("boxing_punch_blocked", { pan });
     fx.burst(x, hudCanvas.height * 0.42, "#8b97a6", 8, 120);
     return;
   }
   const head = what === "head";
-  enemyHp = Math.max(0, enemyHp - (head ? GAME.damage.punchHead : GAME.damage.punchTorso));
+  enemyHp = Math.max(0, enemyHp - (head ? GAME.damage.head : GAME.damage.torso));
   combo++;
   bestCombo = Math.max(bestCombo, combo);
-  score += (head ? GAME.score.punchHead : GAME.score.punchTorso) + (combo > 1 ? combo * GAME.score.comboBonus : 0);
+  score += (head ? GAME.score.head : GAME.score.torso) + (combo > 1 ? combo * GAME.score.comboBonus : 0);
   enemyHurt = 1;
   hitstopUntil = performance.now() + GAME.hitstopMs;
   fx.shake(head ? 12 : 7);
@@ -472,6 +512,7 @@ function startFight() {
   timeLeft = GAME.roundSec; score = 0; combo = 0; bestCombo = 0; elapsed = 0;
   flash = 0; hitstopUntil = 0; slowMoUntil = 0; enemyHurt = 0; resetAtMs = 0;
   enemy.phase = "idle"; enemy.attack = null; enemy.resolved = false;
+  enemy.root = { x: 0, z: -COMBAT.enemyDist };
   setState("COUNTDOWN");
 }
 
@@ -699,7 +740,10 @@ function frame(nowMs) {
     if (!g.visible && pose.ready) setStatus("姿勢を見失いました — フレーム内に戻ってください", "warn");
     else if (statusEl.textContent) setStatus("");
     if (dt > 0) {
+      updateFootwork(dt, nowMs);
       updateEnemy(nowMs);
+      enemyPose = buildEnemyPose(enemy.root, enemy.glove, COMBAT);
+      enemyPose.guardUp = enemy.phase === "idle";
       updatePlayerPunches(nowMs);
     }
     if (!GAME.testMode && state === "FIGHT" && timeLeft <= 0) endRound("time");
@@ -712,12 +756,14 @@ function frame(nowMs) {
   vignetteEl.style.opacity = String(flash * 0.9);
   if (scene) {
     scene.setShake(fx.ox * 0.0012, fx.oy * 0.0012);
+    if (!enemyPose) {
+      enemyPose = buildEnemyPose(enemy.root, enemy.glove, COMBAT);
+      enemyPose.guardUp = enemy.phase === "idle";
+    }
     scene.update({
       pose: playerPose,
-      enemy: {
-        head: enemyHeadPos(), gloves: enemy.glove, guardUp: enemy.phase === "idle",
-        activeHand: enemy.attack?.hand ?? null, phase: enemy.phase,
-      },
+      enemy: { ...enemyPose, gloves: { left: enemyPose.left.wrist, right: enemyPose.right.wrist },
+        activeHand: enemy.attack?.hand ?? null, phase: enemy.phase },
       hurt: enemyHurt,
     });
     scene.render();

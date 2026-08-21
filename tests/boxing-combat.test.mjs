@@ -9,8 +9,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  buildPlayerPose, attackPathT, enemyGlovePos, resolveEnemyGlove, resolvePlayerGlove,
-  sphereHitsCapsule, closestPointOnSegment, dist, v3,
+  buildPlayerPose, buildEnemyPose, attackPathT, enemyGlovePos, resolveEnemyGlove, resolvePlayerGlove,
+  sphereHitsCapsule, closestPointOnSegment, dist, v3, lerpV, solveIK, resolveHit,
 } from "../examples/games/boxing/combat.js";
 import { COMBAT } from "../examples/games/boxing/tuning.js";
 
@@ -31,19 +31,32 @@ test("左右: プレイヤーの右手は +X（画面右）、左手は -X に�
   assert.ok(pose.shoulders.right.x > pose.shoulders.left.x);
 });
 
-test("奥行き: reach を上げるとグローブが前（-Z）へ進み、reach=1 で敵の頭に届く", () => {
-  const back = buildPlayerPose(frame(0, 0), COMBAT.rig).right.wrist;
-  const mid = buildPlayerPose(frame(0, 0.5), COMBAT.rig).right.wrist;
-  const full = buildPlayerPose(frame(0, 1), COMBAT.rig).right.wrist;
-  assert.ok(mid.z < back.z, "reach 0.5 で前に出る");
-  assert.ok(full.z < mid.z, "reach 1.0 でさらに前に出る");
+test("奥行き: reach で前へ伸びるが、骨の長さは超えない（間合いが意味を持つ）", () => {
+  const back = buildPlayerPose(frame(0, 0), COMBAT.rig).right;
+  const mid = buildPlayerPose(frame(0, 0.5), COMBAT.rig).right;
+  const full = buildPlayerPose(frame(0, 1), COMBAT.rig);
+  assert.ok(mid.wrist.z < back.wrist.z, "reach 0.5 で前に出る");
+  assert.ok(full.right.wrist.z < mid.wrist.z, "reach 1.0 でさらに前に出る");
 
-  // reach=1 のとき、グローブ球が敵の頭球に接触できる距離まで到達している
-  const reachDist = dist(full, enemyHead());
-  const contact = COMBAT.player.gloveRadius + COMBAT.enemy.headRadius;
-  assert.ok(reachDist <= contact, `reach=1 で敵の頭に届かない (dist=${reachDist.toFixed(3)}, contact=${contact.toFixed(3)})`);
-  // 引いた状態では絶対に届かない（構えているだけで当たると成立しない）
-  assert.ok(dist(back, enemyHead()) > contact * 3, "reach=0 でも届いてしまう");
+  // 骨は伸びない: 手首は肩から (上腕 + 前腕) を超えない
+  const maxArm = COMBAT.rig.bones.upperArm + COMBAT.rig.bones.foreArm;
+  for (const r of [0, 0.5, 1]) {
+    const p = buildPlayerPose(frame(0, r), COMBAT.rig);
+    assert.ok(dist(p.right.wrist, p.shoulders.right) <= maxArm + 1e-6,
+      `reach=${r} で腕が伸びている (${dist(p.right.wrist, p.shoulders.right).toFixed(3)} > ${maxArm})`);
+  }
+
+  // 開始距離では届かず、間合い（footwork.preferredDist）まで詰めればガードの隙に入る
+  const atDist = (d, mode) => {
+    const o = mode === "open" ? COMBAT.enemy.open : COMBAT.enemy.guard;
+    const head = v3(0, COMBAT.enemy.headY, -d);
+    const gloves = { left: v3(head.x - o.x, head.y + o.y, head.z + o.z), right: v3(head.x + o.x, head.y + o.y, head.z + o.z) };
+    const enemy = buildEnemyPose({ x: 0, z: -d }, gloves, COMBAT);
+    return resolvePlayerGlove(full.right.wrist, COMBAT.player.gloveRadius, enemy, COMBAT);
+  };
+  assert.equal(atDist(COMBAT.enemyDist, "open"), null, "開始距離で届いてしまう（間合いが無意味）");
+  assert.equal(atDist(COMBAT.footwork.preferredDist, "open"), "head", "間合いまで詰めても頭に届かない");
+  assert.equal(atDist(COMBAT.footwork.preferredDist, "guard"), "guard", "ガード中の相手に素通しで入る");
 });
 
 test("肘は手首より手前（elbowFrac 分だけしか前に出ない）", () => {
@@ -95,20 +108,28 @@ test("前腕（カプセル）でもガードできる（グローブ球だけ�
   assert.equal(resolveEnemyGlove(onForearm, COMBAT.enemy.gloveRadius, pose, COMBAT), "block");
 });
 
-test("敵側: ガード中はグローブに弾かれ、開いていれば頭/胴に入る", () => {
-  const head = enemyHead();
-  const gloves = {
-    left: v3(head.x - COMBAT.enemy.guard.x, head.y + COMBAT.enemy.guard.y, head.z + COMBAT.enemy.guard.z),
-    right: v3(head.x + COMBAT.enemy.guard.x, head.y + COMBAT.enemy.guard.y, head.z + COMBAT.enemy.guard.z),
+test("敵側: 腕（グローブ/前腕/上腕）に当たれば guard、開いていれば頭 / 胴に入る", () => {
+  const d = COMBAT.footwork.preferredDist;
+  const root = { x: 0, z: -d };
+  const head = v3(0, COMBAT.enemy.headY, -d);
+  const posed = (mode) => {
+    const o = mode === "open" ? COMBAT.enemy.open : COMBAT.enemy.guard;
+    return buildEnemyPose(root, {
+      left: v3(head.x - o.x, head.y + o.y, head.z + o.z),
+      right: v3(head.x + o.x, head.y + o.y, head.z + o.z),
+    }, COMBAT);
   };
-  const enemyUp = { head, gloves, guardUp: true,
-    torsoTop: v3(0, COMBAT.enemy.torsoTopY, head.z), torsoBottom: v3(0, COMBAT.enemy.torsoBottomY, head.z) };
-  const enemyOpen = { ...enemyUp, guardUp: false };
+  const guarding = posed("guard"), open = posed("open");
   const R = COMBAT.player.gloveRadius;
-  assert.equal(resolvePlayerGlove(gloves.right, R, enemyUp, COMBAT), "guard");
-  assert.equal(resolvePlayerGlove(head, R, enemyOpen, COMBAT), "head");
-  assert.equal(resolvePlayerGlove(v3(0, COMBAT.enemy.torsoTopY - 0.1, head.z), R, enemyOpen, COMBAT), "torso");
-  assert.equal(resolvePlayerGlove(v3(0, 0, 0), R, enemyOpen, COMBAT), null, "自分の手前では当たらない");
+  // ガードのグローブそのものに当てれば弾かれる
+  assert.equal(resolvePlayerGlove(guarding.right.wrist, R, guarding, COMBAT), "guard");
+  // 前腕の途中でも弾かれる（グローブ球だけではない）
+  const foreMid = lerpV(guarding.right.elbow, guarding.right.wrist, 0.5);
+  assert.equal(resolvePlayerGlove(foreMid, R, guarding, COMBAT), "guard");
+  // 腕が下りていれば頭・胴に入る
+  assert.equal(resolvePlayerGlove(head, R, open, COMBAT), "head");
+  assert.equal(resolvePlayerGlove(v3(0, COMBAT.enemy.torsoTopY - 0.1, -d), R, open, COMBAT), "torso");
+  assert.equal(resolvePlayerGlove(v3(0, 0, 0), R, open, COMBAT), null, "自分の手前で当たってしまう");
 });
 
 test("攻撃の進行: approach → strike → retract → done、経路端は from / aim に一致", () => {
@@ -225,9 +246,12 @@ test("胴狙いも体ごと横へ逃げれば当たらない（headGain / should
   // 腕を判定の外へどけた姿勢を作り、リーン単体の効きだけを見る
   const armsOut = (headX) => {
     const pose = buildPlayerPose(frame(0, 0, { x: headX, y: 0 }), COMBAT.rig);
+    // 腕を判定の外（体の真横〜後ろ）へどけて、リーン単体の効きだけを見る
     for (const side of ["left", "right"]) {
       const sign = side === "left" ? -1 : 1;
-      pose[side] = { elbow: v3(sign * 1.2, -0.9, 0.4), wrist: v3(sign * 1.5, -1.1, 0.5), reach: 0 };
+      const sh = pose.shoulders[side];
+      pose[side] = { elbow: v3(sh.x + sign * 0.5, sh.y - 0.2, sh.z + 0.45),
+        wrist: v3(sh.x + sign * 0.7, sh.y - 0.4, sh.z + 0.7), reach: 0 };
     }
     return pose;
   };
@@ -235,4 +259,47 @@ test("胴狙いも体ごと横へ逃げれば当たらない（headGain / should
   assert.equal(simulateAttack({ pose: armsOut(0.5), from, aim: bodyAim, cfg }).resolved, null, "リーンで胴を外せない");
   // 参考: 胸の高さで構えているだけでは腹は守れない（腕を下げるガードが要る＝上のテスト）
   assert.equal(simulateAttack({ pose: straight, from, aim: bodyAim, cfg }).resolved, "torso");
+});
+
+// ── 骨長固定（2 ボーン IK）と左右対称の当たり判定 ────────────────────────────
+test("IK: 目標が遠くても手首は肩から (上腕+前腕) を超えない", () => {
+  const sh = v3(0, 0, 0);
+  const l1 = 0.32, l2 = 0.30;
+  for (const target of [v3(0, 0, -5), v3(3, 2, -1), v3(0.1, 0, -0.05)]) {
+    const ik = solveIK(sh, target, l1, l2, v3(1, -1, 0));
+    assert.ok(dist(sh, ik.wrist) <= l1 + l2 + 1e-9, `腕が伸びた (${dist(sh, ik.wrist).toFixed(3)})`);
+    // 骨の長さそのものが保たれている
+    assert.ok(Math.abs(dist(sh, ik.elbow) - l1) < 1e-6, `上腕長が変わった (${dist(sh, ik.elbow).toFixed(4)})`);
+    assert.ok(Math.abs(dist(ik.elbow, ik.wrist) - l2) < 1e-6, `前腕長が変わった (${dist(ik.elbow, ik.wrist).toFixed(4)})`);
+  }
+  // 届かない目標では reached=false（＝間合いが足りない）
+  assert.equal(solveIK(sh, v3(0, 0, -5), l1, l2, v3(1, -1, 0)).reached, false);
+  assert.equal(solveIK(sh, v3(0, 0, -0.4), l1, l2, v3(1, -1, 0)).reached, true);
+});
+
+test("IK: 肘は曲げヒント側へ張り出す", () => {
+  const sh = v3(0, 0, 0), target = v3(0, 0, -0.4);
+  const right = solveIK(sh, target, 0.32, 0.30, v3(1, 0, 0));
+  const left = solveIK(sh, target, 0.32, 0.30, v3(-1, 0, 0));
+  const down = solveIK(sh, target, 0.32, 0.30, v3(0, -1, 0));
+  assert.ok(right.elbow.x > 0.05, `右ヒントで肘が右に出ない (${right.elbow.x.toFixed(3)})`);
+  assert.ok(left.elbow.x < -0.05, "左ヒントで肘が左に出ない");
+  assert.ok(down.elbow.y < -0.05, "下ヒントで肘が下に出ない");
+});
+
+test("左右対称: 同じ resolveHit で、プレイヤー / 敵とも 腕 > 頭 > 胴 の順に判定される", () => {
+  const d = COMBAT.footwork.preferredDist;
+  const head = v3(0, COMBAT.enemy.headY, -d);
+  const g = COMBAT.enemy.guard;
+  const enemy = buildEnemyPose({ x: 0, z: -d }, {
+    left: v3(head.x - g.x, head.y + g.y, head.z + g.z),
+    right: v3(head.x + g.x, head.y + g.y, head.z + g.z),
+  }, COMBAT);
+  const player = buildPlayerPose(frame(0, 0), COMBAT.rig);
+  // 敵の腕（上腕の途中）に当てても guard
+  const upperMid = lerpV(enemy.shoulders.right, enemy.right.elbow, 0.5);
+  assert.equal(resolveHit(upperMid, COMBAT.player.gloveRadius, enemy, COMBAT.enemy), "guard");
+  // プレイヤー側も同じ関数・同じ順序で効く（腕が前にあれば頭より先に当たる）
+  assert.equal(resolveHit(player.right.wrist, COMBAT.enemy.gloveRadius, player, COMBAT.player), "guard");
+  assert.equal(resolveHit(player.head, COMBAT.enemy.gloveRadius, { ...player, left: null, right: null }, COMBAT.player), "head");
 });

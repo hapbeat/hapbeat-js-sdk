@@ -158,9 +158,9 @@ test("距離比 → 前後移動: 1.0 は原点、1.15（半歩）で約 +0.4m �
 
 test("踏み込むと間合いが詰まる: 同じリーチでも敵の頭までの距離が縮む", () => {
   const enemyHead = v3(0, COMBAT.enemy.headY, -COMBAT.enemyDist);
-  const at = (ratio) => dist(buildPlayerPose(frameAt(ratio, 0.35), COMBAT.rig).right.wrist, enemyHead);
+  const at = (ratio) => dist(buildPlayerPose(frameAt(ratio, 1), COMBAT.rig).right.wrist, enemyHead);
   const base = at(1.0), stepIn = at(1.15);
-  assert.ok(stepIn < base - 0.3, `踏み込みで間合いが詰まらない (${base.toFixed(3)} → ${stepIn.toFixed(3)})`);
+  assert.ok(stepIn < base - 0.15, `踏み込みで間合いが詰まらない (${base.toFixed(3)} → ${stepIn.toFixed(3)})`);
   assert.ok(at(0.85) > base, "下がっても間合いが変わらない");
 });
 
@@ -261,12 +261,12 @@ test("構えのリグ: reach=0 でも拳は体より前にあり、reach=1 で�
   assert.ok(Math.abs((guard.shoulders.right.z - guard.right.wrist.z) - rig.guardForward) < 1e-9,
     "構えの前方距離が guardForward と一致しない");
   assert.ok(guard.right.elbow.z > guard.right.wrist.z, "肘が拳より前に出ている（腕が裏返っている）");
-  // 伸ばしきりは従来どおり敵の頭に届く
+  // 伸ばしきりでは骨の長さいっぱいまで出る（骨は伸びない）
   const full = buildPlayerPose(frameAt(1.0, 1), COMBAT.rig);
-  const contact = COMBAT.player.gloveRadius + COMBAT.enemy.headRadius;
-  assert.ok(dist(full.right.wrist, v3(0, COMBAT.enemy.headY, -COMBAT.enemyDist)) <= contact,
-    "伸ばしきっても敵の頭に届かない");
+  const maxArm = rig.bones.upperArm + rig.bones.foreArm;
+  const ext = dist(full.right.wrist, full.shoulders.right);
   assert.ok(full.right.wrist.z < guard.right.wrist.z, "reach を上げても前に出ない");
+  assert.ok(ext > maxArm * 0.9 && ext <= maxArm + 1e-6, `伸ばしきりの腕長が想定外 (${ext.toFixed(3)} / 最大 ${maxArm})`);
 });
 
 // キャリブレーション開始経路の回帰テスト。

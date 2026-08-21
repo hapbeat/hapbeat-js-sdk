@@ -15,7 +15,6 @@
  */
 
 import * as THREE from "three";
-import { solveArm } from "./combat.js";
 
 const UP = new THREE.Vector3(0, 1, 0);
 const FLOOR_DROP = 1.55;   // プレイヤーの目線から床まで [m]
@@ -172,6 +171,10 @@ export class Scene3D {
       new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.5 }),
     );
     const c = this.cfg;
+    const cap = (r, color) => new THREE.Mesh(
+      new THREE.CylinderGeometry(r, r, 1, 10),
+      new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.45 }),
+    );
     this.dbg = new THREE.Group();
     this.dbgPlayer = {
       head: wire(c.player.headRadius, 0x6cd1ff),
@@ -182,12 +185,15 @@ export class Scene3D {
         new THREE.MeshBasicMaterial({ color: 0x6cd1ff, wireframe: true, transparent: true, opacity: 0.45 })),
       torso: new THREE.Mesh(new THREE.CapsuleGeometry(c.player.torsoRadius, 1, 6, 12),
         new THREE.MeshBasicMaterial({ color: 0x6cd1ff, wireframe: true, transparent: true, opacity: 0.4 })),
+      upperL: cap(c.player.upperArmRadius, 0x9ae6ff), upperR: cap(c.player.upperArmRadius, 0x9ae6ff),
     };
     this.dbgEnemy = {
       head: wire(c.enemy.headRadius, 0xffa04a),
       torso: new THREE.Mesh(new THREE.CapsuleGeometry(c.enemy.torsoRadius, c.enemy.torsoTopY - c.enemy.torsoBottomY, 6, 12),
         new THREE.MeshBasicMaterial({ color: 0xffa04a, wireframe: true, transparent: true, opacity: 0.4 })),
       gloveL: wire(c.enemy.gloveRadius, 0xffa04a), gloveR: wire(c.enemy.gloveRadius, 0xffa04a),
+      foreL: cap(c.enemy.forearmRadius, 0xffd479), foreR: cap(c.enemy.forearmRadius, 0xffd479),
+      upperL: cap(c.enemy.upperArmRadius, 0xffd479), upperR: cap(c.enemy.upperArmRadius, 0xffd479),
     };
     this.dbg.add(...Object.values(this.dbgPlayer), ...Object.values(this.dbgEnemy));
     this.dbg.visible = false;
@@ -216,13 +222,12 @@ export class Scene3D {
     const e = this.cfg.enemy;
     setV(this.enemyHead, enemy.head);
     this.enemyTorso.position.set(enemy.head.x, (e.torsoTopY + e.torsoBottomY) / 2 + (enemy.head.y - e.headY), enemy.head.z);
+    this.enemy.position.x = 0; // 位置は各パーツの絶対座標で置くので group は原点のまま
     for (const side of ["left", "right"]) {
       setV(this.enemyGloves[side].mesh, enemy.gloves[side]);
-      // 腕: 肩からグローブまでを 2 本の骨で繋ぐ（肘は見た目だけ。判定には使わない）
-      const a = this.cfg.enemy.arm;
-      const sign = side === "left" ? -1 : 1;
-      const shoulder = { x: enemy.head.x + sign * a.shoulderX, y: enemy.head.y + a.shoulderY, z: enemy.head.z + a.shoulderZ };
-      const elbow = solveArm(shoulder, enemy.gloves[side], { x: sign, y: -1, z: 0.2 }, a);
+      // 腕: combat.buildEnemyPose が IK で解いた肩・肘をそのまま置く（判定と同じ位置）
+      const shoulder = enemy.shoulders[side];
+      const elbow = enemy[side].elbow;
       const arm = this.enemyArms[side];
       setV(arm.shoulder, shoulder);
       setV(arm.elbow, elbow);
@@ -285,6 +290,12 @@ export class Scene3D {
       this.dbgEnemy.torso.position.copy(this.enemyTorso.position);
       setV(this.dbgEnemy.gloveL, enemy.gloves.left);
       setV(this.dbgEnemy.gloveR, enemy.gloves.right);
+      orientBone(this.dbgEnemy.foreL, enemy.left.elbow, enemy.left.wrist);
+      orientBone(this.dbgEnemy.foreR, enemy.right.elbow, enemy.right.wrist);
+      orientBone(this.dbgEnemy.upperL, enemy.shoulders.left, enemy.left.elbow);
+      orientBone(this.dbgEnemy.upperR, enemy.shoulders.right, enemy.right.elbow);
+      orientBone(this.dbgPlayer.upperL, pose.shoulders.left, pose.left.elbow);
+      orientBone(this.dbgPlayer.upperR, pose.shoulders.right, pose.right.elbow);
     }
 
     this._placeCamera(pose, enemy);
@@ -306,8 +317,13 @@ export class Scene3D {
       );
     } else {
       // 背後やや上。頭の動きにはゆるく追従（頭球が画面内で動く＝避けたのが見える）
-      this.camera.position.set(h.x * 0.45 + this.shake.x, h.y * 0.45 + v.third.up + this.shake.y, h.z + v.third.back);
-      this.camera.lookAt(h.x * 0.3, h.y * 0.3 - 0.02, h.z - v.third.lookAhead - this.cfg.enemyDist * 0.35);
+      this.camera.position.set(h.x + this.shake.x, h.y * 0.45 + v.third.up + this.shake.y, h.z + v.third.back);
+      // 敵の方を向く（敵が左右に回り込んでも画面内に残る）
+      this.camera.lookAt(
+        h.x + (enemy.head.x - h.x) * 0.5,
+        h.y * 0.3 - 0.02,
+        h.z + (enemy.head.z - h.z) * 0.5 - v.third.lookAhead * 0.4,
+      );
     }
   }
 

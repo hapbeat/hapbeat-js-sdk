@@ -175,8 +175,11 @@ export const TUNING = {
  * この値と combat.js を使うので、見えている位置と当たる位置は必ず一致する。
  */
 export const COMBAT = {
-  /** 敵の正面距離。プレイヤーの頭がほぼ原点。 */
-  enemyDist: 1.2,
+  /**
+   * 敵の初期の正面距離 [m]。骨長が固定になったので、拳が届く距離は腕の長さで決まる
+   * （＝間合いが意味を持つ）。開始時は少し遠めに立たせ、踏み込むか敵が詰めてくると当たる。
+   */
+  enemyDist: 0.85,
 
   /** 一人称／背後視点の体の組み立て（combat.buildPlayerPose）。 */
   rig: {
@@ -188,7 +191,7 @@ export const COMBAT = {
     shoulderBack: 0.06,
     lateralGain: 1.0,
     /** reach=1 でグローブが前へ進む距離。敵の頭（1.2m）に届く値にしておく。 */
-    forwardMeters: 1.15,
+    forwardMeters: 0.62,
     /**
      * 前後移動: distanceRatio 1.0 からのずれ 1 あたり何メートル動くか。
      * 既定では ratio 1.15（半歩踏み込んだくらい＝見かけが 15% 大きくなる）で約 +0.4m 前に出る。
@@ -210,6 +213,16 @@ export const COMBAT = {
     twistForwardGain: 1.6,
     twistHeadFollow: 0.33,
     /**
+     * 骨の長さ [m]（固定）。手首の目標がここを超えたら「届かない」でクランプされる
+     * （腕は伸びない）。間合いを意味あるものにするための土台。
+     */
+    bones: { upperArm: 0.32, foreArm: 0.30 },
+    /**
+     * 体そのものの左右移動: 肩中点のオフセット（肩幅比）1 あたり何メートル動くか。
+     * 頭のリーンは「体に対する頭の動き」として、この上に乗る 2 階層。
+     */
+    rootGain: 0.9,
+    /**
      * 伸ばしきった時にどれだけ狙点へ寄せるか（0=肩から真っ直ぐ / 1=完全に狙点へ）。
      * 肩は中心から 0.19m 横にあるので、0 だと正面の敵の頭を素通りして当たらない。
      */
@@ -219,13 +232,16 @@ export const COMBAT = {
     torsoLength: 0.46,
   },
 
-  player: { headRadius: 0.12, gloveRadius: 0.085, forearmRadius: 0.06, torsoRadius: 0.17 },
+  player: { headRadius: 0.12, gloveRadius: 0.085, forearmRadius: 0.06, upperArmRadius: 0.065, torsoRadius: 0.17 },
   enemy: {
     headRadius: 0.14, headY: 0.02,
     torsoRadius: 0.2, torsoTopY: -0.3, torsoBottomY: -0.78,
     gloveRadius: 0.1,
     /** 敵の肩の位置（頭からの相対）。ここから腕が生える。 */
-    arm: { shoulderX: 0.26, shoulderY: -0.2, shoulderZ: 0.02, elbowFrac: 0.45, bend: 0.22, straightAt: 0.95 },
+    arm: { shoulderX: 0.26, shoulderY: -0.2, shoulderZ: 0.02 },
+    /** 敵の骨の長さ [m]（固定）。攻撃が届く距離はこれで決まる → 届かなければ AI が踏み込む。 */
+    bones: { upperArm: 0.32, foreArm: 0.30 },
+    forearmRadius: 0.065, upperArmRadius: 0.07,
     /** ガード時のグローブ位置（頭の前に構える）。 */
     guard: { x: 0.15, y: -0.04, z: 0.2 },
     /** 攻撃中・硬直中に下がるガード位置（＝頭が狙える隙）。 */
@@ -245,6 +261,25 @@ export const COMBAT = {
      * back 0.3 + lookDown 0.15 で拳 (0.43,-0.68)＝画面下部に見え、敵の頭も (0,0.14) で中央付近に残る。
      */
     first: { back: 0.3, up: 0.02, lookDown: 0.15 },
+  },
+
+  /**
+   * 敵の足さばき。root（立ち位置）を目標へ速度制限つきで動かす。
+   * 当面は「間合いを保つ」だけ（詰めすぎたら下がる / 遠ければ寄る / ゆっくり左右に回る）。
+   */
+  footwork: {
+    /** 保ちたい間合い [m]（両者の root 間の距離）。 */
+    preferredDist: 0.68,
+    /** この幅に入っていれば前後には動かない [m]。 */
+    deadZone: 0.10,
+    /** 前後 / 左右の移動速度 [m/s]。 */
+    speed: 0.55, strafeSpeed: 0.35,
+    /** 左右に回る向きを変える間隔 [s]。 */
+    strafeSwitchSec: [2.5, 5.0],
+    /** 立ち位置の可動範囲 [m]（リングから出ないように）。 */
+    clampX: [-1.6, 1.6], clampZ: [-1.8, -0.45],
+    /** 攻撃を始める間合い: 腕が届く距離 × この係数以内なら打ってくる。 */
+    attackRangeFactor: 1.15,
   },
 
   attack: {
@@ -290,15 +325,17 @@ export const GAME = {
   idleGapMs: [1200, 600],
   rampSec: 45,
 
+  /**
+   * ダメージは左右対称（プレイヤー / 敵とも 頭 > 胴 > ガード）。
+   * 部位は当たり判定（頭球 / 胴カプセル / 腕カプセル）で決まる。
+   */
   damage: {
-    playerHit: 12,      // 頭に食らった
-    playerBody: 7,      // 胴に食らった
-    punchHead: 12,
-    punchTorso: 5,
-    punchBlocked: 1,
+    head: 12,      // 頭に入った
+    torso: 6,      // 胴に入った
+    blocked: 1,    // 腕・グローブで止められた
   },
 
-  score: { punchHead: 120, punchTorso: 40, punchBlocked: 5, block: 40, dodge: 60, comboBonus: 25 },
+  score: { head: 120, torso: 40, blocked: 5, block: 40, dodge: 60, comboBonus: 25 },
 
   hitstopMs: 80,
   koSlowMo: { durationMs: 1400, timeScale: 0.25 },

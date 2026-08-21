@@ -56,11 +56,14 @@ export const bezier2 = (p0, p1, p2, t) => lerpV(lerpV(p0, p1, t), lerpV(p1, p2, 
  */
 export function buildPlayerPose(frame, cfg) {
   const SW = cfg.shoulderWidthM;
+  // ルート（体そのものの位置）。前後は見かけサイズ比、左右は肩中点のオフセット由来。
+  // 頭のリーン / ダックは「体に対する頭の動き」として root の上に乗る 2 階層構造。
+  const rootX = (frame.root?.x ?? 0) * SW * (cfg.rootGain ?? 0);
   // 前後移動: 見かけサイズ比（1.0 = 構え位置 / >1 = 近づいた）を z のオフセットに変換する。
   // 体ごと敵の方（-Z）へ動くので、踏み込めば届き、下がれば届かない＝間合いが生まれる。
   const step = clamp((( frame.distanceRatio ?? 1) - 1) * cfg.stepMetersPerRatio,
     cfg.stepClamp[0], cfg.stepClamp[1]);
-  const head = v3(frame.head.x * SW * cfg.headGain, -frame.head.y * SW * cfg.headGain, -step);
+  const head = v3(rootX + frame.head.x * SW * cfg.headGain, -frame.head.y * SW * cfg.headGain, -step);
   // 体幹ヨー（+ = 右肩が前）。頭（＝一人称の視線）は一部だけ追従させる。
   const yaw = frame.yaw ?? 0;
   const twistGain = cfg.twistForwardGain ?? 1;
@@ -77,7 +80,7 @@ export function buildPlayerPose(frame, cfg) {
      */
     const halfX = sign * cfg.shoulderHalf;
     const shoulder = v3(
-      head.x * cfg.shoulderFollow + halfX * cosYaw,
+      rootX + (head.x - rootX) * cfg.shoulderFollow + halfX * cosYaw,
       head.y * cfg.shoulderFollow - cfg.shoulderDrop,
       cfg.shoulderBack - step - halfX * sinYaw * twistGain,
     );
@@ -102,15 +105,17 @@ export function buildPlayerPose(frame, cfg) {
     const elbowFwd = gf * 0.5 + reach * Math.max(0, cfg.forwardMeters - gf) * cfg.elbowFrac;
     // 構えでは拳を少し持ち上げる（顎の前）。伸ばすほど 0 に戻る。
     const lift = (cfg.guardHeight ?? 0) * (1 - reach);
-    const place = (off, fwd, convScale) => {
-      const k = conv * convScale;
-      return v3(
-        lerp(shoulder.x + off.x * SW * cfg.lateralGain, cfg.aim.x, k),
-        lerp(shoulder.y - off.y * SW * cfg.lateralGain + lift, cfg.aim.y, k),
-        shoulder.z - fwd,
-      );
-    };
-    out[side] = { elbow: place(arm.elbow, elbowFwd, 0.4), wrist: place(arm.wrist, wristFwd, 1), reach };
+    // 手首の「目標」。2D の見かけ位置 + reach 由来の奥行き（+ 狙点への寄せ）。
+    const aimX = cfg.aim.x + rootX;
+    const target = v3(
+      lerp(shoulder.x + arm.wrist.x * SW * cfg.lateralGain, aimX, conv),
+      lerp(shoulder.y - arm.wrist.y * SW * cfg.lateralGain + lift, cfg.aim.y, conv),
+      shoulder.z - wristFwd,
+    );
+    // 肘は「外・下」へ張り出す（実測の 2D 肘位置を向きのヒントに使う）
+    const hint = v3(sign * 1, -1 + arm.elbow.y * 0.5, 0.35);
+    const ik = solveIK(shoulder, target, cfg.bones.upperArm, cfg.bones.foreArm, hint);
+    out[side] = { elbow: ik.elbow, wrist: ik.wrist, reach, reached: ik.reached };
   }
   // 胴の当たり判定カプセル（上端＝肩の中点 / 下端＝そこから torsoLength 下）。
   // 敵が胴を狙ってくるので、腕で止めるか上体ごとどけるかの的になる。
@@ -124,26 +129,38 @@ export function buildPlayerPose(frame, cfg) {
 }
 
 /**
- * 肩とグローブ位置から肘を作る（敵の腕用）。
+ * 2 ボーン IK（肩 → 肘 → 手首）。**骨の長さは伸びない**。
  *
- * 敵の肩からプレイヤーの頭までは 1m 以上あり、人間の腕は届かない。ここは「グローブだけが
- * 飛んでくる」のを避けるための表現なので、骨の長さは固定せず**伸びる腕**として扱い、
- * 遠くへ伸びるほど真っ直ぐになるように曲げ量を落とす。
- * @param {{x,y,z}} shoulder @param {{x,y,z}} wrist
- * @param {{x,y,z}} bendHint 肘を寄せたい向き（外・下など）
+ * 目標が届かない場所にあれば、肩から目標方向へ (l1+l2) の位置でクランプする
+ * （腕が伸びるのではなく「届かない」が正しく表現される＝間合いが意味を持つ）。
+ * 肘は解析解で決め、bendHint 側（外・下など）へ張り出させる。
+ *
+ * @param {{x,y,z}} shoulder 肩
+ * @param {{x,y,z}} target   手首の目標位置
+ * @param {number} l1 上腕長 [m] @param {number} l2 前腕長 [m]
+ * @param {{x,y,z}} bendHint 肘を出したい向き
+ * @returns {{elbow:object, wrist:object, reached:boolean}} reached=false なら届いていない
  */
-export function solveArm(shoulder, wrist, bendHint, cfg) {
-  const dir = sub(wrist, shoulder);
-  const d = len(dir);
-  const mid = add(shoulder, scale(dir, cfg.elbowFrac));
-  if (d < 1e-4) return mid;
-  // bendHint から「腕の軸方向成分」を抜いて、軸に直交する向きだけ残す
-  const axis = scale(dir, 1 / d);
-  const proj = dot(bendHint, axis);
-  const perp = sub(bendHint, scale(axis, proj));
-  const pl = len(perp);
-  const amount = cfg.bend * Math.max(0, 1 - d / cfg.straightAt);
-  return pl < 1e-4 ? mid : add(mid, scale(perp, amount / pl));
+export function solveIK(shoulder, target, l1, l2, bendHint) {
+  const max = l1 + l2;
+  const to = sub(target, shoulder);
+  const dRaw = len(to);
+  const reached = dRaw <= max;
+  const dir = dRaw < 1e-6 ? v3(0, 0, -1) : scale(to, 1 / dRaw);
+  const d = clamp(dRaw, Math.abs(l1 - l2) + 1e-4, max);
+  const wrist = add(shoulder, scale(dir, d));
+  // 肘: 肩-手首の軸上 a の位置から、軸に直交する向きへ h だけ張り出す
+  const a = (l1 * l1 - l2 * l2 + d * d) / (2 * d);
+  const h = Math.sqrt(Math.max(l1 * l1 - a * a, 0));
+  const mid = add(shoulder, scale(dir, a));
+  const proj = dot(bendHint, dir);
+  let perp = sub(bendHint, scale(dir, proj));
+  let pl = len(perp);
+  if (pl < 1e-6) { // ヒントが軸と平行 → 適当な直交ベクトルを作る
+    perp = Math.abs(dir.y) < 0.9 ? v3(-dir.z, 0, dir.x) : v3(1, 0, 0);
+    pl = len(perp);
+  }
+  return { elbow: add(mid, scale(perp, h / pl)), wrist, reached };
 }
 
 /**
@@ -180,36 +197,66 @@ export function enemyGlovePos(from, aim, s, { kind, side }, cfg) {
 }
 
 /**
- * 敵グローブ 1 個に対するプレイヤー側の判定。
- * 腕（グローブ球 + 前腕カプセル）が先に触れれば **ガード**、頭 / 胴に触れれば **被弾**。
- * ガードはジェスチャー判定ではなく、この位置関係だけで決まる。
- * @returns {"block"|"head"|"torso"|null}
+ * 敵の体を組む。プレイヤーと**同じ構造**（頭球・胴カプセル・腕カプセル・グローブ球）にして、
+ * 当たり判定も同じ関数で扱えるようにする。
+ * @param {{x:number,z:number}} root 敵の立ち位置（足元の水平位置）
+ * @param {{left:{x,y,z}, right:{x,y,z}}} gloveTargets グローブの目標位置（ワールド）
  */
-export function resolveEnemyGlove(glove, gloveR, pose, cfg) {
+export function buildEnemyPose(root, gloveTargets, cfg) {
+  const e = cfg.enemy;
+  const head = v3(root.x, e.headY, root.z);
+  const pose = {
+    head,
+    torsoTop: v3(root.x, e.torsoTopY, root.z),
+    torsoBottom: v3(root.x, e.torsoBottomY, root.z),
+    shoulders: {},
+  };
+  for (const [side, sign] of [["left", -1], ["right", 1]]) {
+    const shoulder = v3(head.x + sign * e.arm.shoulderX, head.y + e.arm.shoulderY, head.z + e.arm.shoulderZ);
+    pose.shoulders[side] = shoulder;
+    // 肘は外・下へ。骨長は固定なので、遠い目標には「届かない」（腕は伸びない）。
+    const ik = solveIK(shoulder, gloveTargets[side], e.bones.upperArm, e.bones.foreArm, v3(sign, -1, 0.2));
+    pose[side] = { elbow: ik.elbow, wrist: ik.wrist, reached: ik.reached };
+  }
+  return pose;
+}
+
+/**
+ * 拳 1 個 対 相手の体、の当たり判定。**プレイヤー / 敵で同じ関数**を使う（左右対称）。
+ * 腕（グローブ球 + 前腕 / 上腕カプセル）が先に触れれば "guard"、次に頭、最後に胴。
+ * ガードは姿勢フラグではなく**位置関係だけ**で決まる（腕を下ろせば頭が空く）。
+ * @param {{x,y,z}} glove @param {number} gloveR
+ * @param {object} pose buildPlayerPose / buildEnemyPose の出力
+ * @param {{headRadius,torsoRadius,gloveRadius,forearmRadius,upperArmRadius}} body
+ * @returns {"guard"|"head"|"torso"|null}
+ */
+export function resolveHit(glove, gloveR, pose, body) {
   for (const side of ["left", "right"]) {
     const arm = pose[side];
     if (!arm) continue;
-    if (sphereHitsSphere(glove, gloveR, arm.wrist, cfg.player.gloveRadius)) return "block";
-    if (sphereHitsCapsule(glove, gloveR, arm.elbow, arm.wrist, cfg.player.forearmRadius)) return "block";
+    if (sphereHitsSphere(glove, gloveR, arm.wrist, body.gloveRadius)) return "guard";
+    if (sphereHitsCapsule(glove, gloveR, arm.elbow, arm.wrist, body.forearmRadius)) return "guard";
+    const shoulder = pose.shoulders?.[side];
+    if (shoulder && sphereHitsCapsule(glove, gloveR, shoulder, arm.elbow, body.upperArmRadius ?? body.forearmRadius)) return "guard";
   }
-  if (sphereHitsSphere(glove, gloveR, pose.head, cfg.player.headRadius)) return "head";
-  if (pose.torsoTop && sphereHitsCapsule(glove, gloveR, pose.torsoTop, pose.torsoBottom, cfg.player.torsoRadius)) return "torso";
+  if (sphereHitsSphere(glove, gloveR, pose.head, body.headRadius)) return "head";
+  if (pose.torsoTop && sphereHitsCapsule(glove, gloveR, pose.torsoTop, pose.torsoBottom, body.torsoRadius)) return "torso";
   return null;
 }
 
 /**
- * プレイヤーのグローブ 1 個に対する敵側の判定。
- * ガードが上がっていればまずグローブに当たる（＝ほとんど効かない）。
- * @param {{head:object, torsoTop:object, torsoBottom:object, gloves:object, guardUp:boolean}} enemy
- * @returns {"head"|"torso"|"guard"|null}
+ * 敵グローブ → プレイヤー。resolveHit の別名（"guard" を "block" と呼ぶだけ）。
+ * @returns {"block"|"head"|"torso"|null}
+ */
+export function resolveEnemyGlove(glove, gloveR, pose, cfg) {
+  const what = resolveHit(glove, gloveR, pose, cfg.player);
+  return what === "guard" ? "block" : what;
+}
+
+/**
+ * プレイヤーの拳 → 敵。
+ * @returns {"guard"|"head"|"torso"|null}
  */
 export function resolvePlayerGlove(glove, gloveR, enemy, cfg) {
-  if (enemy.guardUp) {
-    for (const side of ["left", "right"]) {
-      if (enemy.gloves[side] && sphereHitsSphere(glove, gloveR, enemy.gloves[side], cfg.enemy.gloveRadius)) return "guard";
-    }
-  }
-  if (sphereHitsSphere(glove, gloveR, enemy.head, cfg.enemy.headRadius)) return "head";
-  if (sphereHitsCapsule(glove, gloveR, enemy.torsoTop, enemy.torsoBottom, cfg.enemy.torsoRadius)) return "torso";
-  return null;
+  return resolveHit(glove, gloveR, enemy, cfg.enemy);
 }
