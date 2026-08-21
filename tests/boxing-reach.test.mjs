@@ -286,3 +286,52 @@ test("キャリブは必ず COUNTDOWN 経由: CALIB へ直接入る経路が無�
   assert.match(handler[0], /setState\("COUNTDOWN"\)/, "取り直しがカウントダウンを通らない");
   assert.doesNotMatch(handler[0], /recalibrate\(\)/, "recalibrate が二重に呼ばれている（CALIB 遷移側で呼ばれる）");
 });
+
+// ── 体幹ヨー（ひねり） ────────────────────────────────────────────────────────
+// 符号の規約: + = 右肩がカメラ側（＝敵の方）へ出た「右ひねり」。
+// gestures.js に渡る空間はミラー済み（z は符号反転済みで **大きいほど手前**）。
+test("ヨー推定の符号: 右肩が手前なら +（右ひねり）、左肩が手前なら −", async () => {
+  const { estimateYaw } = await import("../examples/games/boxing/reach.js");
+  const MAX = (55 * Math.PI) / 180;
+  const shoulders = (zL, zR) => ({ xL: 0.40, xR: 0.60, zL, zR });
+  assert.ok(estimateYaw(shoulders(0, 0.08), 1, 1, MAX) > 0, "右肩が手前なのに + にならない");
+  assert.ok(estimateYaw(shoulders(0.08, 0), 1, 1, MAX) < 0, "左肩が手前なのに − にならない");
+  assert.ok(Math.abs(estimateYaw(shoulders(0, 0), 1, 1, MAX)) < 1e-9, "正対で 0 にならない");
+  // 実写真（MediaPipe 公式 pose.jpg, 生 z: 左肩 -0.091 / 右肩 +0.051 = 左肩が手前）→ 負
+  const mirroredL = 0.091, mirroredR = -0.051; // ミラー空間は符号反転
+  assert.ok(estimateYaw({ xL: 0.4, xR: 0.6, zL: mirroredL, zR: mirroredR }, 1, 1, MAX) < 0,
+    "実写真の姿勢（左肩が手前）が左ひねりにならない");
+  // 矛盾する入力（z 差は大きいのに肩幅が縮んでいない）は、肩幅側の推定に引かれて弱まる
+  const contradictory = estimateYaw(shoulders(0, 5), 1, 1, MAX);
+  assert.ok(contradictory > 0 && contradictory < (60 * Math.PI) / 180,
+    `矛盾入力が素通しされている (${((contradictory * 180) / Math.PI).toFixed(1)}°)`);
+  // 両方が大きなひねりで一致していれば上限でクランプされる
+  const agreeing = estimateYaw(shoulders(0, 5), Math.cos((80 * Math.PI) / 180), 1, MAX);
+  assert.ok(Math.abs(agreeing - MAX) < 1e-9, `上限でクランプされない (${((agreeing * 180) / Math.PI).toFixed(1)}°)`);
+});
+
+test("ヨー推定は肩幅の短縮とも整合する（cos θ ≒ w/w0 を併用）", async () => {
+  const { estimateYaw } = await import("../examples/games/boxing/reach.js");
+  const MAX = (80 * Math.PI) / 180;
+  // 30° ひねり: 肩幅は cos30=0.866 に縮み、z 差は sin30×肩幅ぶん出る
+  const w0 = 0.2, yawTrue = Math.PI / 6;
+  const dz = Math.sin(yawTrue) * w0;
+  const est = estimateYaw({ xL: 0, xR: w0 * Math.cos(yawTrue), zL: 0, zR: dz }, Math.cos(yawTrue), 1, MAX);
+  assert.ok(Math.abs(est - yawTrue) < 0.12, `30° の推定がずれすぎ (${((est * 180) / Math.PI).toFixed(1)}°)`);
+});
+
+test("リグへの反映: 右ひねりで右肩が前へ、左肩が後ろへ動く", () => {
+  const withYaw = (yaw) => buildPlayerPose({ ...frameAt(1.0, 0), yaw }, COMBAT.rig);
+  const straight = withYaw(0);
+  const twisted = withYaw(Math.PI / 6); // +30° = 右ひねり
+  assert.ok(twisted.shoulders.right.z < straight.shoulders.right.z - 0.1,
+    `右肩が前へ出ない (${straight.shoulders.right.z.toFixed(3)} → ${twisted.shoulders.right.z.toFixed(3)})`);
+  assert.ok(twisted.shoulders.left.z > straight.shoulders.left.z + 0.1, "左肩が後ろへ引けない");
+  // 30° で約 0.15m（実寸 sin30×0.19=0.095 を forwardGain 1.6 倍）
+  const forward = straight.shoulders.right.z - twisted.shoulders.right.z;
+  assert.ok(Math.abs(forward - 0.152) < 0.02, `前へ出る量が想定外 (${forward.toFixed(3)}m)`);
+  // 拳もその肩から生えるので一緒に前へ出る（ひねりを伴うストレートが自然に伸びる）
+  assert.ok(twisted.right.wrist.z < straight.right.wrist.z - 0.1, "拳が肩に追随していない");
+  // 頭は一部だけ追従（一人称の視線が振れすぎないように）
+  assert.ok(Math.abs(twisted.headYaw) < Math.abs(twisted.yaw), "頭がヨーに 100% 追従している");
+});

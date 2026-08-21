@@ -173,7 +173,8 @@ function recordFrame(nowMs, g) {
   if (!recorder.active) return;
   if (nowMs > recorder.untilMs) { recorder.active = false; downloadCsv(); return; }
   const d = g.debug ?? {};
-  const row = { t: Math.round(nowMs), dist: (d.distanceRatio ?? 1).toFixed(3), step: (playerPose?.step ?? 0).toFixed(3) };
+  const row = { t: Math.round(nowMs), dist: (d.distanceRatio ?? 1).toFixed(3),
+    step: (playerPose?.step ?? 0).toFixed(3), yawDeg: (d.yawDeg ?? 0).toFixed(1) };
   for (const side of ["left", "right"]) {
     const a = d[side] ?? {};
     const f = g.frame?.arms?.[side];
@@ -570,6 +571,7 @@ function drawSignalBars() {
   const res = pose.resolution;
   ctx.fillText(`dist ${(lastDebug.distanceRatio ?? 1).toFixed(2)}  step ${(playerPose?.step ?? 0).toFixed(2)}m`
     + `  cam ${res ? `${res.width}x${res.height} (${(res.width / res.height).toFixed(2)})` : "?"}`
+    + `  yaw ${(lastDebug.yawDeg ?? 0).toFixed(0)}°`
     + `${lastDebug.hands ? "  hand21 OK" : "  hand21 なし"}`, 14 * s, y);
   y += rowH;
   // 距離比の内訳（肩幅 / 体幹 / 顔 / 骨格 bbox）。どれかが崩れていないか見るため。

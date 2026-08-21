@@ -147,3 +147,35 @@ export function isGuardLocked(s, cfg) {
   if (!near(s.wrists.left) || !near(s.wrists.right)) return false;
   return s.speeds.left < cfg.maxSpeed && s.speeds.right < cfg.maxSpeed;
 }
+
+/**
+ * 体幹ヨー（ひねり）の推定 [rad]。
+ *
+ * **符号の決め方（実データで確認した規約）**
+ * MediaPipe の正規化ランドマークは「z が小さいほどカメラに近い」。ここに渡すのは
+ * gestures.js のミラー等方空間（x は 1-x して aspect 倍、z は符号反転済み ＝ **大きいほど手前**）。
+ * 右肩が手前に出た状態（＝敵の方へ右肩を入れた「右ひねり」）では zR > zL になるので、
+ *     yaw = atan2(zR - zL, (xR - xL)/aspect)   → 正
+ * となる。つまり **+ = 右ひねり（右肩が前）**。実写真（MediaPipe 公式 pose.jpg）では
+ * 左肩 z_raw=-0.091 / 右肩 z_raw=+0.051、すなわち左肩が手前なので負（左ひねり）と出る。
+ *
+ * 肩幅の短縮（cos θ ≒ w/w0）からも角度が出るので、両者のメディアンを取って外れ値を弾く。
+ * @param {{xL:number,xR:number,zL:number,zR:number}} p ミラー等方空間の肩 2 点
+ * @param {number} widthRatio 現在の肩幅 / 構え時の肩幅
+ * @param {number} aspect x だけ aspect 倍されているので戻すのに使う
+ * @returns {number|null} rad（推定できなければ null）
+ */
+export function estimateYaw(p, widthRatio, aspect, maxRad) {
+  const dx = (p.xR - p.xL) / (aspect || 1);
+  const dz = p.zR - p.zL;
+  if (!Number.isFinite(dx) || Math.abs(dx) < 1e-6) return null;
+  const fromZ = Math.atan2(dz, Math.abs(dx));
+  const cands = [[fromZ, 1]];
+  // 肩幅の短縮からも角度が出る（cos θ = w/w0）。向きは z 差から借りる。
+  if (Number.isFinite(widthRatio) && widthRatio > 0.2 && widthRatio <= 1.05) {
+    const mag = Math.acos(clamp(widthRatio, 0, 1));
+    cands.push([Math.sign(fromZ || 1) * mag, 1]);
+  }
+  const yaw = cands.length > 1 ? (cands[0][0] + cands[1][0]) / 2 : fromZ;
+  return clamp(yaw, -maxRad, maxRad);
+}

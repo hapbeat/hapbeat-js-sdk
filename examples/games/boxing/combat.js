@@ -61,12 +61,26 @@ export function buildPlayerPose(frame, cfg) {
   const step = clamp((( frame.distanceRatio ?? 1) - 1) * cfg.stepMetersPerRatio,
     cfg.stepClamp[0], cfg.stepClamp[1]);
   const head = v3(frame.head.x * SW * cfg.headGain, -frame.head.y * SW * cfg.headGain, -step);
-  const out = { head, shoulders: {} };
+  // 体幹ヨー（+ = 右肩が前）。頭（＝一人称の視線）は一部だけ追従させる。
+  const yaw = frame.yaw ?? 0;
+  const twistGain = cfg.twistForwardGain ?? 1;
+  const cosYaw = Math.cos(yaw);
+  const sinYaw = Math.sin(yaw);
+  const out = { head, shoulders: {}, yaw, headYaw: yaw * (cfg.twistHeadFollow ?? 0) };
   for (const [side, sign] of [["left", -1], ["right", 1]]) {
     const arm = frame.arms?.[side];
-    // 肩は頭に部分的に追従（体ごと傾く）。左右位置は肩幅の半分で固定。
-    const shoulder = v3(head.x * cfg.shoulderFollow + sign * cfg.shoulderHalf,
-      head.y * cfg.shoulderFollow - cfg.shoulderDrop, cfg.shoulderBack - step);
+    /**
+     * 肩は頭に部分的に追従（体ごと傾く）。左右位置は肩幅の半分。
+     * さらに体幹ヨー（ひねり）で背骨まわりに回す: ひねった側の肩が前（-Z）へ出る。
+     * これで「右ひねりを伴う右ストレート」が、腕を伸ばす前から肩ごと前に出る。
+     * 前後成分だけ forwardGain 倍して誇張している（実寸だと 30° で 0.1m 弱にしかならず見えない）。
+     */
+    const halfX = sign * cfg.shoulderHalf;
+    const shoulder = v3(
+      head.x * cfg.shoulderFollow + halfX * cosYaw,
+      head.y * cfg.shoulderFollow - cfg.shoulderDrop,
+      cfg.shoulderBack - step - halfX * sinYaw * twistGain,
+    );
     out.shoulders[side] = shoulder;
     if (!arm) { out[side] = { elbow: shoulder, wrist: shoulder, reach: 0 }; continue; }
     const reach = clamp(arm.reach ?? 0, 0, 1);

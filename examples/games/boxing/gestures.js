@@ -24,7 +24,7 @@
 import { LM, HL, HAND_POINTS } from "./pose.js";
 import { TUNING } from "./tuning.js";
 import { OneEuroVec3, OneEuro, deadband } from "./filters.js";
-import { combineSignals, ReachFilter, SwingDetector, isGuardLocked, isHome, mapRange } from "./reach.js";
+import { combineSignals, ReachFilter, SwingDetector, isGuardLocked, isHome, mapRange, estimateYaw } from "./reach.js";
 import { weightedMedian, convexHullArea } from "./filters.js";
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
@@ -89,6 +89,8 @@ export class GestureTracker {
     this.lmFilters = new Map(TRACKED.map((i) => [i, new OneEuroVec3(tuning.filter.landmark)]));
     this.distFilter = new OneEuro(tuning.distance.oneEuro);
     this.distanceRatio = 1;
+    this.yawFilter = new OneEuro(tuning.twist.oneEuro);
+    this.yaw = 0;             // 体幹ヨー [rad]（+ = 右肩が前＝右ひねり）
     this.visible = new Map(TRACKED.map((i) => [i, false]));
     this.reset();
   }
@@ -103,6 +105,8 @@ export class GestureTracker {
     this.guardLocked = false;
     this.distanceRatio = 1;
     this.distFilter.reset();
+    this.yaw = 0;
+    this.yawFilter.reset();
     for (const f of this.lmFilters.values()) f.reset();
     for (const a of Object.values(this.arms)) {
       a.reachFilter.reset(); a.swing.reset(); a.worldWrist.reset();
@@ -182,6 +186,7 @@ export class GestureTracker {
     if (calibrating || !this.base) this._calibrate(shoulderWidth, midX, nose.y, seg, body, nowMs);
     else this._follow(shoulderWidth, midX, nose.y, seg, dt);
     if (this.base) this._updateDistance(body, dt);
+    if (this.base) this._updateYaw(p, shoulderWidth, dt);
     out.calibrated = !!this.base && this.calibProgress >= 1;
     if (!this.base) return out;
     const w = this.base.shoulderWidth;
@@ -229,6 +234,7 @@ export class GestureTracker {
     const frame = {
       head: { x: (nose.x - this.base.midX) / w, y: (nose.y - this.base.noseY) / w },
       distanceRatio: this.distanceRatio,   // 1.0 = 構え位置 / >1 = 近づいた
+      yaw: this.yaw,                        // 体幹ひねり [rad]（+ = 右肩が前）
       arms: {},
     };
     const homeCfg = this.t.reach.home;
@@ -274,6 +280,7 @@ export class GestureTracker {
       guardLocked: this.guardLocked,
       distanceRatio: this.distanceRatio,
       distParts: this.distParts ?? null,
+      yawDeg: (this.yaw * 180) / Math.PI,
       hands: !!hands?.length,
       angleSource: this.arms.right.angleSource,
       left: this._armDebug("left"), right: this._armDebug("right"),
@@ -321,6 +328,35 @@ export class GestureTracker {
       }
     }
     return out;
+  }
+
+  /**
+   * 体幹ヨー（ひねり）の更新。肩のヨーから腰のヨーを引いた「ひねり」を使い、
+   * 腰が見えなければ肩のヨーをそのまま使う。構え時の値を 0 基準にする。
+   */
+  _updateYaw(p, shoulderWidth, dt) {
+    const cfg = this.t.twist;
+    const maxRad = (cfg.maxDeg * Math.PI) / 180;
+    const sh = estimateYaw(
+      { xL: p[LM.shoulderL].x, xR: p[LM.shoulderR].x, zL: p[LM.shoulderL].z, zR: p[LM.shoulderR].z },
+      shoulderWidth / (this.base.shoulderWidth || shoulderWidth), this._aspect, maxRad,
+    );
+    if (sh == null) return;
+    let yaw = sh;
+    if (this.visible.get(LM.hipL) && this.visible.get(LM.hipR)) {
+      const hip = estimateYaw(
+        { xL: p[LM.hipL].x, xR: p[LM.hipR].x, zL: p[LM.hipL].z, zR: p[LM.hipR].z },
+        1, this._aspect, maxRad,
+      );
+      // 体ごと向きを変えた分（腰のヨー）は差し引き、上体の「ひねり」だけを残す
+      if (hip != null) yaw = sh - hip;
+    }
+    this.rawYaw = yaw;
+    if (this.base.yaw == null) this.base.yaw = yaw;   // 構え時を 0 基準に
+    const rel = yaw - this.base.yaw;
+    const dead = (cfg.deadbandDeg * Math.PI) / 180;
+    const target = Math.abs(rel) < dead ? 0 : rel;
+    this.yaw = clamp(this.yawFilter.filter(target, dt), -maxRad, maxRad);
   }
 
   /** 前後距離の推定に使う「見かけの体格」。取れないものは null。 */
@@ -452,6 +488,7 @@ export class GestureTracker {
         ha: { left: 0, right: 0 }, han: { left: 0, right: 0 },
         frame: 0, frameN: 0,
         dz: { left: 0, right: 0 }, dzn: { left: 0, right: 0 },
+        yaw: 0, yawN: 0,
         torso: 0, torsoN: 0, face: 0, faceN: 0 };
     }
     this._acc.sw += shoulderWidth; this._acc.mx += midX; this._acc.ny += noseY; this._acc.n++;
@@ -473,6 +510,7 @@ export class GestureTracker {
     if (body?.torso != null) { this._acc.torso += body.torso; this._acc.torsoN++; }
     if (body?.face != null) { this._acc.face += body.face; this._acc.faceN++; }
     if (body?.frame != null) { this._acc.frame += body.frame; this._acc.frameN++; }
+    if (this.rawYaw != null) { this._acc.yaw += this.rawYaw; this._acc.yawN++; }
     this.calibProgress = clamp((nowMs - this._calibStartMs) / this.t.calibrationMs, 0, 1);
     const n = this._acc.n;
     const avg = (m, c, side) => (c[side] ? m[side] / c[side] : 0);
@@ -489,6 +527,8 @@ export class GestureTracker {
       torsoLen: this._acc.torsoN ? this._acc.torso / this._acc.torsoN : 0,
       faceWidth: this._acc.faceN ? this._acc.face / this._acc.faceN : 0,
       frameDiag: this._acc.frameN ? this._acc.frame / this._acc.frameN : 0,
+      // 構え時のヨー（この値を 0 とみなす）。計測できていなければ最初のフレームで入る。
+      yaw: this._acc.yawN ? this._acc.yaw / this._acc.yawN : null,
     };
   }
 

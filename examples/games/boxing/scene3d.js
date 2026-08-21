@@ -270,6 +270,8 @@ export class Scene3D {
     orientBone(this.pBones.spine, shoulderMid, hip);
     orientBone(this.pBones.neck, shoulderMid, pose.head);
     if (pose.torsoTop) placeCapsule(this.pTorsoHit, pose.torsoTop, pose.torsoBottom);
+    // 胴の見た目だけヨーで回す（カプセルは Y 軸対称なので当たり判定は変わらない）
+    this.pTorsoHit.rotateY(pose.yaw ?? 0);
 
     // ── デバッグ判定表示 ──
     if (this.dbg.visible) {
@@ -293,8 +295,15 @@ export class Scene3D {
     const h = pose.head;
     if (this.mode === "first") {
       this.camera.position.set(h.x + this.shake.x, h.y + v.first.up + this.shake.y, h.z + v.first.back);
-      // わずかに下を向く（構えた自分の拳が画面下部に入るように）
-      this.camera.lookAt(enemy.head.x, enemy.head.y - (v.first.lookDown ?? 0), enemy.head.z);
+      // わずかに下を向く（構えた自分の拳が画面下部に入るように）。
+      // 体幹ひねりの一部だけ視線も振る（酔い対策で pose.headYaw に減衰済み）。
+      const hy = pose.headYaw ?? 0;
+      const dz = enemy.head.z - h.z, dx = enemy.head.x - h.x;
+      this.camera.lookAt(
+        h.x + dx * Math.cos(hy) + dz * Math.sin(hy),
+        enemy.head.y - (v.first.lookDown ?? 0),
+        h.z - dx * Math.sin(hy) + dz * Math.cos(hy),
+      );
     } else {
       // 背後やや上。頭の動きにはゆるく追従（頭球が画面内で動く＝避けたのが見える）
       this.camera.position.set(h.x * 0.45 + this.shake.x, h.y * 0.45 + v.third.up + this.shake.y, h.z + v.third.back);
