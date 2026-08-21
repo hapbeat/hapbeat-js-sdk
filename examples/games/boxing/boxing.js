@@ -161,9 +161,16 @@ function setStatus(text, kind = "") {
   statusEl.className = "statusline " + kind;
   statusEl.textContent = text;
 }
+/** 検証用: URL に ?mute=1 で音を完全に止める（触覚と映像だけで通し確認する時に使う）。 */
+const MUTED = new URLSearchParams(location.search).get("mute") === "1";
 function unlockAudio() {
+  if (MUTED) return;
   bridge.unlockAudio();
   if (actx.state === "suspended") actx.resume();
+}
+if (MUTED) {
+  bridge.setMaster("audio", false);
+  root.querySelector("#m_audio").checked = false;
 }
 
 // ── pose / gesture / 3D ──────────────────────────────────────────────────────
@@ -177,7 +184,10 @@ let state = "LOADING"; // LOADING | TITLE | CALIB | FIGHT | RESULT
 let playerHp = GAME.playerHp, enemyHp = GAME.enemyHp;
 let timeLeft = GAME.roundSec, score = 0, combo = 0, bestCombo = 0;
 let elapsed = 0, hitstopUntil = 0, slowMoUntil = 0, flash = 0, enemyHurt = 0;
-let playerPose = null;
+let playerPose = null;      // combat.buildPlayerPose の結果（判定・描画で共用）
+let gestureArms = null;     // gestures の arms（スイング中かの参照用）
+let resetAtMs = 0;          // テストモードの自動回復時刻
+let lastDebug = null;       // 判定デバッグのプロット用
 
 /** 敵。idle → attack（接近→打撃→戻り）。攻撃中はガードが開く＝頭を狙える。 */
 const enemy = {
@@ -207,23 +217,39 @@ function enemyGuardPos(side, open) {
   return v3(h.x + sign * g.x, h.y + g.y, h.z + g.z);
 }
 
+/** 経路（フック/ストレート）・使う腕・狙う場所（頭/胴）をそれぞれランダムに決める。 */
 function pickAttack() {
   const w = GAME.attackWeights;
   let r = Math.random() * (w.hookLeft + w.hookRight + w.straight);
-  if ((r -= w.hookLeft) < 0) return { kind: "hook", side: -1, hand: "left" };
-  if ((r -= w.hookRight) < 0) return { kind: "hook", side: 1, hand: "right" };
-  return { kind: "straight", side: 0, hand: Math.random() < 0.5 ? "left" : "right" };
+  let path;
+  if ((r -= w.hookLeft) < 0) path = { kind: "hook", side: -1, hand: "left" };
+  else if ((r -= w.hookRight) < 0) path = { kind: "hook", side: 1, hand: "right" };
+  else path = { kind: "straight", side: 0, hand: Math.random() < 0.5 ? "left" : "right" };
+  const t = COMBAT.attack.aimTarget;
+  path.target = Math.random() * (t.head + t.torso) < t.head ? "head" : "torso";
+  return path;
+}
+
+/** 狙点（攻撃開始時に固定する）。胴狙いは胸〜腹あたり。 */
+function aimPoint(atk) {
+  const pose = playerPose;
+  if (!pose) return v3();
+  if (atk.target === "torso" && pose.torsoTop) {
+    const f = COMBAT.attack.torsoAimFrac;
+    return v3(pose.torsoTop.x, pose.torsoTop.y + (pose.torsoBottom.y - pose.torsoTop.y) * f, pose.torsoTop.z);
+  }
+  return pose.head;
 }
 
 function startAttack(nowMs) {
   const atk = pickAttack();
   const j = COMBAT.attack.aimJitter;
-  const head = playerPose?.head ?? v3();
   enemy.attack = atk;
   enemy.startedMs = nowMs;
   enemy.from = enemyGuardPos(atk.hand, false);
-  // 狙点は「攻撃を始めた瞬間の頭の位置」に固定する＝あとから上体を振れば避けられる
-  enemy.aim = v3(head.x + (Math.random() * 2 - 1) * j, head.y + (Math.random() * 2 - 1) * j, head.z);
+  // 狙点は「攻撃を始めた瞬間」の頭 / 胴の位置に固定する＝あとから体を振れば避けられる
+  const t = aimPoint(atk);
+  enemy.aim = v3(t.x + (Math.random() * 2 - 1) * j, t.y + (Math.random() * 2 - 1) * j, t.z);
   enemy.resolved = false;
   enemy.minHeadDist = Infinity;
   enemy.phase = "approach";
@@ -255,7 +281,7 @@ function updateEnemy(nowMs) {
   enemy.minHeadDist = Math.min(enemy.minHeadDist, dist(enemy.glove[hand], playerPose.head));
   const hit = resolveEnemyGlove(enemy.glove[hand], COMBAT.enemy.gloveRadius, playerPose, COMBAT);
   if (hit === "block") { enemy.resolved = true; onBlock(); retractNow(nowMs, cfg); }
-  else if (hit === "hit") { enemy.resolved = true; onPlayerHit(); retractNow(nowMs, cfg); }
+  else if (hit) { enemy.resolved = true; onPlayerHit(hit); retractNow(nowMs, cfg); }
 }
 
 /** 判定が付いたら残りの接近をやめて戻りに入る（当たった後も突き進むと不自然）。 */
@@ -273,14 +299,15 @@ function onDodge() {
   bridge.fire("boxing_dodge", { pan: clamp(enemy.attack ? enemy.attack.side * 0.7 : 0, -1, 1) });
   score += GAME.score.dodge;
 }
-function onPlayerHit() {
-  playerHp = Math.max(0, playerHp - GAME.damage.playerHit);
+function onPlayerHit(where = "head") {
+  const head = where === "head";
+  playerHp = Math.max(0, playerHp - (head ? GAME.damage.playerHit : GAME.damage.playerBody));
   combo = 0;
-  flash = 1;
-  fx.shake(18);
-  fx.burst(hudCanvas.width / 2, hudCanvas.height * 0.45, "#ff5f6d", 26);
-  bridge.fire("boxing_player_hit", { pan: clamp(enemy.attack ? enemy.attack.side * 0.7 : 0, -1, 1) });
-  if (playerHp <= 0) endRound("lose");
+  flash = head ? 1 : 0.7;
+  fx.shake(head ? 18 : 12);
+  fx.burst(hudCanvas.width / 2, hudCanvas.height * (head ? 0.45 : 0.55), "#ff5f6d", head ? 26 : 16);
+  bridge.fire("boxing_player_hit", { pan: clamp(enemy.attack ? enemy.attack.side * 0.7 : 0, -1, 1), gain: head ? 1 : 0.7 });
+  if (playerHp <= 0) onDepleted("player");
 }
 
 /**
@@ -296,7 +323,9 @@ function updatePlayerPunches(nowMs) {
   for (const side of ["left", "right"]) {
     const arm = playerPose[side];
     const c = punchContact[side];
-    const eligible = arm.reach >= COMBAT.punchHit.minReach;
+    // 当たり判定は「スイング中」だけ有効。ガード中に静止して腕が伸びていても当たらない。
+    const swinging = !COMBAT.punchHit.requireSwing || !!gestureArms?.[side]?.swingActive;
+    const eligible = swinging && arm.reach >= COMBAT.punchHit.minReach;
     const what = eligible ? resolvePlayerGlove(arm.wrist, COMBAT.player.gloveRadius, target, COMBAT) : null;
     if (what && !c.on && nowMs - c.lastMs > COMBAT.punchHit.cooldownMs) {
       c.lastMs = nowMs;
@@ -326,7 +355,22 @@ function onPlayerPunchLanded(side, what) {
   fx.shake(head ? 12 : 7);
   fx.burst(x, hudCanvas.height * 0.4, head ? "#ffd479" : "#c9d4e2", head ? 24 : 12);
   bridge.fire("boxing_punch_hit", { pan, gain: head ? 1 : 0.6 });
-  if (enemyHp <= 0) endRound("ko");
+  if (enemyHp <= 0) onDepleted("enemy");
+}
+
+/**
+ * HP が尽きた時。テストモードでは勝敗を出さず、短い演出のあと自動で全回復して続行する
+ * （体力管理より当たり方の調整を回したいので、止まらないほうが都合がよい）。
+ */
+function onDepleted(who) {
+  if (!GAME.testMode) { endRound(who === "enemy" ? "ko" : "lose"); return; }
+  if (resetAtMs) return;
+  bridge.fire(who === "enemy" ? "boxing_ko" : "boxing_player_hit", { gain: 1 });
+  flash = 1;
+  fx.shake(20);
+  fx.burst(hudCanvas.width / 2, hudCanvas.height * 0.4, who === "enemy" ? "#7c5cff" : "#ff5f6d", 36, 300);
+  if (who === "enemy") enemyHurt = 1;
+  resetAtMs = performance.now() + GAME.testResetDelayMs;
 }
 
 // ── ラウンド進行 ─────────────────────────────────────────────────────────────
@@ -337,9 +381,9 @@ function setState(next) {
       <h1>🥊 触覚ボクシング</h1>
       <p>カメラの前に立って、体で戦う。<br>
       <b>殴る</b>＝拳をカメラへ突き出す　<b>守る</b>＝腕を頭の前に上げる　<b>避ける</b>＝上体を振る／しゃがむ</p>
-      <p style="color:#8b97a6">画面は自分の背後から。青く光る球が自分の頭の当たり判定。<br>
-      そこへ敵のグローブが迫るので、腕で止めるか、頭ごと動かして外す。<br>
-      全身が映るように 1.5〜2m 離れて立ってください。</p>
+      <p style="color:#8b97a6">画面は自分の背後から。青く光る球とカプセルが自分の頭と胴の当たり判定。<br>
+      敵は頭か胴を狙って腕を伸ばしてくるので、腕で止めるか、体ごと動かして外す。<br>
+      全身が映るように 1.5〜2m 離れて立ってください。${GAME.testMode ? "<br>（テストモード: 勝敗を出さず、体力が尽きても自動で回復して続きます）" : ""}</p>
       <div class="actions"><button class="primary" id="cardStart">スタート（Space）</button></div>`);
     card.querySelector("#cardStart").onclick = () => startFight();
     setStatus("スタートを押すと構えの計測（約 1.5 秒）が始まります");
@@ -362,7 +406,7 @@ function startFight() {
   unlockAudio();
   playerHp = GAME.playerHp; enemyHp = GAME.enemyHp;
   timeLeft = GAME.roundSec; score = 0; combo = 0; bestCombo = 0; elapsed = 0;
-  flash = 0; hitstopUntil = 0; slowMoUntil = 0; enemyHurt = 0;
+  flash = 0; hitstopUntil = 0; slowMoUntil = 0; enemyHurt = 0; resetAtMs = 0;
   enemy.phase = "idle"; enemy.attack = null; enemy.resolved = false;
   setState("CALIB");
 }
@@ -441,11 +485,40 @@ function drawHud() {
   ctx.textAlign = "center";
   ctx.fillStyle = "#e6edf3";
   ctx.font = `bold ${Math.round(32 * s)}px system-ui, sans-serif`;
-  ctx.fillText(String(Math.ceil(Math.max(0, timeLeft))), W / 2, y + barH);
+  // テストモードは時間制限が無いので残り時間は出さない
+  if (!GAME.testMode) ctx.fillText(String(Math.ceil(Math.max(0, timeLeft))), W / 2, y + barH);
   ctx.textAlign = "left";
   ctx.font = `${Math.round(15 * s)}px system-ui, sans-serif`;
   ctx.fillStyle = "#8b97a6";
   ctx.fillText(`${score}${combo > 1 ? `  ×${combo}` : ""}`, W * 0.05, H - 18 * s);
+}
+
+/** 判定デバッグ ON のとき、リーチ推定の内訳を簡易バーで出す（実カメラでの調整用）。 */
+function drawSignalBars() {
+  if (!debugOn || !lastDebug?.left) return;
+  const W = hudCanvas.width, H = hudCanvas.height;
+  const s = Math.min(W, H) / 620;
+  const rowH = 13 * s, w = 120 * s;
+  let y = H * 0.26;
+  ctx.font = `${Math.round(10 * s)}px system-ui, sans-serif`;
+  ctx.textAlign = "left";
+  for (const side of ["left", "right"]) {
+    const d = lastDebug[side];
+    if (!d) continue;
+    ctx.fillStyle = d.swing ? "#ffd479" : "#8b97a6";
+    ctx.fillText(`${side}${d.swing ? " SWING" : ""}${lastDebug.guardLocked ? " guard-lock" : ""}`, 14 * s, y);
+    y += rowH * 0.9;
+    for (const [k, v] of [["angle", d.angle], ["shorten", d.shorten], ["hand", d.handSize], ["raw", d.raw], ["reach", d.reach]]) {
+      ctx.fillStyle = "rgba(42,49,60,0.85)";
+      ctx.fillRect(52 * s, y - rowH * 0.62, w, rowH * 0.55);
+      ctx.fillStyle = k === "reach" ? "#7c5cff" : k === "raw" ? "#4cc38a" : "#6cd1ff";
+      ctx.fillRect(52 * s, y - rowH * 0.62, w * clamp(v ?? 0, 0, 1), rowH * 0.55);
+      ctx.fillStyle = "#8b97a6";
+      ctx.fillText(k, 14 * s, y);
+      y += rowH;
+    }
+    y += rowH * 0.4;
+  }
 }
 
 /** デバッグ PIP: 実カメラ映像（ミラー）+ 2D スケルトン。オーバーレイなのでレイアウト不動。 */
@@ -494,6 +567,8 @@ function frame(nowMs) {
   const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 4 / 3;
   const g = gestures.update(result, nowMs, rawDt, { aspect, calibrating: state === "CALIB" });
   playerPose = g.frame ? buildPlayerPose(g.frame, COMBAT.rig) : null;
+  gestureArms = g.frame?.arms ?? null;
+  lastDebug = g.debug;
 
   // ── 状態遷移 ──
   if (state === "CALIB") {
@@ -504,7 +579,13 @@ function frame(nowMs) {
     }
   } else if (state === "FIGHT") {
     elapsed += dt;
-    timeLeft -= dt;
+    if (!GAME.testMode) timeLeft -= dt;
+    // テストモード: HP が尽きたら少し待って全回復し、そのまま続行（勝敗は出さない）
+    if (resetAtMs && nowMs >= resetAtMs) {
+      playerHp = GAME.playerHp; enemyHp = GAME.enemyHp; combo = 0; resetAtMs = 0;
+      enemy.phase = "idle"; enemy.attack = null; enemy.resolved = false;
+      enemy.nextAtMs = nowMs + GAME.idleGapMs[0];
+    }
     // ラウンド中に出すテキストは、姿勢を見失った時の警告だけ
     if (!g.visible && pose.ready) setStatus("姿勢を見失いました — フレーム内に戻ってください", "warn");
     else if (statusEl.textContent) setStatus("");
@@ -512,7 +593,7 @@ function frame(nowMs) {
       updateEnemy(nowMs);
       updatePlayerPunches(nowMs);
     }
-    if (state === "FIGHT" && timeLeft <= 0) endRound("time");
+    if (!GAME.testMode && state === "FIGHT" && timeLeft <= 0) endRound("time");
   }
 
   // ── 3D ──
@@ -537,6 +618,7 @@ function frame(nowMs) {
   ctx.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
   fx.draw(ctx);
   if (state === "FIGHT" || state === "RESULT") drawHud();
+  drawSignalBars();
   drawPip(result?.landmarks);
 }
 

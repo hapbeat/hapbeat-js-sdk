@@ -84,7 +84,37 @@ export function buildPlayerPose(frame, cfg) {
     };
     out[side] = { elbow: place(arm.elbow, cfg.elbowFrac, 0.4), wrist: place(arm.wrist, 1, 1), reach };
   }
+  // 胴の当たり判定カプセル（上端＝肩の中点 / 下端＝そこから torsoLength 下）。
+  // 敵が胴を狙ってくるので、腕で止めるか上体ごとどけるかの的になる。
+  const sm = v3((out.shoulders.left.x + out.shoulders.right.x) / 2,
+    (out.shoulders.left.y + out.shoulders.right.y) / 2,
+    (out.shoulders.left.z + out.shoulders.right.z) / 2);
+  out.torsoTop = sm;
+  out.torsoBottom = v3(sm.x, sm.y - cfg.torsoLength, sm.z);
   return out;
+}
+
+/**
+ * 肩とグローブ位置から肘を作る（敵の腕用）。
+ *
+ * 敵の肩からプレイヤーの頭までは 1m 以上あり、人間の腕は届かない。ここは「グローブだけが
+ * 飛んでくる」のを避けるための表現なので、骨の長さは固定せず**伸びる腕**として扱い、
+ * 遠くへ伸びるほど真っ直ぐになるように曲げ量を落とす。
+ * @param {{x,y,z}} shoulder @param {{x,y,z}} wrist
+ * @param {{x,y,z}} bendHint 肘を寄せたい向き（外・下など）
+ */
+export function solveArm(shoulder, wrist, bendHint, cfg) {
+  const dir = sub(wrist, shoulder);
+  const d = len(dir);
+  const mid = add(shoulder, scale(dir, cfg.elbowFrac));
+  if (d < 1e-4) return mid;
+  // bendHint から「腕の軸方向成分」を抜いて、軸に直交する向きだけ残す
+  const axis = scale(dir, 1 / d);
+  const proj = dot(bendHint, axis);
+  const perp = sub(bendHint, scale(axis, proj));
+  const pl = len(perp);
+  const amount = cfg.bend * Math.max(0, 1 - d / cfg.straightAt);
+  return pl < 1e-4 ? mid : add(mid, scale(perp, amount / pl));
 }
 
 /**
@@ -122,9 +152,9 @@ export function enemyGlovePos(from, aim, s, { kind, side }, cfg) {
 
 /**
  * 敵グローブ 1 個に対するプレイヤー側の判定。
- * 腕（グローブ球 + 前腕カプセル）が先に触れれば **ガード**、頭に触れれば **被弾**。
+ * 腕（グローブ球 + 前腕カプセル）が先に触れれば **ガード**、頭 / 胴に触れれば **被弾**。
  * ガードはジェスチャー判定ではなく、この位置関係だけで決まる。
- * @returns {"block"|"hit"|null}
+ * @returns {"block"|"head"|"torso"|null}
  */
 export function resolveEnemyGlove(glove, gloveR, pose, cfg) {
   for (const side of ["left", "right"]) {
@@ -133,7 +163,8 @@ export function resolveEnemyGlove(glove, gloveR, pose, cfg) {
     if (sphereHitsSphere(glove, gloveR, arm.wrist, cfg.player.gloveRadius)) return "block";
     if (sphereHitsCapsule(glove, gloveR, arm.elbow, arm.wrist, cfg.player.forearmRadius)) return "block";
   }
-  if (sphereHitsSphere(glove, gloveR, pose.head, cfg.player.headRadius)) return "hit";
+  if (sphereHitsSphere(glove, gloveR, pose.head, cfg.player.headRadius)) return "head";
+  if (pose.torsoTop && sphereHitsCapsule(glove, gloveR, pose.torsoTop, pose.torsoBottom, cfg.player.torsoRadius)) return "torso";
   return null;
 }
 

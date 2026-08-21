@@ -20,7 +20,15 @@ export const LM = {
   shoulderL: 11, shoulderR: 12,
   elbowL: 13, elbowR: 14,
   wristL: 15, wristR: 16,
+  // 手先（手の 2D スパン＝奥行きキューに使う）
+  pinkyL: 17, pinkyR: 18, indexL: 19, indexR: 20, thumbL: 21, thumbR: 22,
   hipL: 23, hipR: 24,
+};
+
+/** 片手ぶんの手先ランドマーク（スパン計算用）。 */
+export const HAND_POINTS = {
+  left: [LM.wristL, LM.pinkyL, LM.indexL, LM.thumbL],
+  right: [LM.wristR, LM.pinkyR, LM.indexR, LM.thumbR],
 };
 
 /** 描画用の骨格接続（デバッグ表示）。 */
@@ -56,7 +64,41 @@ export class PoseTracker {
     return true;
   }
 
+  /**
+   * 検証用の疑似カメラ（URL に ?fakecam=1）。
+   * MediaPipe 公式サンプル写真を canvas に流し続けて MediaStream にする。実カメラが
+   * 無い環境（CI / ヘッドレス / ブラウザのカメラ権限が無い）でも、本物のランドマークが
+   * 取れる状態で通し確認できる。通常起動時は一切通らない。
+   */
+  async _fakeCameraStream(width, height) {
+    const cv = document.createElement("canvas");
+    cv.width = width; cv.height = height;
+    const ctx = cv.getContext("2d");
+    // createImageBitmap で取る（Image.decode() は描画が止まっているタブだと解決しないことがある）
+    let bmp = null;
+    try {
+      const r = await fetch("https://storage.googleapis.com/mediapipe-assets/pose.jpg", { mode: "cors" });
+      if (r.ok) bmp = await createImageBitmap(await r.blob());
+    } catch { /* 取れなくても黒画面で続行する */ }
+    const draw = () => {
+      ctx.fillStyle = "#101820";
+      ctx.fillRect(0, 0, width, height);
+      if (bmp) ctx.drawImage(bmp, 0, 0, width, height);
+    };
+    draw();
+    this._fakeTimer = setInterval(draw, 33);
+    return cv.captureStream(30);
+  }
+
   async _openCamera(video, width, height) {
+    if (new URLSearchParams(location.search).get("fakecam") === "1") {
+      this.fake = true;
+      this.stream = await this._fakeCameraStream(width, height);
+      video.srcObject = this.stream;
+      video.playsInline = true; video.muted = true;
+      try { await video.play(); } catch (e) { this.error = `疑似カメラを再生できません（${e?.message ?? e}）`; return false; }
+      return true;
+    }
     if (!navigator.mediaDevices?.getUserMedia) {
       this.error = "カメラエラー: このブラウザは getUserMedia に対応していません（HTTPS か localhost で開いてください）";
       return false;
@@ -140,6 +182,7 @@ export class PoseTracker {
   }
 
   stop() {
+    if (this._fakeTimer) { clearInterval(this._fakeTimer); this._fakeTimer = null; }
     for (const t of this.stream?.getTracks() ?? []) t.stop();
     this.stream = null;
     this.ready = false;

@@ -77,7 +77,7 @@ test("ガードは位置で決まる: 腕が通り道にあれば block、無け
   const incoming = v3(0.05, -0.02, -0.22); // 正面から頭へ向かう途中
   assert.equal(resolveEnemyGlove(incoming, R, guarding, COMBAT), "block");
   assert.equal(resolveEnemyGlove(incoming, R, open, COMBAT), null, "腕が無ければまだ届いていない");
-  assert.equal(resolveEnemyGlove(v3(0, 0, -0.05), R, open, COMBAT), "hit", "頭まで来れば被弾");
+  assert.equal(resolveEnemyGlove(v3(0, 0, -0.05), R, open, COMBAT), "head", "頭まで来れば被弾");
   // 頭に到達しても腕が間にあればガードが優先される
   assert.equal(resolveEnemyGlove(v3(0, 0, -0.05), R, guarding, COMBAT), "block");
 });
@@ -173,7 +173,7 @@ test("接近してくる敵グローブ: 腕を頭の前に置けば block、下
     right: { elbow: v3(0.24, -0.32, 0.05), wrist: v3(0.3, -0.62, 0.05) },
   };
   assert.equal(simulateAttack({ pose: guarding, from, aim: head, cfg }).resolved, "block");
-  assert.equal(simulateAttack({ pose: armsDown, from, aim: head, cfg }).resolved, "hit");
+  assert.equal(simulateAttack({ pose: armsDown, from, aim: head, cfg }).resolved, "head");
 });
 
 test("狙点は攻撃開始時の頭に固定される: あとで頭をどければ空振り（dodge）になる", () => {
@@ -186,7 +186,7 @@ test("狙点は攻撃開始時の頭に固定される: あとで頭をどけれ
     right: { elbow: v3(head.x + 0.24, head.y - 0.32, 0.05), wrist: v3(head.x + 0.3, head.y - 0.62, 0.05) },
   });
   // 頭を動かさなければ当たる
-  assert.equal(simulateAttack({ pose: armsDown(aimedAt), from, aim: aimedAt, cfg }).resolved, "hit");
+  assert.equal(simulateAttack({ pose: armsDown(aimedAt), from, aim: aimedAt, cfg }).resolved, "head");
   // 横へ 0.28m 逃げると当たらず、かすめて通る（＝回避成立）
   const leaned = simulateAttack({ pose: armsDown(v3(0.28, 0, 0)), from, aim: aimedAt, cfg });
   assert.equal(leaned.resolved, null);
@@ -194,4 +194,45 @@ test("狙点は攻撃開始時の頭に固定される: あとで頭をどけれ
   // しゃがんでも同様
   const ducked = simulateAttack({ pose: armsDown(v3(0, -0.3, 0)), from, aim: aimedAt, cfg });
   assert.equal(ducked.resolved, null);
+});
+
+test("胴狙い: 前腕を下げていれば block、上げたままなら胴に入る", () => {
+  const cfg = { ...COMBAT.attack, approachMs: 800 };
+  const head = v3(0, 0, 0);
+  const torsoTop = v3(0, -0.24, 0.06);
+  const torsoBottom = v3(0, -0.24 - COMBAT.rig.torsoLength, 0.06);
+  const bodyAim = v3(torsoTop.x, torsoTop.y + (torsoBottom.y - torsoTop.y) * COMBAT.attack.torsoAimFrac, torsoTop.z);
+  const from = v3(COMBAT.enemy.guard.x, COMBAT.enemy.guard.y, -COMBAT.enemyDist + COMBAT.enemy.guard.z);
+  // 顔の前で構えたまま（胴ががら空き）
+  const highGuard = { head, torsoTop, torsoBottom,
+    left: { elbow: v3(-0.2, -0.26, 0.04), wrist: v3(-0.09, -0.02, -0.19) },
+    right: { elbow: v3(0.2, -0.26, 0.04), wrist: v3(0.09, -0.02, -0.19) } };
+  // 前腕を下げて胴の前に置いた（ボディガード）
+  const bodyGuard = { head, torsoTop, torsoBottom,
+    left: { elbow: v3(-0.22, -0.3, 0.04), wrist: v3(-0.02, -0.42, -0.16) },
+    right: { elbow: v3(0.22, -0.3, 0.04), wrist: v3(0.02, -0.42, -0.16) } };
+  assert.equal(simulateAttack({ pose: highGuard, from, aim: bodyAim, cfg }).resolved, "torso");
+  assert.equal(simulateAttack({ pose: bodyGuard, from, aim: bodyAim, cfg }).resolved, "block");
+});
+
+test("胴狙いも体ごと横へ逃げれば当たらない（headGain / shoulderFollow の効き）", () => {
+  const cfg = { ...COMBAT.attack, approachMs: 800 };
+  const straight = buildPlayerPose(frame(0, 0, { x: 0, y: 0 }), COMBAT.rig);
+  const bodyAim = v3(straight.torsoTop.x,
+    straight.torsoTop.y + (straight.torsoBottom.y - straight.torsoTop.y) * COMBAT.attack.torsoAimFrac,
+    straight.torsoTop.z);
+  const from = v3(COMBAT.enemy.guard.x, COMBAT.enemy.guard.y, -COMBAT.enemyDist + COMBAT.enemy.guard.z);
+  // 腕を判定の外へどけた姿勢を作り、リーン単体の効きだけを見る
+  const armsOut = (headX) => {
+    const pose = buildPlayerPose(frame(0, 0, { x: headX, y: 0 }), COMBAT.rig);
+    for (const side of ["left", "right"]) {
+      const sign = side === "left" ? -1 : 1;
+      pose[side] = { elbow: v3(sign * 1.2, -0.9, 0.4), wrist: v3(sign * 1.5, -1.1, 0.5), reach: 0 };
+    }
+    return pose;
+  };
+  assert.equal(simulateAttack({ pose: armsOut(0), from, aim: bodyAim, cfg }).resolved, "torso", "棒立ちなら当たる");
+  assert.equal(simulateAttack({ pose: armsOut(0.5), from, aim: bodyAim, cfg }).resolved, null, "リーンで胴を外せない");
+  // 参考: 胸の高さで構えているだけでは腹は守れない（腕を下げるガードが要る＝上のテスト）
+  assert.equal(simulateAttack({ pose: straight, from, aim: bodyAim, cfg }).resolved, "torso");
 });

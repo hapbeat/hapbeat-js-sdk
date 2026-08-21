@@ -15,6 +15,7 @@
  */
 
 import * as THREE from "three";
+import { solveArm } from "./combat.js";
 
 const UP = new THREE.Vector3(0, 1, 0);
 const FLOOR_DROP = 1.55;   // プレイヤーの目線から床まで [m]
@@ -30,6 +31,15 @@ function orientBone(mesh, a, b) {
   mesh.scale.set(1, l, 1);
 }
 const setV = (o, p) => o.position.set(p.x, p.y, p.z);
+
+/** カプセル（Y 軸・length=1 で生成）を 2 点間に置く。 */
+function placeCapsule(mesh, a, b) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const l = dir.length();
+  mesh.position.copy(a).addScaledVector(dir, 0.5);
+  mesh.quaternion.setFromUnitVectors(UP, dir.normalize());
+  mesh.scale.set(1, Math.max(l, 1e-4), 1);
+}
 
 export class Scene3D {
   /** @param {HTMLCanvasElement} canvas @param {object} cfg COMBAT */
@@ -91,12 +101,21 @@ export class Scene3D {
       new THREE.MeshStandardMaterial({ color: 0x2b3444, roughness: 0.85 }),
     );
     g.add(this.enemyHead, this.enemyTorso);
+    // 腕（肩→肘→グローブ）。グローブ単体が飛んでくるのではなく、腕が伸びてくるようにする。
+    const armMat = new THREE.MeshStandardMaterial({ color: 0x7d8798, roughness: 0.6 });
+    const armGeo = new THREE.CylinderGeometry(0.036, 0.036, 1, 12);
     this.enemyGloves = {};
+    this.enemyArms = {};
     for (const side of ["left", "right"]) {
       const mat = new THREE.MeshStandardMaterial({ color: 0xd24a4a, emissive: 0x000000, roughness: 0.45 });
       const m = new THREE.Mesh(new THREE.SphereGeometry(c.gloveRadius, 22, 16), mat);
       this.enemyGloves[side] = { mesh: m, mat };
-      g.add(m);
+      const shoulder = new THREE.Mesh(new THREE.SphereGeometry(0.055, 14, 10), armMat);
+      const elbow = new THREE.Mesh(new THREE.SphereGeometry(0.045, 14, 10), armMat);
+      const upper = new THREE.Mesh(armGeo, armMat);
+      const fore = new THREE.Mesh(armGeo, armMat);
+      this.enemyArms[side] = { shoulder, elbow, upper, fore };
+      g.add(m, shoulder, elbow, upper, fore);
     }
     this.enemy = g;
     this.scene.add(g);
@@ -119,6 +138,11 @@ export class Scene3D {
       new THREE.SphereGeometry(c.headRadius, 24, 18),
       new THREE.MeshBasicMaterial({ color: 0x6cd1ff, transparent: true, opacity: 0.18, depthWrite: false }),
     );
+    // 胴の当たり判定カプセル（敵は頭か胴を狙ってくる）。頭球と同じく薄く光らせて見せる。
+    this.pTorsoHit = new THREE.Mesh(
+      new THREE.CapsuleGeometry(c.torsoRadius, 1, 6, 14),
+      new THREE.MeshBasicMaterial({ color: 0x6cd1ff, transparent: true, opacity: 0.12, depthWrite: false }),
+    );
     this.pShoulders = { left: new THREE.Mesh(new THREE.SphereGeometry(0.05, 14, 10), jointMat), right: new THREE.Mesh(new THREE.SphereGeometry(0.05, 14, 10), jointMat) };
     this.pElbows = { left: new THREE.Mesh(new THREE.SphereGeometry(0.042, 14, 10), jointMat), right: new THREE.Mesh(new THREE.SphereGeometry(0.042, 14, 10), jointMat) };
     this.pBones = {
@@ -134,7 +158,7 @@ export class Scene3D {
       right: new THREE.Mesh(new THREE.SphereGeometry(c.gloveRadius, 22, 16),
         new THREE.MeshStandardMaterial({ color: 0xff5f6d, emissive: 0x3a0d12, roughness: 0.4 })),
     };
-    rig.add(this.pHead, this.pHeadHit, ...Object.values(this.pShoulders), ...Object.values(this.pElbows),
+    rig.add(this.pHead, this.pHeadHit, this.pTorsoHit, ...Object.values(this.pShoulders), ...Object.values(this.pElbows),
       ...Object.values(this.pBones), ...Object.values(this.pGloves));
     this.rig = rig;
     rig.visible = false;
@@ -156,6 +180,8 @@ export class Scene3D {
         new THREE.MeshBasicMaterial({ color: 0x6cd1ff, wireframe: true, transparent: true, opacity: 0.45 })),
       foreR: new THREE.Mesh(new THREE.CylinderGeometry(c.player.forearmRadius, c.player.forearmRadius, 1, 10),
         new THREE.MeshBasicMaterial({ color: 0x6cd1ff, wireframe: true, transparent: true, opacity: 0.45 })),
+      torso: new THREE.Mesh(new THREE.CapsuleGeometry(c.player.torsoRadius, 1, 6, 12),
+        new THREE.MeshBasicMaterial({ color: 0x6cd1ff, wireframe: true, transparent: true, opacity: 0.4 })),
     };
     this.dbgEnemy = {
       head: wire(c.enemy.headRadius, 0xffa04a),
@@ -190,7 +216,19 @@ export class Scene3D {
     const e = this.cfg.enemy;
     setV(this.enemyHead, enemy.head);
     this.enemyTorso.position.set(enemy.head.x, (e.torsoTopY + e.torsoBottomY) / 2 + (enemy.head.y - e.headY), enemy.head.z);
-    for (const side of ["left", "right"]) setV(this.enemyGloves[side].mesh, enemy.gloves[side]);
+    for (const side of ["left", "right"]) {
+      setV(this.enemyGloves[side].mesh, enemy.gloves[side]);
+      // 腕: 肩からグローブまでを 2 本の骨で繋ぐ（肘は見た目だけ。判定には使わない）
+      const a = this.cfg.enemy.arm;
+      const sign = side === "left" ? -1 : 1;
+      const shoulder = { x: enemy.head.x + sign * a.shoulderX, y: enemy.head.y + a.shoulderY, z: enemy.head.z + a.shoulderZ };
+      const elbow = solveArm(shoulder, enemy.gloves[side], { x: sign, y: -1, z: 0.2 }, a);
+      const arm = this.enemyArms[side];
+      setV(arm.shoulder, shoulder);
+      setV(arm.elbow, elbow);
+      orientBone(arm.upper, shoulder, elbow);
+      orientBone(arm.fore, elbow, enemy.gloves[side]);
+    }
     const hurt = Math.max(0, Math.min(1, view.hurt ?? 0));
     this.enemy.rotation.x = -0.3 * hurt;
     this.enemyMat.color.setHex(hurt > 0.02 ? 0xb06060 : enemy.guardUp ? 0x46566f : 0x5b4a72);
@@ -209,6 +247,7 @@ export class Scene3D {
     const third = this.mode === "third";
     this.pHead.visible = third;
     this.pHeadHit.visible = third;
+    this.pTorsoHit.visible = third;
     this.pBones.neck.visible = third;
     this.pBones.spine.visible = third;
 
@@ -230,6 +269,7 @@ export class Scene3D {
     orientBone(this.pBones.chest, pose.shoulders.left, pose.shoulders.right);
     orientBone(this.pBones.spine, shoulderMid, hip);
     orientBone(this.pBones.neck, shoulderMid, pose.head);
+    if (pose.torsoTop) placeCapsule(this.pTorsoHit, pose.torsoTop, pose.torsoBottom);
 
     // ── デバッグ判定表示 ──
     if (this.dbg.visible) {
@@ -238,6 +278,7 @@ export class Scene3D {
       setV(this.dbgPlayer.gloveR, pose.right.wrist);
       orientBone(this.dbgPlayer.foreL, pose.left.elbow, pose.left.wrist);
       orientBone(this.dbgPlayer.foreR, pose.right.elbow, pose.right.wrist);
+      if (pose.torsoTop) placeCapsule(this.dbgPlayer.torso, pose.torsoTop, pose.torsoBottom);
       setV(this.dbgEnemy.head, enemy.head);
       this.dbgEnemy.torso.position.copy(this.enemyTorso.position);
       setV(this.dbgEnemy.gloveL, enemy.gloves.left);

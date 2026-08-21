@@ -6,6 +6,10 @@ PC のカメラ + [MediaPipe Pose](https://ai.google.dev/edge/mediapipe/solution
 
 コントローラを持たない＝手がふさがらないので、フィードバックを画面外（体）に出す意味が分かりやすい題材。
 
+既定は**テストモード**（勝敗・時間制限なしの無限ループ。どちらかの体力が尽きたら自動で回復して続行）。
+当たり方の調整を回し続けるためのモードで、`tuning.js` の `GAME.testMode` を `false` にすると
+従来のラウンド制（時間切れ / KO / 勝敗表示）になる。
+
 **攻防はすべて 3D の位置で決まる。** 攻撃の予告テキストも対処の指示も出さない。
 敵のグローブがゆっくり近づいてくるのが予告そのもので、
 腕をその通り道に置けばガード、上体を振って頭をどければ空振りになる。
@@ -47,6 +51,25 @@ npm run dev      # dist/ をビルド + 静的配信 + ホットリロード
 開始時に **約 1.5 秒の構え計測**（肩幅・鼻位置・肩中点・前腕/上腕の 2D 長さ）を行う。
 姿勢が崩れて判定が渋くなったら ⚙ メニューの **「構えを取り直す」** でやり直せる。
 
+### 安定化（プルプル・誤発火への対処）
+
+姿勢推定の値は静止時に細かく震え、素通しすると「ガード中に関節が震えて伸びた判定になる」。
+次の 5 段で潰している:
+
+1. **1€ フィルタ**（[`filters.js`](./filters.js)）— 速度に応じてカットオフを上げる方式。
+   静止時はしっかり止まり、パンチの立ち上がりはほぼ素通りする。ランドマーク（正規化 / world）と
+   リーチ値の両方に掛けている。
+2. **可視性ゲート** — `visibility` がしきい値未満のランドマークはそのフレームを捨て、直前値を保持。
+3. **デッドバンド + スルーレート制限** — ±0.05 未満の変化は無視。伸びは 6/s、戻りは 4/s で頭打ち。
+4. **ガードロック** — 両手首が顔の近く（肩幅 0.7 倍以内）で、かつほぼ動いていなければガード中と
+   みなし、リーチを 0.3 で頭打ちにする（震えても腕が伸びない）。
+5. **発火はリーチの「速度」で判定** — 150ms 以内に 0.28 以上増え、かつ 0.6 以上に達した時だけ
+   パンチ発火。**当たり判定が有効なのはそのスイング窓の間だけ**なので、
+   ガード中に静止して腕が伸びていても敵には当たらない。
+
+⚙ メニューの「🎯 当たり判定を表示」を ON にすると、画面左に各信号（angle / shorten / hand /
+raw / reach）とスイング状態・ガードロックの簡易バーが出る。実カメラでの調整はここを見ながら行う。
+
 ### 前方リーチの推定（単眼カメラに奥行きは無い）
 
 worldLandmarks の z は、拳をカメラへ突き出してもほとんど動かない（＝腕が前に伸びない）。
@@ -58,8 +81,13 @@ worldLandmarks の z は、拳をカメラへ突き出してもほとんど動�
    （どちらが安定かは照明・体格・カメラ位置で変わるので固定しない）。
 2. **前腕の短縮率** — 前腕の 2D 長さ ÷ 構え時の長さ。カメラへ向くほど短く映るので、
    短いほど前方成分が大きい。肩幅で正規化してあるのでカメラ距離に依らない。
+3. **手の見かけサイズ** — 手首・親指・人差し指・小指の 2D スパン ÷ 構え時のスパン。
+   カメラに近いほど大きく映る。単眼で最も素直な奥行きキュー。
 
-2 つを合成（既定は `max`）して EMA 平滑し、パンチ検出が発火した瞬間には
+3 つを**重み付きメディアン**（既定）で合成する。1 つの信号が誤っても他の 2 つが打ち消すため。
+実写真（腕を真横に伸ばした姿勢）で検証すると angle=1.0 と誤るが、shorten=0.0 / handSize=0.01 が
+勝ってリーチ 0.06 に収まる。合成方法は `reach.combine` で `weighted` / `max` にも切替できる。
+合成後に上記の安定化を通し、パンチ検出が発火した瞬間には
 **約 120ms で伸び切る突き出しアニメーション**を重ねる（速いパンチほど深い）。
 reach=1 でグローブが敵の頭（1.2m 先）に届くようスケールしてある。
 
@@ -69,11 +97,15 @@ reach=1 でグローブが敵の頭（1.2m 先）に届くようスケールし�
 
 敵は `構え（ガード）→ 接近 → 打ち込み → 戻り` を繰り返す。
 
-- **接近**（700〜1000ms、難易度で短縮）: グローブが弧を描いて／正面から**見える速さで**迫る。
-  これが予告。文字は出ない。フックは横から側頭部へ、ストレートは正面から。
+- **接近**（700〜1000ms、難易度で短縮）: **腕（肩→肘→グローブ）が伸びてくる**。
+  これが予告。文字は出ない。フックは横から回り込み、ストレートは正面から。
+- **狙いは頭か胴をランダム**（既定 50/50・`attack.aimTarget`）。頭は上げたガードで、
+  胴は前腕を下げたボディガードで止める。どちらも体ごと横へ逃げれば空振りにできる
+  （胴は的が大きいぶんシビア）。
 - **打ち込み**（130ms）: 最後の 3 割を一気に詰める。
 - **判定**は毎フレームの位置関係で決まる:
-  腕に当たれば `boxing_block` ／ 頭に当たれば `boxing_player_hit`（HP 減・赤ビネット・強い触覚）／
+  腕（グローブ球 / 前腕カプセル）に当たれば `boxing_block` ／ 頭・胴に当たれば
+  `boxing_player_hit`（頭は HP -12・胴は -7。赤ビネット・強い触覚）／
   当たらず頭の近く（0.32m 以内）を通れば `boxing_dodge`。
 - **戻り**の間は敵のガードが開く＝**こちらの差し込みどころ**。
   自分のグローブ球が 敵の頭 → `boxing_punch_hit`（大）／ 胴 → 同（小）／
@@ -112,13 +144,14 @@ reach=1 でグローブが敵の頭（1.2m 先）に届くようスケールし�
 
 | キー | 意味 |
 |---|---|
-| `punch.speedThreshMps` / `forwardRatio` / `cooldownMs` | パンチ検出（world 速度ベース） |
-| `punch.flexAngleDeg` / `extendAngleDeg` / `extendWindowMs` | 肘の伸展での検出 |
-| `punch.reachTrigger` | 推定リーチが一気に伸びた時の検出（world z が当てにならない環境向けの保険） |
-| `reach.angle.minDeg` / `maxDeg` | 肘角度 → リーチのマップ範囲 |
-| `reach.shorten.minRatio` / `maxRatio` | 前腕の短縮率 → リーチのマップ範囲 |
-| `reach.combine` / `weights` | 2 信号の合成方法（`max` / `weighted`） |
-| `reach.ema` / `jitterTauSec` | 平滑化と、3D/2D 肘角度の安定判定の時定数 |
+| `filter.landmark` / `filter.world` | ランドマークの 1€ フィルタ。**ぷるぷるするなら `minCutoff` を下げる**（追従は鈍る） |
+| `reach.oneEuro` | リーチ側の 1€。**パンチが発火しないなら `minCutoff` / `beta` を上げる** |
+| `reach.deadband` / `slewUp` / `slewDown` | 微小変化の無視幅と、伸び / 戻りの最大変化率 |
+| `reach.guardLock.faceRadius` / `maxSpeed` / `maxReach` | ガード中とみなす条件と、その時のリーチ上限 |
+| `punch.swing.deltaMin` / `reachMin` / `windowMs` | 「突いた」と認める増加量・到達値・時間窓 |
+| `punch.swing.endReach` / `maxMs` / `cooldownMs` | スイング窓（＝当たり判定が有効な区間）の閉じ方 |
+| `reach.angle` / `shorten` / `handSize` の `min*` / `max*` | 各信号 → リーチのマップ範囲 |
+| `reach.combine` / `weights` | 3 信号の合成方法（`median` / `weighted` / `max`）と重み |
 | `reach.snap` | パンチ時の突き出しアニメーション（`riseMs` / `holdMs` / `fallMs` / `speedRefMps`） |
 | `lean` / `duck` の `enterRatio` / `exitRatio` | 補助検出のヒステリシス（肩幅比） |
 
@@ -135,9 +168,13 @@ reach=1 でグローブが敵の頭（1.2m 先）に届くようスケールし�
 | `enemy.headRadius` / `torso*` / `guard` / `open` | 敵の判定サイズとガード位置 |
 | `attack.approachMs` / `strikeMs` / `retractMs` / `approachFrac` | 攻撃の見える速さ（**難しすぎる時は approachMs を上げる**） |
 | `attack.hookArc` / `aimJitter` / `dodgeNear` | フックの弧・狙点のばらつき・回避成立の距離 |
-| `punchHit.minReach` / `cooldownMs` | 当たり判定を取り始めるリーチと、1 スイング 1 回の間隔 |
+| `attack.aimTarget` / `torsoAimFrac` | 頭 / 胴を狙う比率と、胴を狙う高さ |
+| `enemy.arm.*` | 敵の肩の位置と腕の曲げ方（見た目のみ。判定はグローブ球） |
+| `player.torsoRadius` / `rig.torsoLength` | 自分の胴の当たり判定（ボディの当たりやすさ） |
+| `punchHit.minReach` / `cooldownMs` / `requireSwing` | 当たり判定を取り始めるリーチ・1 スイング 1 回の間隔・スイング窓に限定するか |
 
-**`GAME`** — `roundSec` / HP / `idleGapMs` / `rampSec` / `damage.*` / `score.*` / 演出。
+**`GAME`** — `testMode`（既定 true・勝敗なしの無限ループ）/ `testResetDelayMs` /
+`roundSec` / HP / `idleGapMs` / `rampSec` / `damage.*`（`playerHit` 頭 / `playerBody` 胴）/ `score.*` / 演出。
 
 ---
 
@@ -148,6 +185,8 @@ boxing/
   index.html     # 独立ページ（import map → ../../../dist/browser.js, three@0.160.0）
   boxing.js      # ゲーム本体（状態遷移・敵 AI・判定の呼び出し・HUD/PIP・触覚配線）
   combat.js      # ★ 体の合成と当たり判定（純関数。node で単体テストできる）
+  filters.js     # ★ 1€ フィルタ / スルーレート / デッドバンド / 重み付きメディアン（純関数）
+  reach.js       # ★ リーチ 3 信号の合成・安定化・スイング検出（純関数）
   scene3d.js     # 3D 描画（位置は決めない。combat.js の結果を置くだけ）
   pose.js        # カメラ + MediaPipe PoseLandmarker（失敗は日本語 1 行に畳む）
   gestures.js    # ランドマーク → 体基準 2D フレーム + 前方リーチ + パンチ検出
@@ -155,10 +194,18 @@ boxing/
   eventmap.json  # 論理イベント → Kit の eventId + gain/pan
 ```
 
+### 検証用の URL パラメータ
+
+- `?fakecam=1` — 実カメラの代わりに MediaPipe 公式サンプル写真を流す疑似カメラで起動する
+  （カメラが無い / 権限が無い環境でも、本物のランドマークが取れる状態で通し確認できる）。
+- `?mute=1` — 音を完全に止める。
+
+例: <http://localhost:8170/examples/games/boxing/?fakecam=1&mute=1>
+
 判定（boxing.js）と描画（scene3d.js）が**同じ combat.js を通す**ので、
-「見えている位置」と「当たる位置」は構造的にずれない。
-その性質は [`tests/boxing-combat.test.mjs`](../../../tests/boxing-combat.test.mjs) で守っている
-（`npm test` に含まれる）。
+「見えている位置」と「当たる位置」は構造的にずれない。その性質と、震え対策の効きは
+[`tests/boxing-combat.test.mjs`](../../../tests/boxing-combat.test.mjs) /
+[`tests/boxing-reach.test.mjs`](../../../tests/boxing-reach.test.mjs) で守っている（`npm test` に含まれる）。
 
 ### 座標の対応（実測で確定）
 
@@ -182,6 +229,7 @@ MediaPipe 公式アセット `storage.googleapis.com/mediapipe-assets/pose.jpg` 
 - 触覚クリップは fps-kit の流用（仮置き）。ボクシング用の音・触覚は未設計。
 - MediaPipe の wasm / モデルと Three.js は CDN 依存（オフライン不可・初回ロードに数秒）。
 - アバターはボーン表示のみ（リグ付きメッシュ・手指・脚は無し）。
-- 前方リーチは 2D からの**推定**なので、腕を真横に振った時など誤って伸びることがある。
-  誤爆するときは `reach.combine` を `weighted` にする／`reach.angle.minDeg` を上げる。
+- 前方リーチは 2D からの**推定**。3 信号のメディアンと安定化でかなり抑えたが、
+  照明・服装・体格で効きは変わる。誤爆するときは `reach.weights` で `handSize` を厚くする、
+  `punch.swing.deltaMin` を上げる、`reach.guardLock.maxReach` を下げる。
 - 敵は回避しない（ガードの開閉のみ）。プレイヤーの攻撃は伸ばしきれば当たる設計。
