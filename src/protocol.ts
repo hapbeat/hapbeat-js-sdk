@@ -80,19 +80,31 @@ export interface PlayOptions {
   target?: string;
   targetTimeUs?: number;
   gain?: number;
+  /** Left/right balance: -1 = left only, 0 = centre, +1 = right only. */
+  pan?: number;
+}
+
+/** Clamp a pan value into the wire range (contracts message-format.md §0x01). */
+function clampPan(pan: number): number {
+  if (!Number.isFinite(pan)) return 0;
+  return pan < -1 ? -1 : pan > 1 ? 1 : pan;
 }
 
 /**
- * PLAY (0x01). Payload (contracts/specs/device-addressing.md §5.1):
- *   event_id(null-term) + target(null-term) + target_time(i64) + gain(f32)
+ * PLAY (0x01). Payload (contracts/specs/message-format.md §0x01):
+ *   event_id(null-term) + target(null-term) + target_time(i64) + gain(f32) + pan(f32)
  * `target=""` broadcasts to every device.
+ *
+ * `pan` is the trailing optional field (DEC-055): older firmware that stops
+ * parsing after `gain` plays centred, and the sender always writes it.
  */
 export function buildPlay(seq: number, eventId: string, opts: PlayOptions = {}): Uint8Array {
-  const { target = "", targetTimeUs = 0, gain = 1.0 } = opts;
-  const tail = new Uint8Array(12);
+  const { target = "", targetTimeUs = 0, gain = 1.0, pan = 0 } = opts;
+  const tail = new Uint8Array(16);
   const dv = new DataView(tail.buffer);
   dv.setBigInt64(0, BigInt(Math.round(targetTimeUs)), true);
   dv.setFloat32(8, gain, true);
+  dv.setFloat32(12, clampPan(pan), true);
   return buildPacket(CMD_PLAY, seq, concat([cstr(eventId), cstr(target), tail]));
 }
 

@@ -373,8 +373,8 @@ export abstract class UdpTransportBase implements Transport {
     return this.seq;
   }
 
-  play(eventId: string, gain: number, target: string, targetTimeUs: number): void {
-    this.sendRouted(protocol.buildPlay(this.nextSeq(), eventId, { target, targetTimeUs, gain }), target);
+  play(eventId: string, gain: number, target: string, targetTimeUs: number, pan = 0): void {
+    this.sendRouted(protocol.buildPlay(this.nextSeq(), eventId, { target, targetTimeUs, gain, pan }), target);
   }
 
   stop(eventId: string, target: string): void {

@@ -149,10 +149,12 @@ export class BrowserWsTransport implements Transport {
     this.ws.send(JSON.stringify({ type, payload }));
   }
 
-  play(eventId: string, gain: number, target: string, _targetTimeUs: number): void {
+  play(eventId: string, gain: number, target: string, _targetTimeUs: number, pan = 0): void {
     // Helper builds the PLAY packet; targetTime scheduling is not exposed
-    // over the helper WS at level-1 (immediate playback).
-    this.send("play_event", { event_id: eventId, target, gain });
+    // over the helper WS at level-1 (immediate playback). `pan` is passed
+    // through per contracts §0x01 (DEC-055); a helper that does not yet read
+    // it ignores the field and the event plays centred.
+    this.send("play_event", { event_id: eventId, target, gain, pan });
   }
 
   stop(eventId: string, target: string): void {

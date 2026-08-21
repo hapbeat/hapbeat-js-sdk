@@ -25,6 +25,13 @@ export interface PlayOpts {
   gain?: number;
   target?: string;
   targetTimeUs?: number;
+  /**
+   * Left/right balance for fire events: -1 = left only, 0 = centre (default),
+   * +1 = right only. The device applies it as a linear balance on the voice
+   * (contracts §0x01, DEC-055). Ignored for clip events — a stream carries its
+   * L/R in the PCM itself.
+   */
+  pan?: number;
 }
 
 export class Hapbeat {
@@ -66,15 +73,15 @@ export class Hapbeat {
     if (def?.streaming) {
       this.playClip(eventId, def, gain, target);
     } else {
-      this.transport.play(eventId, gain, target, opts.targetTimeUs ?? 0);
+      this.transport.play(eventId, gain, target, opts.targetTimeUs ?? 0, opts.pan ?? 0);
     }
   }
 
   /**
    * Stream an ad-hoc PCM16 buffer (not from a manifest) — e.g. a synthesized
    * stereo directional cue where L/R balance conveys direction. `channels: 2`
-   * with per-channel amplitude is how you get left/right haptics (the PLAY
-   * command has no pan). Paced like any clip.
+   * with per-channel amplitude is how you get left/right haptics here; for fire
+   * events use `play(id, { pan })` instead. Paced like any clip.
    */
   streamPcm(
     pcm: Uint8Array,

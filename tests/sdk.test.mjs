@@ -27,7 +27,7 @@ function makeWav({ sampleRate = 16000, channels = 1, samples = [] }) {
 class FakeTransport {
   constructor() { this.calls = []; }
   async connect() {}
-  play(id, gain, target) { this.calls.push(["play", id, gain, target]); }
+  play(id, gain, target, targetTimeUs, pan) { this.calls.push(["play", id, gain, target, pan]); }
   stop(id, target) { this.calls.push(["stop", id, target]); }
   stopAll(target) { this.calls.push(["stopAll", target]); }
   ping() {}
@@ -46,16 +46,39 @@ test("header magic, version, size", () => {
   assert.equal(dv.getUint8(2), protocol.VERSION);
 });
 
-test("PLAY layout: event_id\\0 target\\0 + i64 time + f32 gain", () => {
-  const pkt = protocol.buildPlay(7, "explosion", { target: "player_1/chest", gain: 0.5 });
+// Read back the PLAY tail: i64 target_time + f32 gain + f32 pan.
+function readPlayTail(pkt, eventId, target) {
   const p = protocol.parsePacket(pkt);
-  assert.equal(p.commandType, protocol.CMD_PLAY);
-  assert.equal(p.seq, 7);
-  const prefix = new TextEncoder().encode("explosion\0player_1/chest\0");
+  const prefix = new TextEncoder().encode(`${eventId}\0${target}\0`);
   assert.deepEqual(p.payload.subarray(0, prefix.length), prefix);
-  const dv = new DataView(p.payload.buffer, p.payload.byteOffset + prefix.length, 12);
-  assert.equal(dv.getBigInt64(0, true), 0n);
-  assert.ok(Math.abs(dv.getFloat32(8, true) - 0.5) < 1e-6);
+  assert.equal(p.payload.length, prefix.length + 16, "tail is 16 bytes (time + gain + pan)");
+  const dv = new DataView(p.payload.buffer, p.payload.byteOffset + prefix.length, 16);
+  return {
+    pkt: p,
+    targetTimeUs: dv.getBigInt64(0, true),
+    gain: dv.getFloat32(8, true),
+    pan: dv.getFloat32(12, true),
+  };
+}
+
+test("PLAY layout: event_id\\0 target\\0 + i64 time + f32 gain + f32 pan", () => {
+  const t = readPlayTail(
+    protocol.buildPlay(7, "explosion", { target: "player_1/chest", gain: 0.5, pan: -0.25 }),
+    "explosion",
+    "player_1/chest",
+  );
+  assert.equal(t.pkt.commandType, protocol.CMD_PLAY);
+  assert.equal(t.pkt.seq, 7);
+  assert.equal(t.targetTimeUs, 0n);
+  assert.ok(Math.abs(t.gain - 0.5) < 1e-6);
+  assert.ok(Math.abs(t.pan - -0.25) < 1e-6);
+});
+
+test("PLAY pan defaults to centre and clamps to [-1, 1]", () => {
+  assert.equal(readPlayTail(protocol.buildPlay(1, "boom"), "boom", "").pan, 0);
+  assert.equal(readPlayTail(protocol.buildPlay(1, "boom", { pan: 3 }), "boom", "").pan, 1);
+  assert.equal(readPlayTail(protocol.buildPlay(1, "boom", { pan: -3 }), "boom", "").pan, -1);
+  assert.equal(readPlayTail(protocol.buildPlay(1, "boom", { pan: NaN }), "boom", "").pan, 0);
 });
 
 test("PLAY broadcast has empty target", () => {
@@ -224,7 +247,11 @@ test("facade play() branches fire vs clip from the manifest", async () => {
 
   // fire event → PLAY command, no streaming
   hb.play("k.hit", { gain: 0.3 });
-  assert.deepEqual(transport.calls[0], ["play", "k.hit", 0.3, ""]);
+  assert.deepEqual(transport.calls[0], ["play", "k.hit", 0.3, "", 0]);
+
+  // pan reaches the transport (fire events only — a clip carries L/R in its PCM)
+  hb.play("k.hit", { gain: 0.3, pan: 1 });
+  assert.deepEqual(transport.calls[1], ["play", "k.hit", 0.3, "", 1]);
 
   // clip event → async load then STREAM_BEGIN/DATA*/END
   hb.play("k.stream");

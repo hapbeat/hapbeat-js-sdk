@@ -4,6 +4,12 @@
 形式は [Keep a Changelog](https://keepachangelog.com/) に、バージョン付けは
 [Semantic Versioning](https://semver.org/) に従います。
 
+## [Unreleased]
+
+### 追加（Added）
+
+- `play(id, { pan })` で左右バランスを指定できるようにしました（-1 = 左のみ / 0 = 中央 / +1 = 右のみ）。PLAY パケット末尾に `pan`(f32) を常時付与します（contracts §0x01, DEC-055）。CLIP イベントは PCM 側に L/R を持つため対象外です。
+
 ## [0.4.0] - 2026-08-09
 
 Unity SDK v0.4.0 で確定した接続まわりの修正を移植しました。Node / React Native

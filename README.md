@@ -109,8 +109,8 @@ live.close();
 ```
 
 `hb.streamPcm(pcm, { channels: 2 })` sends a single ad-hoc PCM16 buffer (stereo = L/R
-direction, since `PLAY` has no pan). One session at a time: a clip, `streamPcm`, or a
-new `openStream` ends the previous live stream.
+direction). One session at a time: a clip, `streamPcm`, or a new `openStream` ends the
+previous live stream.
 
 ## Discovery & targeting
 
@@ -122,6 +122,10 @@ hb.play("sample-kit.sine_100hz", { target: "*/pos_neck" });        // every neck
 hb.play("sample-kit.sine_100hz", { target: "*/*/group_2" });       // every device in group 2
 hb.play("sample-kit.sine_100hz", { target: "" });                  // all devices (default)
 ```
+
+Fire events also take `pan` (-1 = left only, 0 = centre, +1 = right only), applied by
+the device as a linear L/R balance: `hb.play("sample-kit.sine_100hz", { pan: -1 })`.
+Clip events ignore it — a streamed clip carries its L/R in the PCM itself.
 
 Matching is **positional**: segment *i* of the target is compared with segment
 *i* of the device address, `*` stands for one **whole** segment (`pos_*` is

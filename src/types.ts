@@ -88,7 +88,8 @@ export interface HapbeatOptions {
  */
 export interface Transport {
   connect(): Promise<void>;
-  play(eventId: string, gain: number, target: string, targetTimeUs: number): void;
+  /** `pan`: -1 = left only, 0 = centre, +1 = right only (contracts §0x01, DEC-055). */
+  play(eventId: string, gain: number, target: string, targetTimeUs: number, pan: number): void;
   stop(eventId: string, target: string): void;
   stopAll(target: string): void;
   ping(): void;

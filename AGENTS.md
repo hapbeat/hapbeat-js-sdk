@@ -126,7 +126,9 @@ interface LiveStreamHandle { write(pcm: Uint8Array): void; close(): void; readon
 ```
 
 ```ts
-interface PlayOpts { gain?: number; target?: string; targetTimeUs?: number; }
+interface PlayOpts { gain?: number; target?: string; targetTimeUs?: number; pan?: number; }
+// pan: -1 = left only, 0 = centre (default), +1 = right only. Fire events only
+// (clips carry L/R in their PCM); the device applies it as a linear balance.
 interface Device { ip: string; name?: string; address?: string; firmwareVersion?: string; lastSeen: number; }
 ```
 
@@ -176,8 +178,8 @@ the previous — "1 session = 1 stream"):
 - **clip** `play(streamEventId)` — the SDK loads a WAV and **paces** it out
   (`streamSendAheadSec`, ring ≈ 256 ms), deferring STREAM_END until drained.
 - **`streamPcm(pcm, opts)`** — a single ad-hoc PCM16 buffer, paced like a clip.
-  Use for a one-shot synthesized cue. `channels: 2` carries L/R direction (PLAY has
-  no pan).
+  Use for a one-shot synthesized cue. `channels: 2` carries L/R direction (fire
+  events use `play(id, { pan })` instead).
 - **`openStream(opts) → handle`** — a **persistent** session: `STREAM_BEGIN` once,
   then `handle.write(pcm)` chunks in ~real time, `handle.close()` at the end. Use
   for continuously-modulated haptics (per-frame directional tone in a game loop).
@@ -231,7 +233,8 @@ the helper (immediate playback only). Command-mode `target` works on both transp
   a directory path, Browser: a URL prefix). The default loader is `fs.readFile`
   (Node) / `fetch` (Browser); override `clipLoader` to load from a bundle.
 - **`streamPcm`** sends an ad-hoc PCM16 buffer (e.g. a synthesized stereo
-  directional cue — `channels: 2` is how you get L/R, since PLAY has no pan).
+  directional cue — `channels: 2` is how you get L/R; fire events use
+  `play(id, { pan })`).
 
 ## Not implemented (don't reach for these)
 
