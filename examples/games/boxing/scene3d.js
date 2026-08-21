@@ -1,111 +1,71 @@
 /**
- * Scene3D — 一人称の 3D 表示（Three.js）。
+ * Scene3D — 3D 表示（Three.js）。**位置は一切ここで決めない**。
  *
- * 実カメラ映像は表示しない（トラッキング入力にだけ使う）。プレイヤーの上半身は
- * MediaPipe の worldLandmarks から作ったボーン（関節=球 / 骨=シリンダー / 手首=グローブ）で、
- * カメラは鼻の位置に置く。敵は正面 1.2m のスタイライズ 3D。
+ * プレイヤーの体も敵グローブの軌道も combat.js（純関数）が算出し、boxing.js が判定に使った
+ * のと同じ座標をそのまま渡してくる。だから「見えている位置」と「当たる位置」は必ず一致する。
  *
- * ── 軸の対応（推測ではなく実測で確定） ────────────────────────────────────────
- * MediaPipe 公式アセット（storage.googleapis.com/mediapipe-assets/pose.jpg）を
- * IMAGE モードで推論した実データ（2026-08-21 計測）:
+ * 視点は 2 つ:
+ *   third（既定）… 背後やや上。自分の上半身と**頭の当たり判定球**が見えるので、
+ *                   腕を頭の前に置けばガードになる／上体を振れば頭球が逃げる、が目で分かる。
+ *   first        … 一人称（頭球は非表示）。
  *
- *   左肩(11) world x = +0.165 / 右肩(12) world x = -0.147
- *      → +X は画像右。カメラ映像は鏡像でないので、画像右に写るのは被写体の「左」側。
- *        つまり +X_mp ＝ 被写体の左方向。
- *   鼻(0) world y = -0.619（腰の中点が原点）
- *      → +Y は下向き。
- *   鼻(0) world z = -0.146 / カメラへ突き出した左手首(15) z = -0.185（腰原点 = 0）
- *      → z は負ほどカメラに近い（＝前方は -Z_mp）。公式ドキュメントの記述とも一致。
- *
- * 一人称では「自分の右手が画面右」「突き出したグローブが画面奥（敵の方）へ伸びる」に
- * したいので、Three.js（既定カメラは -Z を向き、+Y が上、+X が画面右）へは
- *
- *      (x, y, z)_three = (-x, -y, z)_mp
- *
- * で写す。diag(-1,-1,1) は行列式 +1 の回転なので鏡像化は起きない。結果:
- *   ・被写体の右（-X_mp）→ +X_three → 画面右 ✓
- *   ・上（-Y_mp）→ +Y_three ✓
- *   ・前方（-Z_mp）→ -Z_three ＝ カメラの正面方向 → 突きは奥（敵方向）へ伸びる ✓
+ * 座標系（combat.js と共通）: +X=画面右 / +Y=上 / -Z=前方（敵の方向）。単位はメートル。
+ * プレイヤーの右手が画面右に来るのは、背後から見ても一人称でもカメラが -Z を向くため。
+ * （MediaPipe の軸と実測の対応は gestures.js / README を参照）
  */
 
 import * as THREE from "three";
 
-const LM = { nose: 0, shoulderL: 11, shoulderR: 12, elbowL: 13, elbowR: 14, wristL: 15, wristR: 16, hipL: 23, hipR: 24 };
-const TRACKED = Object.values(LM);
-
-/** 平滑化の時定数 [s]。小さいほど追従が速く、ジッタも増える。 */
-const SMOOTH_TAU = 0.06;
-/** 視点（頭）の基準位置がゆっくり追従する時定数 [s]。リーン/ダックの「戻り」を作る。 */
-const REST_TAU = 2.0;
-/** 頭の変位を視点にどれだけ反映するか。1.0 は動きすぎるので減衰させる。 */
-const HEAD_DAMP = 0.5;
-/** 目より少し後ろにカメラを引く [m]（自分の腕が画面に入る FPS 的な構図にするため）。 */
-const EYE_BACK = 0.12;
-const EYE_UP = 0.02;
-
-const ENEMY_DIST = 1.2;   // 正面距離 [m]
-const ENEMY_HEAD_DROP = 0.02; // 自分の目線に対する敵の頭の高さ差 [m]
-const FLOOR_DROP = 1.55;  // 目線から床までの距離 [m]
-
 const UP = new THREE.Vector3(0, 1, 0);
-const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
-
-/** MediaPipe worldLandmark → Three.js 座標（上のコメントの実測に基づく変換）。 */
-function mpToThree(lm, out) { return out.set(-lm.x, -lm.y, lm.z); }
+const FLOOR_DROP = 1.55;   // プレイヤーの目線から床まで [m]
 
 /** 円柱メッシュを 2 点間に架け渡す（geometry は半径 r・高さ 1・原点中心）。 */
 function orientBone(mesh, a, b) {
   const dir = new THREE.Vector3().subVectors(b, a);
-  const len = dir.length();
-  if (len < 1e-5) { mesh.visible = false; return; }
+  const l = dir.length();
+  if (l < 1e-5) { mesh.visible = false; return; }
   mesh.visible = true;
   mesh.position.copy(a).addScaledVector(dir, 0.5);
   mesh.quaternion.setFromUnitVectors(UP, dir.normalize());
-  mesh.scale.set(1, len, 1);
+  mesh.scale.set(1, l, 1);
 }
+const setV = (o, p) => o.position.set(p.x, p.y, p.z);
 
 export class Scene3D {
-  constructor(canvas) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+  /** @param {HTMLCanvasElement} canvas @param {object} cfg COMBAT */
+  constructor(canvas, cfg) {
+    this.cfg = cfg;
+    this.mode = cfg.view.mode;
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x0a1018);
-    this.scene.fog = new THREE.Fog(0x0a1018, 3, 12);
+    this.scene.fog = new THREE.Fog(0x0a1018, 4, 14);
     this.camera = new THREE.PerspectiveCamera(70, 1, 0.03, 60);
+    this.shake = { x: 0, y: 0 };
 
     this.scene.add(new THREE.HemisphereLight(0x9fc7ff, 0x202028, 1.1));
     const key = new THREE.DirectionalLight(0xffffff, 1.5);
     key.position.set(1.2, 2.4, 1.6);
     this.scene.add(key);
-    const rim = new THREE.DirectionalLight(0x7c5cff, 0.8);
-    rim.position.set(-1.5, 1.2, -2.2);
+    const rim = new THREE.DirectionalLight(0x7c5cff, 0.9);
+    rim.position.set(-1.5, 1.2, -2.4);
     this.scene.add(rim);
 
     this._buildRing();
     this._buildEnemy();
     this._buildPlayer();
-
-    // 平滑化済みランドマーク（Three.js 座標）
-    this.pt = new Map(TRACKED.map((i) => [i, new THREE.Vector3()]));
-    this.hasPose = false;
-    this.rest = new THREE.Vector3(0, 0, 0); // 頭のゆっくり追従する基準位置
-    this._restInit = false;
-    this._tmpA = new THREE.Vector3();
-    this._tmpB = new THREE.Vector3();
-    this.shake = { x: 0, y: 0 };
+    this._buildDebug();
   }
 
-  // ── シーンの構築 ────────────────────────────────────────────────────────────
   _buildRing() {
-    const floor = new THREE.Mesh(
+    this.floor = new THREE.Mesh(
       new THREE.CircleGeometry(6, 48),
       new THREE.MeshStandardMaterial({ color: 0x1b2433, roughness: 0.95 }),
     );
-    floor.rotation.x = -Math.PI / 2;
-    this.floor = floor;
-    this.scene.add(floor);
-
-    // ロープ 3 本（奥行き感のためだけの飾り）
+    this.floor.rotation.x = -Math.PI / 2;
+    this.floor.position.y = -FLOOR_DROP;
+    this.scene.add(this.floor);
     this.ropes = new THREE.Group();
     for (let i = 0; i < 3; i++) {
       const rope = new THREE.Mesh(
@@ -113,7 +73,7 @@ export class Scene3D {
         new THREE.MeshStandardMaterial({ color: 0x7c5cff, emissive: 0x2a1f6b, roughness: 0.6 }),
       );
       rope.rotation.x = -Math.PI / 2;
-      rope.position.y = 0.45 + i * 0.35;
+      rope.position.y = -FLOOR_DROP + 0.45 + i * 0.35;
       this.ropes.add(rope);
     }
     this.scene.add(this.ropes);
@@ -121,26 +81,22 @@ export class Scene3D {
 
   _buildEnemy() {
     const g = new THREE.Group();
-    this.enemyMat = new THREE.MeshStandardMaterial({ color: 0x38445a, roughness: 0.55, metalness: 0.05 });
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.13, 24, 18), this.enemyMat);
-    const torso = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.2, 0.42, 8, 20),
-      new THREE.MeshStandardMaterial({ color: 0x2b3444, roughness: 0.8 }),
+    const c = this.cfg.enemy;
+    this.enemyMat = new THREE.MeshStandardMaterial({ color: 0x46566f, roughness: 0.5 });
+    // 頭は狙う的なので、胴よりはっきり見える色にする
+    this.enemyHead = new THREE.Mesh(new THREE.SphereGeometry(c.headRadius, 26, 20), this.enemyMat);
+    const torsoLen = c.torsoTopY - c.torsoBottomY;
+    this.enemyTorso = new THREE.Mesh(
+      new THREE.CapsuleGeometry(c.torsoRadius, torsoLen, 8, 20),
+      new THREE.MeshStandardMaterial({ color: 0x2b3444, roughness: 0.85 }),
     );
-    torso.position.y = -0.44;
-    g.add(head, torso);
-
-    // グローブ（左右で色を分ける。プレイヤー視点で見て左が画面左）
+    g.add(this.enemyHead, this.enemyTorso);
     this.enemyGloves = {};
-    for (const side of [-1, 1]) {
-      const mat = new THREE.MeshStandardMaterial({
-        color: side < 0 ? 0xd24a4a : 0xc23c3c,
-        emissive: 0x000000, roughness: 0.45,
-      });
-      const glove = new THREE.Mesh(new THREE.SphereGeometry(0.095, 20, 16), mat);
-      g.add(glove);
-      this.enemyGloves[side] = { mesh: glove, mat, pos: new THREE.Vector3(side * 0.19, -0.2, 0.12) };
-      glove.position.copy(this.enemyGloves[side].pos);
+    for (const side of ["left", "right"]) {
+      const mat = new THREE.MeshStandardMaterial({ color: 0xd24a4a, emissive: 0x000000, roughness: 0.45 });
+      const m = new THREE.Mesh(new THREE.SphereGeometry(c.gloveRadius, 22, 16), mat);
+      this.enemyGloves[side] = { mesh: m, mat };
+      g.add(m);
     }
     this.enemy = g;
     this.scene.add(g);
@@ -148,40 +104,68 @@ export class Scene3D {
 
   _buildPlayer() {
     const rig = new THREE.Group();
-    const jointMat = new THREE.MeshStandardMaterial({ color: 0xdfe7f2, roughness: 0.5 });
-    const boneMat = new THREE.MeshStandardMaterial({ color: 0x9aa8bd, roughness: 0.6 });
-    const jointGeo = new THREE.SphereGeometry(0.045, 16, 12);
-    const boneGeo = new THREE.CylinderGeometry(0.035, 0.035, 1, 12); // 高さ 1 → scale.y で伸ばす
+    const c = this.cfg.player;
+    // 敵を隠さないよう、体は細め＋半透明ぎみ
+    const boneMat = new THREE.MeshStandardMaterial({ color: 0x9aa8bd, roughness: 0.6, transparent: true, opacity: 0.9 });
+    const jointMat = new THREE.MeshStandardMaterial({ color: 0xdfe7f2, roughness: 0.5, transparent: true, opacity: 0.9 });
+    const boneGeo = new THREE.CylinderGeometry(0.032, 0.032, 1, 12);
 
-    this.joints = {};
-    for (const i of [LM.shoulderL, LM.shoulderR, LM.elbowL, LM.elbowR, LM.hipL, LM.hipR]) {
-      const m = new THREE.Mesh(jointGeo, jointMat);
-      this.joints[i] = m;
-      rig.add(m);
-    }
-    // 骨: 上腕 / 前腕 / 肩ライン / 背骨
-    this.bones = [
-      { a: LM.shoulderL, b: LM.elbowL }, { a: LM.elbowL, b: LM.wristL },
-      { a: LM.shoulderR, b: LM.elbowR }, { a: LM.elbowR, b: LM.wristR },
-      { a: LM.shoulderL, b: LM.shoulderR }, { a: LM.hipL, b: LM.hipR },
-    ].map((s) => ({ ...s, mesh: new THREE.Mesh(boneGeo, boneMat) }));
-    for (const b of this.bones) rig.add(b.mesh);
-    // 背骨（肩中点↔腰中点）は端点を毎フレーム計算するので別扱い
-    this.spine = new THREE.Mesh(boneGeo, boneMat);
-    rig.add(this.spine);
-
-    // グローブ: 左=青 / 右=赤（一人称で自分の右手は画面右に出る）
-    this.gloves = {
-      [LM.wristL]: new THREE.Mesh(new THREE.SphereGeometry(0.078, 20, 16),
+    this.pHead = new THREE.Mesh(
+      new THREE.SphereGeometry(c.headRadius * 0.82, 24, 18),
+      new THREE.MeshStandardMaterial({ color: 0xe8eef8, roughness: 0.45, transparent: true, opacity: 0.55 }),
+    );
+    // 当たり判定球そのものを薄く光らせて可視化する（敵グローブがここへ迫るのが見える）
+    this.pHeadHit = new THREE.Mesh(
+      new THREE.SphereGeometry(c.headRadius, 24, 18),
+      new THREE.MeshBasicMaterial({ color: 0x6cd1ff, transparent: true, opacity: 0.18, depthWrite: false }),
+    );
+    this.pShoulders = { left: new THREE.Mesh(new THREE.SphereGeometry(0.05, 14, 10), jointMat), right: new THREE.Mesh(new THREE.SphereGeometry(0.05, 14, 10), jointMat) };
+    this.pElbows = { left: new THREE.Mesh(new THREE.SphereGeometry(0.042, 14, 10), jointMat), right: new THREE.Mesh(new THREE.SphereGeometry(0.042, 14, 10), jointMat) };
+    this.pBones = {
+      upperL: new THREE.Mesh(boneGeo, boneMat), foreL: new THREE.Mesh(boneGeo, boneMat),
+      upperR: new THREE.Mesh(boneGeo, boneMat), foreR: new THREE.Mesh(boneGeo, boneMat),
+      chest: new THREE.Mesh(boneGeo, boneMat), spine: new THREE.Mesh(boneGeo, boneMat),
+      neck: new THREE.Mesh(boneGeo, boneMat),
+    };
+    // グローブ: 左=青 / 右=赤（背後視点でも一人称でも、自分の右手は画面右）
+    this.pGloves = {
+      left: new THREE.Mesh(new THREE.SphereGeometry(c.gloveRadius, 22, 16),
         new THREE.MeshStandardMaterial({ color: 0x4a7bff, emissive: 0x0a1740, roughness: 0.4 })),
-      [LM.wristR]: new THREE.Mesh(new THREE.SphereGeometry(0.078, 20, 16),
+      right: new THREE.Mesh(new THREE.SphereGeometry(c.gloveRadius, 22, 16),
         new THREE.MeshStandardMaterial({ color: 0xff5f6d, emissive: 0x3a0d12, roughness: 0.4 })),
     };
-    for (const m of Object.values(this.gloves)) rig.add(m);
-
+    rig.add(this.pHead, this.pHeadHit, ...Object.values(this.pShoulders), ...Object.values(this.pElbows),
+      ...Object.values(this.pBones), ...Object.values(this.pGloves));
     this.rig = rig;
-    rig.visible = false; // 姿勢が来るまで出さない
+    rig.visible = false;
     this.scene.add(rig);
+  }
+
+  /** 当たり判定のワイヤ可視化（トグル）。実際に判定に使う半径をそのまま描く。 */
+  _buildDebug() {
+    const wire = (r, color) => new THREE.Mesh(
+      new THREE.SphereGeometry(r, 14, 10),
+      new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.5 }),
+    );
+    const c = this.cfg;
+    this.dbg = new THREE.Group();
+    this.dbgPlayer = {
+      head: wire(c.player.headRadius, 0x6cd1ff),
+      gloveL: wire(c.player.gloveRadius, 0x6cd1ff), gloveR: wire(c.player.gloveRadius, 0x6cd1ff),
+      foreL: new THREE.Mesh(new THREE.CylinderGeometry(c.player.forearmRadius, c.player.forearmRadius, 1, 10),
+        new THREE.MeshBasicMaterial({ color: 0x6cd1ff, wireframe: true, transparent: true, opacity: 0.45 })),
+      foreR: new THREE.Mesh(new THREE.CylinderGeometry(c.player.forearmRadius, c.player.forearmRadius, 1, 10),
+        new THREE.MeshBasicMaterial({ color: 0x6cd1ff, wireframe: true, transparent: true, opacity: 0.45 })),
+    };
+    this.dbgEnemy = {
+      head: wire(c.enemy.headRadius, 0xffa04a),
+      torso: new THREE.Mesh(new THREE.CapsuleGeometry(c.enemy.torsoRadius, c.enemy.torsoTopY - c.enemy.torsoBottomY, 6, 12),
+        new THREE.MeshBasicMaterial({ color: 0xffa04a, wireframe: true, transparent: true, opacity: 0.4 })),
+      gloveL: wire(c.enemy.gloveRadius, 0xffa04a), gloveR: wire(c.enemy.gloveRadius, 0xffa04a),
+    };
+    this.dbg.add(...Object.values(this.dbgPlayer), ...Object.values(this.dbgEnemy));
+    this.dbg.visible = false;
+    this.scene.add(this.dbg);
   }
 
   // ── 更新 ───────────────────────────────────────────────────────────────────
@@ -191,90 +175,91 @@ export class Scene3D {
     this.camera.updateProjectionMatrix();
   }
 
-  /**
-   * プレイヤーのボーンと視点を worldLandmarks から更新する。
-   * @param {Array<{x,y,z}>|null} world MediaPipe worldLandmarks（メートル・腰原点）
-   */
-  updatePlayer(world, dtSec) {
-    if (!world) { this.rig.visible = false; return; }
-    const k = 1 - Math.exp(-Math.max(dtSec, 0) / SMOOTH_TAU);
-    const tmp = this._tmpA;
-    for (const i of TRACKED) {
-      const lm = world[i];
-      if (!lm) continue;
-      mpToThree(lm, tmp);
-      const p = this.pt.get(i);
-      if (!this.hasPose) p.copy(tmp);
-      else p.lerp(tmp, k);
-    }
-    this.hasPose = true;
-    this.rig.visible = true;
-
-    // ボーン / 関節 / グローブ
-    for (const [i, m] of Object.entries(this.joints)) m.position.copy(this.pt.get(Number(i)));
-    for (const b of this.bones) orientBone(b.mesh, this.pt.get(b.a), this.pt.get(b.b));
-    for (const [i, m] of Object.entries(this.gloves)) m.position.copy(this.pt.get(Number(i)));
-    const shoulderMid = this._tmpA.copy(this.pt.get(LM.shoulderL)).add(this.pt.get(LM.shoulderR)).multiplyScalar(0.5);
-    const hipMid = this._tmpB.copy(this.pt.get(LM.hipL)).add(this.pt.get(LM.hipR)).multiplyScalar(0.5);
-    orientBone(this.spine, shoulderMid, hipMid);
-
-    // 視点: 鼻に追従。ゆっくり動く基準からの変位だけを HEAD_DAMP 倍して効かせる
-    // （リーン/ダックで視点は動くが、じわじわしたズレは基準側が吸収する）。
-    const head = this.pt.get(LM.nose);
-    if (!this._restInit) { this.rest.copy(head); this._restInit = true; }
-    else this.rest.lerp(head, 1 - Math.exp(-Math.max(dtSec, 0) / REST_TAU));
-    const eye = this._tmpA.copy(this.rest).addScaledVector(this._tmpB.subVectors(head, this.rest), HEAD_DAMP);
-    this.camera.position.set(eye.x + this.shake.x, eye.y + EYE_UP + this.shake.y, eye.z + EYE_BACK);
-    this.camera.lookAt(eye.x, eye.y + EYE_UP, eye.z - ENEMY_DIST); // 正面（敵）を向く
-
-    // 敵と床をプレイヤーの目線高さに合わせる
-    this.enemyBaseZ = this.rest.z - ENEMY_DIST;
-    this.enemy.position.set(0, this.rest.y - ENEMY_HEAD_DROP, this.enemyBaseZ);
-    this.floor.position.y = this.rest.y - FLOOR_DROP;
-    this.ropes.position.y = this.rest.y - FLOOR_DROP;
-  }
-
-  /**
-   * 敵の見た目を状態から更新する（ロジックは boxing.js 側のまま。ここは表現だけ）。
-   * @param {{phase:string, prog:number, attack:{kind:string, side:number}|null, hurt:number}} v
-   */
-  updateEnemy(v, dtSec) {
-    const k = 1 - Math.exp(-Math.max(dtSec, 0) / 0.045);
-    const tel = v.phase === "telegraph", strike = v.phase === "strike", recover = v.phase === "recover";
-    for (const side of [-1, 1]) {
-      const gl = this.enemyGloves[side];
-      // 伸ばすのは attack.hand の 1 本だけ（両手が同時に迫ると画面が埋まって何も見えない）
-      const active = !!v.attack && (v.attack.hand ?? v.attack.side) === side;
-      const t = this._tmpA;
-      if (active && tel) {
-        // 引いて溜める（＋発光で予告）
-        t.set(side * (0.19 + 0.1 * v.prog), -0.2 + 0.12 * v.prog, 0.12 - 0.22 * v.prog);
-      } else if (active && strike) {
-        // こちらへ伸ばす: +Z_three ＝ カメラ（プレイヤー）方向。カメラは敵から 1.2m なので
-        // 0.72 まで＝顔の手前 ~0.5m で止める（近すぎると画面がグローブで埋まる）。
-        t.set(v.attack.kind === "hook" ? v.attack.side * 0.34 : side * 0.1, v.attack.kind === "straight" ? -0.06 : -0.12, 0.72);
-      } else if (recover) {
-        t.set(side * 0.22, -0.5, 0.02); // ガードが下がる＝隙
-      } else {
-        t.set(side * 0.19, -0.2, 0.12);
-      }
-      gl.mesh.position.lerp(t, k);
-      const glow = active && tel ? 0.15 + 0.85 * v.prog : active && strike ? 1 : 0;
-      gl.mat.emissive.setRGB(glow * 1.0, glow * 0.55, 0);
-      const scale = active && strike ? 1.25 : 1;
-      gl.mesh.scale.setScalar(gl.mesh.scale.x + (scale - gl.mesh.scale.x) * k);
-    }
-    // 被弾で仰け反る + 硬直の色変化（位置は毎フレーム基準からの絶対値で置く＝累積しない）
-    const hurt = clamp(v.hurt, 0, 1);
-    this.enemy.rotation.x = -0.35 * hurt;
-    this.enemy.position.z = (this.enemyBaseZ ?? -ENEMY_DIST) - 0.12 * hurt;
-    this.enemyMat.color.setHex(hurt > 0.02 ? 0xa35b5b : recover ? 0x4a3f5e : 0x38445a);
-  }
-
-  /** 画面シェイク量 [m] を渡す（次の updatePlayer/render で反映）。 */
+  setCameraMode(mode) { this.mode = mode === "first" ? "first" : "third"; }
+  toggleCameraMode() { this.setCameraMode(this.mode === "third" ? "first" : "third"); return this.mode; }
+  setDebug(on) { this.dbg.visible = !!on; }
   setShake(x, y) { this.shake.x = x; this.shake.y = y; }
 
-  render() { this.renderer.render(this.scene, this.camera); }
+  /**
+   * 1 フレーム反映。位置はすべて呼び出し側（combat.js 経由）が算出済みのワールド座標。
+   * @param {{pose:object|null, enemy:object, hurt:number}} view
+   */
+  update(view) {
+    const { pose, enemy } = view;
+    // ── 敵 ──
+    const e = this.cfg.enemy;
+    setV(this.enemyHead, enemy.head);
+    this.enemyTorso.position.set(enemy.head.x, (e.torsoTopY + e.torsoBottomY) / 2 + (enemy.head.y - e.headY), enemy.head.z);
+    for (const side of ["left", "right"]) setV(this.enemyGloves[side].mesh, enemy.gloves[side]);
+    const hurt = Math.max(0, Math.min(1, view.hurt ?? 0));
+    this.enemy.rotation.x = -0.3 * hurt;
+    this.enemyMat.color.setHex(hurt > 0.02 ? 0xb06060 : enemy.guardUp ? 0x46566f : 0x5b4a72);
+    // 攻撃中のグローブは光らせる（テキスト予告の代わりに、光と接近そのものが予告）
+    for (const side of ["left", "right"]) {
+      const glow = enemy.activeHand === side ? (enemy.phase === "strike" ? 1 : 0.45) : 0;
+      this.enemyGloves[side].mat.emissive.setRGB(glow, glow * 0.45, 0);
+    }
 
+    // ── プレイヤー ──
+    if (!pose) { this.rig.visible = false; return; }
+    this.rig.visible = true;
+    setV(this.pHead, pose.head);
+    setV(this.pHeadHit, pose.head);
+    // 頭球と体は一人称では見えると邪魔なので隠す
+    const third = this.mode === "third";
+    this.pHead.visible = third;
+    this.pHeadHit.visible = third;
+    this.pBones.neck.visible = third;
+    this.pBones.spine.visible = third;
+
+    const shoulderMid = {
+      x: (pose.shoulders.left.x + pose.shoulders.right.x) / 2,
+      y: (pose.shoulders.left.y + pose.shoulders.right.y) / 2,
+      z: (pose.shoulders.left.z + pose.shoulders.right.z) / 2,
+    };
+    const hip = { x: shoulderMid.x * 0.6, y: shoulderMid.y - 0.45, z: shoulderMid.z };
+    for (const side of ["left", "right"]) {
+      setV(this.pShoulders[side], pose.shoulders[side]);
+      setV(this.pElbows[side], pose[side].elbow);
+      setV(this.pGloves[side], pose[side].wrist);
+    }
+    orientBone(this.pBones.upperL, pose.shoulders.left, pose.left.elbow);
+    orientBone(this.pBones.foreL, pose.left.elbow, pose.left.wrist);
+    orientBone(this.pBones.upperR, pose.shoulders.right, pose.right.elbow);
+    orientBone(this.pBones.foreR, pose.right.elbow, pose.right.wrist);
+    orientBone(this.pBones.chest, pose.shoulders.left, pose.shoulders.right);
+    orientBone(this.pBones.spine, shoulderMid, hip);
+    orientBone(this.pBones.neck, shoulderMid, pose.head);
+
+    // ── デバッグ判定表示 ──
+    if (this.dbg.visible) {
+      setV(this.dbgPlayer.head, pose.head);
+      setV(this.dbgPlayer.gloveL, pose.left.wrist);
+      setV(this.dbgPlayer.gloveR, pose.right.wrist);
+      orientBone(this.dbgPlayer.foreL, pose.left.elbow, pose.left.wrist);
+      orientBone(this.dbgPlayer.foreR, pose.right.elbow, pose.right.wrist);
+      setV(this.dbgEnemy.head, enemy.head);
+      this.dbgEnemy.torso.position.copy(this.enemyTorso.position);
+      setV(this.dbgEnemy.gloveL, enemy.gloves.left);
+      setV(this.dbgEnemy.gloveR, enemy.gloves.right);
+    }
+
+    this._placeCamera(pose, enemy);
+  }
+
+  _placeCamera(pose, enemy) {
+    const v = this.cfg.view;
+    const h = pose.head;
+    if (this.mode === "first") {
+      this.camera.position.set(h.x + this.shake.x, h.y + v.first.up + this.shake.y, h.z + v.first.back);
+      this.camera.lookAt(enemy.head.x, enemy.head.y, enemy.head.z);
+    } else {
+      // 背後やや上。頭の動きにはゆるく追従（頭球が画面内で動く＝避けたのが見える）
+      this.camera.position.set(h.x * 0.45 + this.shake.x, h.y * 0.45 + v.third.up + this.shake.y, h.z + v.third.back);
+      this.camera.lookAt(h.x * 0.3, h.y * 0.3 - 0.02, h.z - v.third.lookAhead - this.cfg.enemyDist * 0.35);
+    }
+  }
+
+  render() { this.renderer.render(this.scene, this.camera); }
   dispose() { this.renderer.dispose(); }
 }

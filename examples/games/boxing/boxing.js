@@ -4,16 +4,15 @@
  * コントローラを持たない＝手はふさがっていない。だから「当たった / 受けた / かわした」の
  * 区別は画面ではなく体で返す必要がある、という触覚が主役になる題材。
  *
- *   パンチ  … 手首を前（カメラ方向）へ突く（左右それぞれ独立）
- *   ガード  … 両手を顔の前に上げる（継続）
- *   回避    … 左右に上体を倒す（リーン）／しゃがむ（ダック）
+ * ── 攻防は全部「位置」で決まる（テキストの予告・指示は出さない） ──────────────
+ *   ガード … 敵のグローブが自分のグローブ / 前腕に当たれば成立（ジェスチャー判定ではない）
+ *   回避   … 上体を振ると頭の当たり判定球が動く。グローブが当たらなければ空振り
+ *   攻撃   … 自分のグローブ球が敵の頭 / 胴に入ればヒット。敵のガードに当たれば弾かれる
+ * 敵の攻撃はグローブが**ゆっくり近づいてくる**こと自体が予告。文字は出さない。
  *
- * 表示は一人称の 3D（Three.js・scene3d.js）。実カメラ映像はメインに出さず、
- * トラッキング入力としてだけ使う（デバッグ PIP でのみ小窓表示）。プレイヤーの上半身は
- * worldLandmarks から作ったボーンで描かれ、視点は鼻の位置に置く。
- *
- * 敵は idle → 予告(telegraph) → 打撃(strike) → 硬直(recover) のステートマシンで、
- * 予告と硬直が「差し込みどころ」。打撃の瞬間に ガード / 正しい回避 / 被弾 を判定する。
+ * 表示は背後やや上の 3D（scene3d.js）。実カメラ映像はトラッキング入力にだけ使い、
+ * 確認用のデバッグ PIP でのみ小窓表示する。位置の算出は combat.js（純関数）に集約していて、
+ * 判定と描画が同じ値を使うので「見えている位置＝当たる位置」になる。
  *
  * 触覚・音は shared/hapbeat-bridge.js + shared/content-router.js 経由（fps デモと同じ）。
  * helper 未起動でも音と映像だけで最後まで遊べる。
@@ -26,7 +25,8 @@ import { ContentRouter } from "../shared/content-router.js";
 import { Fx } from "../shared/fx.js";
 import { PoseTracker, SKELETON } from "./pose.js";
 import { GestureTracker } from "./gestures.js";
-import { TUNING, GAME } from "./tuning.js";
+import { TUNING, COMBAT, GAME } from "./tuning.js";
+import { buildPlayerPose, attackPathT, enemyGlovePos, resolveEnemyGlove, resolvePlayerGlove, v3, dist } from "./combat.js";
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -40,122 +40,92 @@ masterGain.gain.value = 0.9;
 masterGain.connect(actx.destination);
 
 const router = new ContentRouter(bridge);
-bridge.attachRouter(router); // bridge.fire() が Kit クリップ / 音声ファイルを優先し、無ければ合成にフォールバック
+bridge.attachRouter(router);
 router.attachAudio(actx, masterGain);
 router.load({
   eventmapUrl: "eventmap.json",
   manifestUrl: "../demo-kit/fps-kit/fps-kit-manifest.json", // ボクシング専用 Kit は未作成 → fps-kit を流用
   clipBase: "../demo-kit/fps-kit/stream-clips/",
 });
-router.loadAudioFiles("../"); // event-content の audio.file は shell root（examples/games/）基準
+router.loadAudioFiles("../");
 bridge.init({ appName: "HapbeatBoxing", audioBase: "../" }).then(() => { bridgeReady = true; syncConn(); });
 
-// ── DOM ──────────────────────────────────────────────────────────────────────
+// ── DOM（3D は全画面。設定は隅の歯車に畳む） ──────────────────────────────────
 const root = document.createElement("div");
 root.id = "hbbox";
 root.innerHTML = `
   <style>
     #hbbox { position: fixed; inset: 0; font-family: system-ui, sans-serif; color: #e6edf3;
-      background: #070a10; display: flex; overflow: hidden; }
-    #hbbox .stage { position: relative; flex: 1 1 auto; min-width: 0; background: #0a1018; }
-    /* 実カメラ映像はメイン表示しない。ただし完全に display:none にするとブラウザによっては
-       フレームが更新されないため、極小・不可視でレイアウト外に置いて再生を維持する。 */
-    #hbbox video { position: absolute; width: 2px; height: 2px; left: 0; bottom: 0;
-      opacity: 0.01; pointer-events: none; }
+      background: #070a10; overflow: hidden; }
+    /* 実カメラ映像はメイン表示しない。display:none だとフレームが更新されないブラウザがあるので
+       極小・不可視でレイアウト外に置いて再生だけ維持する。 */
+    #hbbox video { position: absolute; width: 2px; height: 2px; left: 0; bottom: 0; opacity: 0.01; pointer-events: none; }
     #hbbox canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
     #hbbox canvas#hud { pointer-events: none; }
-    /* 被弾フラッシュ（赤ビネット）。オーバーレイなので他要素を動かさない。 */
     #hbbox .vignette { position: absolute; inset: 0; z-index: 3; pointer-events: none; opacity: 0;
       background: radial-gradient(ellipse at center, rgba(255,40,52,0) 35%, rgba(255,40,52,0.85) 100%); }
-    #hbbox .panel { flex: 0 0 300px; background: rgba(10,13,18,0.94); border-left: 1px solid #2a313c;
-      padding: 12px 14px; overflow-y: auto; }
-    #hbbox h2 { margin: 0 0 8px; font-size: 15px; }
-    #hbbox .group-title { font-size: 11px; color: #8b97a6; text-transform: uppercase;
-      letter-spacing: .06em; margin: 12px 0 4px; }
-    #hbbox .row { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-size: 13px; }
-    #hbbox input[type=checkbox] { width: 16px; height: 16px; accent-color: #7c5cff; }
-    #hbbox button.primary { margin-top: 12px; width: 100%; padding: 10px; font-size: 14px;
-      font-weight: 600; color: #fff; background: #7c5cff; border: 0; border-radius: 8px; cursor: pointer; }
-    #hbbox button.primary:disabled { background: #3a3550; color: #9a94b5; cursor: not-allowed; }
-    #hbbox button.ghost { width: 100%; margin-top: 6px; padding: 7px; font-size: 12px; color: #cdd6e0;
+    /* 歯車メニュー（右上）。開閉してもレイアウトは動かない（オーバーレイ） */
+    #hbbox .gear { position: absolute; top: 12px; right: 12px; z-index: 7; width: 38px; height: 38px;
+      border-radius: 10px; border: 1px solid #39424f; background: rgba(10,13,18,0.8); color: #cdd6e0;
+      font-size: 18px; cursor: pointer; }
+    #hbbox .gear:hover { background: rgba(28,34,44,0.9); }
+    #hbbox .menu { position: absolute; top: 58px; right: 12px; z-index: 7; width: 232px; padding: 10px 12px;
+      background: rgba(10,13,18,0.94); border: 1px solid #2a313c; border-radius: 12px; }
+    #hbbox .menu.hidden { display: none; }
+    #hbbox .menu .t { font-size: 10px; color: #8b97a6; text-transform: uppercase; letter-spacing: .06em; margin: 8px 0 3px; }
+    #hbbox .menu label { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-size: 12.5px; cursor: pointer; }
+    #hbbox .menu input[type=checkbox] { width: 15px; height: 15px; accent-color: #7c5cff; }
+    #hbbox .menu button { width: 100%; margin-top: 5px; padding: 6px; font-size: 12px; color: #cdd6e0;
       background: #222a35; border: 1px solid #39424f; border-radius: 7px; cursor: pointer; }
-    #hbbox .badge { display: inline-block; padding: 1px 7px; border-radius: 6px; font-size: 11px;
+    #hbbox .badge { display: inline-block; padding: 1px 6px; border-radius: 6px; font-size: 10.5px;
       border: 1px solid #39424f; background: #222a35; }
     #hbbox .badge.on { background: #1f5f43; border-color: #2f8f66; color: #d9ffee; }
     #hbbox .badge.off { background: #5a2a2a; border-color: #8f4444; color: #ffe4e4; }
-    #hbbox ul { margin: 4px 0 0; padding-left: 18px; font-size: 12px; color: #b6c0cd; line-height: 1.7; }
-    /* 状態表示は常に 1 行ぶんの高さを確保する（出現でレイアウトが動かないように） */
-    #hbbox .statusline { min-height: 34px; display: flex; align-items: center; justify-content: center;
-      padding: 0 14px; font-size: 13px; background: rgba(6,9,14,0.72); border-bottom: 1px solid #1c2330;
-      position: absolute; top: 0; left: 0; right: 0; z-index: 4; text-align: center; }
-    #hbbox .statusline.info { color: #9fb0c4; }
+    /* 状態行は常に 1 行ぶんの高さを確保（出し入れでレイアウトが動かない）。
+       ラウンド中は姿勢ロスト警告以外は出さない＝ゲーム中の説明テキストは無し。 */
+    #hbbox .statusline { position: absolute; top: 0; left: 0; right: 0; z-index: 4; min-height: 30px;
+      display: flex; align-items: center; justify-content: center; font-size: 12.5px; text-align: center;
+      padding: 0 60px; color: #9fb0c4; }
     #hbbox .statusline.warn { color: #ffd479; }
     #hbbox .statusline.err  { color: #ff9a9a; }
     #hbbox .overlay { position: absolute; inset: 0; z-index: 6; display: flex; align-items: center;
       justify-content: center; background: rgba(5,7,10,0.72); backdrop-filter: blur(3px); }
     #hbbox .overlay.hidden { display: none; }
     #hbbox .card { background: rgba(14,18,26,0.96); border: 1px solid #2a313c; border-radius: 14px;
-      padding: 22px 26px; text-align: center; max-width: 460px; }
-    #hbbox .card h1 { margin: 0 0 6px; font-size: 26px; }
-    #hbbox .card p { margin: 6px 0; font-size: 13px; color: #b6c0cd; line-height: 1.7; }
-    #hbbox .card .actions { display: flex; gap: 8px; justify-content: center; margin-top: 14px; }
-    #hbbox .card button { padding: 9px 18px; font-size: 14px; border-radius: 8px; cursor: pointer;
+      padding: 24px 28px; text-align: center; max-width: 520px; }
+    #hbbox .card h1 { margin: 0 0 8px; font-size: 28px; }
+    #hbbox .card p { margin: 6px 0; font-size: 13.5px; color: #b6c0cd; line-height: 1.8; }
+    #hbbox .card .actions { display: flex; gap: 8px; justify-content: center; margin-top: 16px; }
+    #hbbox .card button { padding: 10px 20px; font-size: 14px; border-radius: 8px; cursor: pointer;
       border: 1px solid #39424f; background: #222a35; color: #cdd6e0; }
-    #hbbox .card button.primary { width: auto; margin: 0; border: 0; background: #7c5cff; color: #fff; }
-    #hbbox .gestures { position: absolute; left: 12px; bottom: 12px; z-index: 4; display: flex; gap: 6px; }
-    #hbbox .gi { min-width: 44px; text-align: center; padding: 5px 7px; border-radius: 8px; font-size: 15px;
-      background: rgba(10,13,18,0.7); border: 1px solid #2a313c; color: #55606e; }
-    #hbbox .gi.on { background: #7c5cff; border-color: #a893ff; color: #fff; }
+    #hbbox .card button.primary { border: 0; background: #7c5cff; color: #fff; font-weight: 600; }
   </style>
-  <div class="stage" id="stage">
-    <video id="cam" playsinline muted></video>
-    <canvas id="gl"></canvas>
-    <canvas id="hud"></canvas>
-    <div class="vignette" id="vignette"></div>
-    <div class="statusline info" id="status">初期化中…</div>
-    <div class="gestures">
-      <div class="gi" id="gi_l" title="左パンチ">🥊L</div>
-      <div class="gi" id="gi_r" title="右パンチ">R🥊</div>
-      <div class="gi" id="gi_b" title="ガード">🛡</div>
-      <div class="gi" id="gi_lean" title="リーン">↔</div>
-      <div class="gi" id="gi_duck" title="ダック">⬇</div>
-    </div>
-    <div class="overlay" id="overlay">
-      <div class="card" id="card"></div>
-    </div>
+  <video id="cam" playsinline muted></video>
+  <canvas id="gl"></canvas>
+  <canvas id="hud"></canvas>
+  <div class="vignette" id="vignette"></div>
+  <div class="statusline" id="status">初期化中…</div>
+  <button class="gear" id="gear" title="設定">⚙</button>
+  <div class="menu hidden" id="menu">
+    <div class="t">モダリティ</div>
+    <label><input type="checkbox" id="m_audio" checked> 👂 音</label>
+    <label><input type="checkbox" id="m_haptic" checked> ✋ 触覚</label>
+    <div class="t">表示</div>
+    <label><input type="checkbox" id="m_third" checked> 🎥 背後視点（OFF＝一人称）</label>
+    <label><input type="checkbox" id="m_pip" checked> 🦴 カメラ+骨格（PIP）</label>
+    <label><input type="checkbox" id="m_dbg"> 🎯 当たり判定を表示</label>
+    <div class="t">状態</div>
+    <div style="font-size:12px;margin:4px 0">Helper: <span id="conn" class="badge off">未接続</span></div>
+    <div style="font-size:12px;margin:4px 0">推論: <span id="delegate" class="badge off">未初期化</span></div>
+    <button id="recalBtn">構えを取り直す</button>
+    <button id="testBtn">触覚テスト</button>
+    <button id="menuBtn">← デモ一覧へ</button>
   </div>
-  <div class="panel">
-    <h2>🥊 触覚ボクシング</h2>
-    <div class="group-title">モダリティ</div>
-    <label class="row"><input type="checkbox" id="m_audio" checked> 👂 音</label>
-    <label class="row"><input type="checkbox" id="m_haptic" checked> ✋ 触覚</label>
-
-    <div class="group-title">表示</div>
-    <label class="row"><input type="checkbox" id="m_skel" checked> 🦴 カメラ+骨格（PIP）</label>
-
-    <div class="group-title">状態</div>
-    <div class="row">Helper: <span id="conn" class="badge off">未接続</span></div>
-    <div class="row">推論: <span id="delegate" class="badge off">未初期化</span></div>
-
-    <button class="primary" id="startBtn" disabled>準備中…</button>
-    <button class="ghost" id="recalBtn">構えを取り直す</button>
-    <button class="ghost" id="testBtn">触覚テスト</button>
-    <button class="ghost" id="menuBtn">← デモ一覧へ</button>
-
-    <div class="group-title">操作</div>
-    <ul>
-      <li><b>パンチ</b>: 手をカメラへ突き出す（左右別）</li>
-      <li><b>ガード</b>: 両手を顔の前に上げる</li>
-      <li><b>回避</b>: 上体を左右に倒す／しゃがむ</li>
-      <li>敵のグローブが<b>光ったら予告</b>。フック＝逆側へリーン、ストレート＝ダック。ガードは全部止まる</li>
-      <li>予告中・硬直中の敵は<b>隙</b>。そこに打つと大ダメージ</li>
-    </ul>
-  </div>
+  <div class="overlay" id="overlay"><div class="card" id="card"></div></div>
 `;
 document.body.style.margin = "0";
 document.body.appendChild(root);
 
-const stage = root.querySelector("#stage");
 const video = root.querySelector("#cam");
 const glCanvas = root.querySelector("#gl");
 const hudCanvas = root.querySelector("#hud");
@@ -166,20 +136,18 @@ const overlay = root.querySelector("#overlay");
 const card = root.querySelector("#card");
 const connEl = root.querySelector("#conn");
 const delegateEl = root.querySelector("#delegate");
-const startBtn = root.querySelector("#startBtn");
-const gi = {
-  l: root.querySelector("#gi_l"), r: root.querySelector("#gi_r"), b: root.querySelector("#gi_b"),
-  lean: root.querySelector("#gi_lean"), duck: root.querySelector("#gi_duck"),
-};
+const menuEl = root.querySelector("#menu");
 
-let pipOn = true; // カメラ+骨格の PIP（TITLE/CALIB では大きく、FIGHT では小さく出す）
-root.querySelector("#m_skel").onchange = (e) => { pipOn = e.target.checked; };
+let pipOn = true, debugOn = false;
+root.querySelector("#gear").onclick = () => menuEl.classList.toggle("hidden");
+root.querySelector("#m_pip").onchange = (e) => { pipOn = e.target.checked; };
+root.querySelector("#m_dbg").onchange = (e) => { debugOn = e.target.checked; scene?.setDebug(debugOn); };
+root.querySelector("#m_third").onchange = (e) => scene?.setCameraMode(e.target.checked ? "third" : "first");
 root.querySelector("#m_audio").onchange = (e) => bridge.setMaster("audio", e.target.checked);
 root.querySelector("#m_haptic").onchange = (e) => bridge.setMaster("haptic", e.target.checked);
 root.querySelector("#testBtn").onclick = () => { unlockAudio(); bridge.testHaptic(); };
 root.querySelector("#menuBtn").onclick = () => { location.href = "../"; };
 root.querySelector("#recalBtn").onclick = () => { gestures.recalibrate(); if (state === "FIGHT") setState("CALIB"); };
-startBtn.onclick = () => startFight();
 
 function syncConn() {
   const ok = bridgeReady && bridge.connected;
@@ -188,12 +156,11 @@ function syncConn() {
 }
 bridge.onChange(syncConn);
 
-/** 状態行。常に 1 行ぶんの高さがあるので、書き換えてもレイアウトは動かない。 */
-function setStatus(text, kind = "info") {
-  statusEl.className = `statusline ${kind}`;
+/** 状態行。ラウンド中は姿勢ロスト以外を出さない（ゲーム中の説明テキストは無し）。 */
+function setStatus(text, kind = "") {
+  statusEl.className = "statusline " + kind;
   statusEl.textContent = text;
 }
-
 function unlockAudio() {
   bridge.unlockAudio();
   if (actx.state === "suspended") actx.resume();
@@ -203,118 +170,163 @@ function unlockAudio() {
 const pose = new PoseTracker();
 const gestures = new GestureTracker(TUNING);
 const fx = new Fx();
-let scene = null; // Scene3D（Three.js の読み込みに成功したら入る）
+let scene = null;
 
 // ── ゲーム状態 ────────────────────────────────────────────────────────────────
 let state = "LOADING"; // LOADING | TITLE | CALIB | FIGHT | RESULT
 let playerHp = GAME.playerHp, enemyHp = GAME.enemyHp;
 let timeLeft = GAME.roundSec, score = 0, combo = 0, bestCombo = 0;
-let elapsed = 0;             // FIGHT 経過秒（難易度ランプに使う）
-let hitstopUntil = 0;        // ヒットストップ終了時刻[ms]
-let slowMoUntil = 0;         // KO スローモー終了時刻[ms]
-let flash = 0;               // 被弾フラッシュ 0..1
-let lastGesture = { punchL: false, punchR: false, block: false, lean: 0, duck: false, visible: false, calibrated: false };
+let elapsed = 0, hitstopUntil = 0, slowMoUntil = 0, flash = 0, enemyHurt = 0;
+let playerPose = null;
 
-/** 敵のステートマシン（表現は scene3d 側。ここはロジックだけ）。 */
-const enemy = { phase: "idle", until: 0, phaseMs: 1, attack: null, hurt: 0 };
+/** 敵。idle → attack（接近→打撃→戻り）。攻撃中はガードが開く＝頭を狙える。 */
+const enemy = {
+  phase: "idle",       // "idle" | "approach" | "strike" | "retract"
+  nextAtMs: 0,
+  startedMs: 0,
+  attack: null,        // { kind, side, hand }
+  from: v3(), aim: v3(),
+  glove: { left: v3(), right: v3() },
+  resolved: false,
+  minHeadDist: Infinity,
+};
+/** プレイヤーの手ごとの接触状態（1 スイング 1 回にするための立ち上がり検出）。 */
+const punchContact = { left: { on: false, lastMs: -1e9 }, right: { on: false, lastMs: -1e9 } };
 
-/**
- * 攻撃を 1 つ抽選する。`side` は「どちら側から来るか」＝回避方向の判定に使う（ストレートは 0）。
- * `hand` は描画でどちらのグローブを伸ばすかだけに使う（判定には影響しない）。
- */
+function ramp() { return clamp(elapsed / GAME.rampSec, 0, 1); }
+function approachMs() { return lerp(COMBAT.attack.approachMs[0], COMBAT.attack.approachMs[1], ramp()); }
+function idleGapMs() { return lerp(GAME.idleGapMs[0], GAME.idleGapMs[1], ramp()); }
+function attackCfg() { return { ...COMBAT.attack, approachMs: approachMs() }; }
+
+const enemyHeadPos = () => v3(0, COMBAT.enemy.headY, -COMBAT.enemyDist);
+/** 敵グローブの構え位置（ガード時は頭の前、開いている時は下がる）。 */
+function enemyGuardPos(side, open) {
+  const h = enemyHeadPos();
+  const g = open ? COMBAT.enemy.open : COMBAT.enemy.guard;
+  const sign = side === "left" ? -1 : 1;
+  return v3(h.x + sign * g.x, h.y + g.y, h.z + g.z);
+}
+
 function pickAttack() {
   const w = GAME.attackWeights;
-  const total = w.hookLeft + w.hookRight + w.straight;
-  let r = Math.random() * total;
-  if ((r -= w.hookLeft) < 0) return { kind: "hook", side: -1, hand: -1 };   // 画面左から来る＝プレイヤーの左
-  if ((r -= w.hookRight) < 0) return { kind: "hook", side: 1, hand: 1 };
-  return { kind: "straight", side: 0, hand: Math.random() < 0.5 ? -1 : 1 };
+  let r = Math.random() * (w.hookLeft + w.hookRight + w.straight);
+  if ((r -= w.hookLeft) < 0) return { kind: "hook", side: -1, hand: "left" };
+  if ((r -= w.hookRight) < 0) return { kind: "hook", side: 1, hand: "right" };
+  return { kind: "straight", side: 0, hand: Math.random() < 0.5 ? "left" : "right" };
 }
 
-/** 難易度ランプ 0..1（時間経過で 1 に近づく）。 */
-function ramp() { return clamp(elapsed / GAME.rampSec, 0, 1); }
-function telegraphMs() { return lerp(GAME.telegraphMs[0], GAME.telegraphMs[1], ramp()); }
-function idleGapMs() { return lerp(GAME.idleGapMs[0], GAME.idleGapMs[1], ramp()); }
-
-function setEnemyPhase(phase, durMs, nowMs) {
-  enemy.phase = phase;
-  enemy.until = nowMs + durMs;
-  enemy.phaseMs = durMs;
+function startAttack(nowMs) {
+  const atk = pickAttack();
+  const j = COMBAT.attack.aimJitter;
+  const head = playerPose?.head ?? v3();
+  enemy.attack = atk;
+  enemy.startedMs = nowMs;
+  enemy.from = enemyGuardPos(atk.hand, false);
+  // 狙点は「攻撃を始めた瞬間の頭の位置」に固定する＝あとから上体を振れば避けられる
+  enemy.aim = v3(head.x + (Math.random() * 2 - 1) * j, head.y + (Math.random() * 2 - 1) * j, head.z);
+  enemy.resolved = false;
+  enemy.minHeadDist = Infinity;
+  enemy.phase = "approach";
 }
 
+/** 敵の攻撃を 1 フレーム進め、位置ベースで ガード / 被弾 / 空振り を判定する。 */
 function updateEnemy(nowMs) {
-  if (nowMs < enemy.until) return;
-  switch (enemy.phase) {
-    case "idle":
-      enemy.attack = pickAttack();
-      setEnemyPhase("telegraph", telegraphMs(), nowMs);
-      break;
-    case "telegraph":
-      setEnemyPhase("strike", GAME.strikeMs, nowMs);
-      resolveStrike(enemy.attack);
-      break;
-    case "strike":
-      setEnemyPhase("recover", GAME.recoverMs, nowMs);
-      break;
-    default:
-      enemy.attack = null;
-      setEnemyPhase("idle", idleGapMs(), nowMs);
+  const cfg = attackCfg();
+  if (enemy.phase === "idle") {
+    for (const side of ["left", "right"]) enemy.glove[side] = enemyGuardPos(side, false);
+    if (nowMs >= enemy.nextAtMs) startAttack(nowMs);
+    return;
   }
+  const { s, phase } = attackPathT(nowMs - enemy.startedMs, cfg);
+  enemy.phase = phase === "done" ? "idle" : phase;
+  if (phase === "done") {
+    // 当たらずに終わった: 頭のすぐ横を通っていれば「かわした」
+    if (!enemy.resolved && enemy.minHeadDist < cfg.dodgeNear) onDodge();
+    enemy.attack = null;
+    enemy.nextAtMs = nowMs + idleGapMs();
+    return;
+  }
+  const hand = enemy.attack.hand;
+  const other = hand === "left" ? "right" : "left";
+  enemy.glove[hand] = enemyGlovePos(enemy.from, enemy.aim, s, enemy.attack, cfg);
+  enemy.glove[other] = enemyGuardPos(other, true); // 攻撃中は反対の手も下がる＝隙
+
+  if (!playerPose || enemy.resolved) return;
+  enemy.minHeadDist = Math.min(enemy.minHeadDist, dist(enemy.glove[hand], playerPose.head));
+  const hit = resolveEnemyGlove(enemy.glove[hand], COMBAT.enemy.gloveRadius, playerPose, COMBAT);
+  if (hit === "block") { enemy.resolved = true; onBlock(); retractNow(nowMs, cfg); }
+  else if (hit === "hit") { enemy.resolved = true; onPlayerHit(); retractNow(nowMs, cfg); }
 }
 
-/** 敵の打撃が出た瞬間の判定: ガード → 正しい回避 → 被弾。 */
-function resolveStrike(atk) {
-  const g = lastGesture;
-  const pan = clamp(atk.side * 0.7, -1, 1);
-  if (g.block) {
-    bridge.fire("boxing_block", { pan });
-    score += GAME.score.block;
-    fx.shake(5);
-    setStatus("ガード成功", "info");
-    return;
-  }
-  // フックは「来た側の逆」へリーンで回避、ストレートはダックで回避
-  const dodged = atk.kind === "hook" ? g.lean === -atk.side : g.duck;
-  if (dodged) {
-    bridge.fire("boxing_dodge", { pan });
-    score += GAME.score.dodge;
-    setStatus(atk.kind === "hook" ? "回避成功（リーン）" : "回避成功（ダック）", "info");
-    return;
-  }
+/** 判定が付いたら残りの接近をやめて戻りに入る（当たった後も突き進むと不自然）。 */
+function retractNow(nowMs, cfg) {
+  enemy.startedMs = nowMs - (cfg.approachMs + cfg.strikeMs);
+}
+
+function onBlock() {
+  const pan = clamp((enemy.glove[enemy.attack.hand].x - (playerPose?.head.x ?? 0)) * 2, -1, 1);
+  bridge.fire("boxing_block", { pan });
+  score += GAME.score.block;
+  fx.shake(6);
+}
+function onDodge() {
+  bridge.fire("boxing_dodge", { pan: clamp(enemy.attack ? enemy.attack.side * 0.7 : 0, -1, 1) });
+  score += GAME.score.dodge;
+}
+function onPlayerHit() {
   playerHp = Math.max(0, playerHp - GAME.damage.playerHit);
   combo = 0;
   flash = 1;
-  fx.shake(16);
+  fx.shake(18);
   fx.burst(hudCanvas.width / 2, hudCanvas.height * 0.45, "#ff5f6d", 26);
-  bridge.fire("boxing_player_hit", { pan });
-  setStatus("被弾！", "warn");
+  bridge.fire("boxing_player_hit", { pan: clamp(enemy.attack ? enemy.attack.side * 0.7 : 0, -1, 1) });
   if (playerHp <= 0) endRound("lose");
 }
 
-/** プレイヤーのパンチ。敵が予告中／硬直中なら隙＝ヒット、そうでなければガードされる。 */
-function onPlayerPunch(side) {
-  const pan = side === "left" ? -0.6 : 0.6;
-  const open = enemy.phase === "telegraph" || enemy.phase === "recover";
-  const x = hudCanvas.width * (0.5 + (side === "left" ? -0.1 : 0.1));
-  if (open) {
-    enemyHp = Math.max(0, enemyHp - GAME.damage.punchHit);
-    combo++;
-    bestCombo = Math.max(bestCombo, combo);
-    score += GAME.score.punchHit + (combo > 1 ? combo * GAME.score.comboBonus : 0);
-    enemy.hurt = 1;
-    hitstopUntil = performance.now() + GAME.hitstopMs;
-    fx.shake(10);
-    fx.burst(x, hudCanvas.height * 0.4, "#ffd479", 22);
-    bridge.fire("boxing_punch_hit", { pan });
-    setStatus(combo > 1 ? `ヒット！ ${combo} コンボ` : "ヒット！", "info");
-    if (enemyHp <= 0) endRound("ko");
-  } else {
-    enemyHp = Math.max(0, enemyHp - GAME.damage.punchBlocked);
-    bridge.fire("boxing_punch_blocked", { pan });
-    score += GAME.score.punchBlocked;
-    fx.burst(x, hudCanvas.height * 0.4, "#8b97a6", 8, 120);
-    setStatus("ガードされた", "info");
+/**
+ * プレイヤーのグローブと敵の当たり判定。交差の立ち上がりでのみ発火し、
+ * 同じ手はクールダウン中は再判定しない（1 スイング 1 回）。
+ */
+function updatePlayerPunches(nowMs) {
+  if (!playerPose) return;
+  const guardUp = enemy.phase === "idle";
+  const target = { head: enemyHeadPos(), gloves: enemy.glove, guardUp,
+    torsoTop: v3(0, COMBAT.enemy.torsoTopY, -COMBAT.enemyDist),
+    torsoBottom: v3(0, COMBAT.enemy.torsoBottomY, -COMBAT.enemyDist) };
+  for (const side of ["left", "right"]) {
+    const arm = playerPose[side];
+    const c = punchContact[side];
+    const eligible = arm.reach >= COMBAT.punchHit.minReach;
+    const what = eligible ? resolvePlayerGlove(arm.wrist, COMBAT.player.gloveRadius, target, COMBAT) : null;
+    if (what && !c.on && nowMs - c.lastMs > COMBAT.punchHit.cooldownMs) {
+      c.lastMs = nowMs;
+      onPlayerPunchLanded(side, what);
+    }
+    c.on = !!what;
   }
+}
+
+function onPlayerPunchLanded(side, what) {
+  const pan = side === "left" ? -0.6 : 0.6;
+  const x = hudCanvas.width * (0.5 + (side === "left" ? -0.12 : 0.12));
+  if (what === "guard") {
+    enemyHp = Math.max(0, enemyHp - GAME.damage.punchBlocked);
+    score += GAME.score.punchBlocked;
+    bridge.fire("boxing_punch_blocked", { pan });
+    fx.burst(x, hudCanvas.height * 0.42, "#8b97a6", 8, 120);
+    return;
+  }
+  const head = what === "head";
+  enemyHp = Math.max(0, enemyHp - (head ? GAME.damage.punchHead : GAME.damage.punchTorso));
+  combo++;
+  bestCombo = Math.max(bestCombo, combo);
+  score += (head ? GAME.score.punchHead : GAME.score.punchTorso) + (combo > 1 ? combo * GAME.score.comboBonus : 0);
+  enemyHurt = 1;
+  hitstopUntil = performance.now() + GAME.hitstopMs;
+  fx.shake(head ? 12 : 7);
+  fx.burst(x, hudCanvas.height * 0.4, head ? "#ffd479" : "#c9d4e2", head ? 24 : 12);
+  bridge.fire("boxing_punch_hit", { pan, gain: head ? 1 : 0.6 });
+  if (enemyHp <= 0) endRound("ko");
 }
 
 // ── ラウンド進行 ─────────────────────────────────────────────────────────────
@@ -323,25 +335,25 @@ function setState(next) {
   if (next === "TITLE") {
     showCard(`
       <h1>🥊 触覚ボクシング</h1>
-      <p>カメラの前に立って、パンチ・ガード・回避で戦う。<br>
-      当たった／受けた／かわしたの違いは <b>触覚</b> で返る。</p>
-      <p style="color:#8b97a6">全身が映るように、1.5〜2m ほど離れて立ってください。<br>
-      画面は自分の目線（一人称）。手を動かすと自分の腕が見えます。</p>
+      <p>カメラの前に立って、体で戦う。<br>
+      <b>殴る</b>＝拳をカメラへ突き出す　<b>守る</b>＝腕を頭の前に上げる　<b>避ける</b>＝上体を振る／しゃがむ</p>
+      <p style="color:#8b97a6">画面は自分の背後から。青く光る球が自分の頭の当たり判定。<br>
+      そこへ敵のグローブが迫るので、腕で止めるか、頭ごと動かして外す。<br>
+      全身が映るように 1.5〜2m 離れて立ってください。</p>
       <div class="actions"><button class="primary" id="cardStart">スタート（Space）</button></div>`);
     card.querySelector("#cardStart").onclick = () => startFight();
-    setStatus("スタートを押すと構えの計測（約 1.5 秒）が始まります", "info");
+    setStatus("スタートを押すと構えの計測（約 1.5 秒）が始まります");
   } else if (next === "CALIB") {
     hideCard();
     gestures.recalibrate();
-    setStatus("フレーム内に立って構えてください…", "info");
+    setStatus("フレーム内に立って、ボクシングの構えを取ってください…");
   } else if (next === "FIGHT") {
     hideCard();
-    // 計測にかかった時間ぶん敵を待たせる（開始と同時にいきなり殴られないように）
-    enemy.phase = "idle"; enemy.attack = null;
-    enemy.until = performance.now() + GAME.idleGapMs[0];
-    enemy.phaseMs = GAME.idleGapMs[0];
+    setStatus("");
+    enemy.phase = "idle";
+    enemy.attack = null;
+    enemy.nextAtMs = performance.now() + GAME.idleGapMs[0];
     bridge.fire("boxing_bell");
-    setStatus("ラウンド開始！", "info");
   }
 }
 
@@ -350,9 +362,8 @@ function startFight() {
   unlockAudio();
   playerHp = GAME.playerHp; enemyHp = GAME.enemyHp;
   timeLeft = GAME.roundSec; score = 0; combo = 0; bestCombo = 0; elapsed = 0;
-  flash = 0; hitstopUntil = 0; slowMoUntil = 0;
-  enemy.phase = "idle"; enemy.until = performance.now() + GAME.idleGapMs[0]; enemy.phaseMs = GAME.idleGapMs[0];
-  enemy.attack = null; enemy.hurt = 0;
+  flash = 0; hitstopUntil = 0; slowMoUntil = 0; enemyHurt = 0;
+  enemy.phase = "idle"; enemy.attack = null; enemy.resolved = false;
   setState("CALIB");
 }
 
@@ -365,11 +376,8 @@ function endRound(result) {
     slowMoUntil = performance.now() + GAME.koSlowMo.durationMs;
     fx.shake(24);
     fx.burst(hudCanvas.width / 2, hudCanvas.height * 0.4, "#7c5cff", 48, 320);
-  } else {
-    bridge.fire("boxing_bell");
-  }
+  } else bridge.fire("boxing_bell");
   const title = ko ? "KO 勝ち！" : result === "lose" ? "ダウン…" : playerHp >= enemyHp ? "判定勝ち" : "判定負け";
-  setStatus("ラウンド終了", "info");
   setTimeout(() => {
     showCard(`
       <h1>${title}</h1>
@@ -391,78 +399,67 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "Space" && (state === "TITLE" || state === "RESULT")) { e.preventDefault(); startFight(); }
   else if (e.code === "Enter" && state === "RESULT") { e.preventDefault(); startFight(); }
   else if (e.code === "Escape" && state === "RESULT") { e.preventDefault(); location.href = "../"; }
+  else if (e.code === "KeyV" && scene) {
+    const m = scene.toggleCameraMode();
+    root.querySelector("#m_third").checked = m === "third";
+  }
 });
 
 // ── 2D オーバーレイ（HUD / PIP / 粒子） ───────────────────────────────────────
 let cssW = 1, cssH = 1;
 function resize() {
-  const r = stage.getBoundingClientRect();
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  cssW = Math.max(1, Math.round(r.width));
-  cssH = Math.max(1, Math.round(r.height));
+  cssW = Math.max(1, Math.round(root.clientWidth));
+  cssH = Math.max(1, Math.round(root.clientHeight));
   hudCanvas.width = Math.round(cssW * dpr);
   hudCanvas.height = Math.round(cssH * dpr);
   scene?.resize(cssW, cssH);
 }
 window.addEventListener("resize", resize);
 
+/** HUD は数値のみ（両者 HP・残り時間・スコア）。ゲーム中の説明テキストは出さない。 */
 function drawHud() {
   const W = hudCanvas.width, H = hudCanvas.height;
   const s = Math.min(W, H) / 620;
-  const barW = W * 0.32, barH = 16 * s, y = 46 * s;
-  const bar = (x, ratio, color, label) => {
-    ctx.fillStyle = "rgba(10,13,18,0.72)";
+  const barW = W * 0.3, barH = 14 * s, y = 40 * s;
+  const bar = (x, ratio, color, label, alignRight) => {
+    ctx.fillStyle = "rgba(10,13,18,0.66)";
     ctx.fillRect(x, y, barW, barH);
     ctx.fillStyle = color;
-    ctx.fillRect(x, y, barW * clamp(ratio, 0, 1), barH);
-    ctx.strokeStyle = "rgba(255,255,255,0.25)";
-    ctx.lineWidth = 1.5 * s;
+    const w = barW * clamp(ratio, 0, 1);
+    ctx.fillRect(alignRight ? x + barW - w : x, y, w, barH);
+    ctx.strokeStyle = "rgba(255,255,255,0.22)";
+    ctx.lineWidth = 1.4 * s;
     ctx.strokeRect(x, y, barW, barH);
-    ctx.fillStyle = "#e6edf3";
-    ctx.font = `bold ${Math.round(17 * s)}px system-ui, sans-serif`;
-    ctx.textAlign = "left";
-    ctx.fillText(label, x, y - 6 * s);
+    ctx.fillStyle = "#cdd6e0";
+    ctx.font = `600 ${Math.round(13 * s)}px system-ui, sans-serif`;
+    ctx.textAlign = alignRight ? "right" : "left";
+    ctx.fillText(label, alignRight ? x + barW : x, y - 6 * s);
   };
-  bar(W * 0.06, playerHp / GAME.playerHp, "#4cc38a", "YOU");
-  bar(W - W * 0.06 - barW, enemyHp / GAME.enemyHp, "#ff5f6d", "ENEMY");
-
+  bar(W * 0.05, playerHp / GAME.playerHp, "#4cc38a", "YOU", false);
+  bar(W - W * 0.05 - barW, enemyHp / GAME.enemyHp, "#ff5f6d", "ENEMY", true);
   ctx.textAlign = "center";
   ctx.fillStyle = "#e6edf3";
-  ctx.font = `bold ${Math.round(36 * s)}px system-ui, sans-serif`;
+  ctx.font = `bold ${Math.round(32 * s)}px system-ui, sans-serif`;
   ctx.fillText(String(Math.ceil(Math.max(0, timeLeft))), W / 2, y + barH);
-  ctx.font = `${Math.round(17 * s)}px system-ui, sans-serif`;
-  ctx.fillStyle = "#b6c0cd";
-  ctx.fillText(`SCORE ${score}${combo > 1 ? `   ${combo} COMBO` : ""}`, W / 2, y + barH + 26 * s);
-
-  // 予告テキスト（何が来るか分かる＝反応ゲームとして成立させる）
-  if (enemy.phase === "telegraph" && enemy.attack) {
-    const a = enemy.attack;
-    ctx.font = `bold ${Math.round(30 * s)}px system-ui, sans-serif`;
-    ctx.fillStyle = "rgba(255,212,121,0.95)";
-    ctx.fillText(
-      a.kind === "straight" ? "ストレート → ダック / ガード"
-        : a.side === -1 ? "左フック → 右へリーン / ガード" : "右フック → 左へリーン / ガード",
-      W / 2, H * 0.3,
-    );
-  }
+  ctx.textAlign = "left";
+  ctx.font = `${Math.round(15 * s)}px system-ui, sans-serif`;
+  ctx.fillStyle = "#8b97a6";
+  ctx.fillText(`${score}${combo > 1 ? `  ×${combo}` : ""}`, W * 0.05, H - 18 * s);
 }
 
-/** デバッグ PIP: 実カメラ映像（ミラー）+ 2D スケルトン。オーバーレイなのでレイアウトは動かない。 */
+/** デバッグ PIP: 実カメラ映像（ミラー）+ 2D スケルトン。オーバーレイなのでレイアウト不動。 */
 function drawPip(landmarks) {
   if (!pipOn || !pose.ready || video.readyState < 2) return;
   const W = hudCanvas.width, H = hudCanvas.height;
-  // TITLE/CALIB は立ち位置確認用に大きく、FIGHT 中は邪魔しないよう小さく
-  const frac = state === "FIGHT" || state === "RESULT" ? 0.17 : 0.3;
+  const frac = state === "FIGHT" || state === "RESULT" ? 0.16 : 0.28;
   const w = W * frac;
-  const h = w * (video.videoHeight / Math.max(1, video.videoWidth) || 0.75);
-  const x = W - w - 14 * (W / 620), yTop = H - h - 14 * (W / 620);
-
+  const h = w * ((video.videoHeight / Math.max(1, video.videoWidth)) || 0.75);
+  const pad = 14 * (W / 620);
+  const x = W - w - pad, yTop = H - h - pad;
   ctx.save();
-  ctx.beginPath();
-  ctx.rect(x, yTop, w, h);
-  ctx.clip();
-  ctx.translate(x + w, yTop);   // ミラー表示（鏡と同じ左右）
-  ctx.scale(-1, 1);
+  ctx.beginPath(); ctx.rect(x, yTop, w, h); ctx.clip();
+  ctx.translate(x + w, yTop); ctx.scale(-1, 1); // ミラー
   ctx.drawImage(video, 0, 0, w, h);
   if (landmarks) {
     ctx.strokeStyle = "rgba(124,92,255,0.9)";
@@ -470,85 +467,69 @@ function drawPip(landmarks) {
     for (const [a, b] of SKELETON) {
       const p1 = landmarks[a], p2 = landmarks[b];
       if (!p1 || !p2) continue;
-      ctx.beginPath();
-      ctx.moveTo(p1.x * w, p1.y * h);
-      ctx.lineTo(p2.x * w, p2.y * h);
-      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(p1.x * w, p1.y * h); ctx.lineTo(p2.x * w, p2.y * h); ctx.stroke();
     }
     ctx.fillStyle = "#ffd479";
-    for (const lm of landmarks) {
-      ctx.beginPath();
-      ctx.arc(lm.x * w, lm.y * h, Math.max(1.5, w / 90), 0, Math.PI * 2);
-      ctx.fill();
-    }
+    for (const lm of landmarks) { ctx.beginPath(); ctx.arc(lm.x * w, lm.y * h, Math.max(1.5, w / 90), 0, Math.PI * 2); ctx.fill(); }
   }
   ctx.restore();
-  ctx.strokeStyle = "rgba(124,92,255,0.6)";
+  ctx.strokeStyle = "rgba(124,92,255,0.55)";
   ctx.lineWidth = Math.max(1, W / 700);
   ctx.strokeRect(x, yTop, w, h);
 }
 
-function syncGestureIcons(g) {
-  gi.l.classList.toggle("on", g.punchL);
-  gi.r.classList.toggle("on", g.punchR);
-  gi.b.classList.toggle("on", g.block);
-  gi.lean.classList.toggle("on", g.lean !== 0);
-  gi.lean.textContent = g.lean === -1 ? "◀" : g.lean === 1 ? "▶" : "↔";
-  gi.duck.classList.toggle("on", g.duck);
-}
-
 // ── メインループ ─────────────────────────────────────────────────────────────
 let lastMs = performance.now();
-const punchIconUntil = { l: 0, r: 0 };
 
 function frame(nowMs) {
   requestAnimationFrame(frame);
   const rawDt = clamp((nowMs - lastMs) / 1000, 0, 0.1);
   lastMs = nowMs;
   const slow = nowMs < slowMoUntil ? GAME.koSlowMo.timeScale : 1;
-  const stopped = nowMs < hitstopUntil;
-  const dt = stopped ? 0 : rawDt * slow;
+  const dt = nowMs < hitstopUntil ? 0 : rawDt * slow;
+  if (Math.round(root.clientWidth) !== cssW || Math.round(root.clientHeight) !== cssH) resize();
 
-  if (Math.round(stage.clientWidth) !== cssW || Math.round(stage.clientHeight) !== cssH) resize();
-
-  // ── 姿勢推定 → ジェスチャー（検出ロジックは 3D 化の前後で不変） ──
+  // ── 姿勢推定 → 体基準 2D → 3D の体 ──
   const result = pose.ready ? pose.detect(nowMs) : null;
   const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 4 / 3;
   const g = gestures.update(result, nowMs, rawDt, { aspect, calibrating: state === "CALIB" });
-  lastGesture = g;
-  if (g.punchL) punchIconUntil.l = nowMs + 180;
-  if (g.punchR) punchIconUntil.r = nowMs + 180;
-  syncGestureIcons({ ...g, punchL: nowMs < punchIconUntil.l, punchR: nowMs < punchIconUntil.r });
+  playerPose = g.frame ? buildPlayerPose(g.frame, COMBAT.rig) : null;
 
   // ── 状態遷移 ──
   if (state === "CALIB") {
     if (!g.visible) setStatus("全身がフレームに入るように立ってください", "warn");
     else {
-      setStatus(`構えを計測中… ${Math.round(gestures.calibProgress * 100)}%`, "info");
+      setStatus(`構えを計測中… ${Math.round(gestures.calibProgress * 100)}%`);
       if (gestures.calibProgress >= 1) setState("FIGHT");
     }
   } else if (state === "FIGHT") {
     elapsed += dt;
     timeLeft -= dt;
+    // ラウンド中に出すテキストは、姿勢を見失った時の警告だけ
     if (!g.visible && pose.ready) setStatus("姿勢を見失いました — フレーム内に戻ってください", "warn");
-    if (g.punchL) onPlayerPunch("left");
-    if (g.punchR) onPlayerPunch("right");
-    if (state === "FIGHT") updateEnemy(nowMs);   // KO/ダウンで RESULT に移っていたら回さない
+    else if (statusEl.textContent) setStatus("");
+    if (dt > 0) {
+      updateEnemy(nowMs);
+      updatePlayerPunches(nowMs);
+    }
     if (state === "FIGHT" && timeLeft <= 0) endRound("time");
   }
 
-  // ── 3D 描画 ──
+  // ── 3D ──
   fx.update(rawDt);
-  enemy.hurt = Math.max(0, enemy.hurt - rawDt * 4);
+  enemyHurt = Math.max(0, enemyHurt - rawDt * 4);
   flash = Math.max(0, flash - rawDt * 3);
   vignetteEl.style.opacity = String(flash * 0.9);
-
   if (scene) {
-    // 画面シェイク: px 相当の揺れをメートルに落として視点に効かせる
     scene.setShake(fx.ox * 0.0012, fx.oy * 0.0012);
-    scene.updatePlayer(result?.worldLandmarks ?? null, rawDt);
-    const prog = enemy.phaseMs ? clamp(1 - (enemy.until - nowMs) / enemy.phaseMs, 0, 1) : 0;
-    scene.updateEnemy({ phase: enemy.phase, prog, attack: enemy.attack, hurt: enemy.hurt }, rawDt);
+    scene.update({
+      pose: playerPose,
+      enemy: {
+        head: enemyHeadPos(), gloves: enemy.glove, guardUp: enemy.phase === "idle",
+        activeHand: enemy.attack?.hand ?? null, phase: enemy.phase,
+      },
+      hurt: enemyHurt,
+    });
     scene.render();
   }
 
@@ -564,7 +545,6 @@ function fail(message) {
   setStatus(message, "err");
   delegateEl.className = "badge off";
   delegateEl.textContent = "失敗";
-  startBtn.textContent = "開始できません";
   showCard(`
     <h1>🥊 触覚ボクシング</h1>
     <p style="color:#ff9a9a">${message}</p>
@@ -576,23 +556,18 @@ function fail(message) {
 (async function boot() {
   resize();
   requestAnimationFrame(frame);
-  setStatus("カメラ・3D・姿勢推定モデルを準備中…", "info");
-
+  setStatus("カメラ・3D・姿勢推定モデルを準備中…");
   if (!(await pose.start(video, { width: 640, height: 480 }))) { fail(pose.error); return; }
-
-  // Three.js も CDN なので、落ちたら例外にせず日本語 1 行で伝える
   try {
     const { Scene3D } = await import("./scene3d.js");
-    scene = new Scene3D(glCanvas);
+    scene = new Scene3D(glCanvas, COMBAT);
     scene.resize(cssW, cssH);
+    scene.setDebug(debugOn);
   } catch (e) {
     fail(`3D 表示エラー: Three.js を読み込めません（オフライン？ ${e?.message ?? e}）`);
     return;
   }
-
   delegateEl.className = "badge on";
   delegateEl.textContent = pose.delegate;
-  startBtn.disabled = false;
-  startBtn.textContent = "スタート / リスタート";
   setState("TITLE");
 })();
