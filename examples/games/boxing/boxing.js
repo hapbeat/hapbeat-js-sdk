@@ -113,10 +113,11 @@ root.innerHTML = `
     <div class="t">表示</div>
     <label><input type="checkbox" id="m_third" checked> 🎥 背後視点（OFF＝一人称）</label>
     <label><input type="checkbox" id="m_pip" checked> 🦴 カメラ+骨格（PIP）</label>
-    <label><input type="checkbox" id="m_dbg"> 🎯 当たり判定を表示</label>
+    <label><input type="checkbox" id="m_dbg" checked> 🎯 当たり判定・信号を表示</label>
     <div class="t">状態</div>
     <div style="font-size:12px;margin:4px 0">Helper: <span id="conn" class="badge off">未接続</span></div>
     <div style="font-size:12px;margin:4px 0">推論: <span id="delegate" class="badge off">未初期化</span></div>
+    <button id="recBtn">📝 10 秒記録して CSV 保存</button>
     <button id="recalBtn">構えを取り直す</button>
     <button id="testBtn">触覚テスト</button>
     <button id="menuBtn">← デモ一覧へ</button>
@@ -138,7 +139,7 @@ const connEl = root.querySelector("#conn");
 const delegateEl = root.querySelector("#delegate");
 const menuEl = root.querySelector("#menu");
 
-let pipOn = true, debugOn = false;
+let pipOn = true, debugOn = true;
 root.querySelector("#gear").onclick = () => menuEl.classList.toggle("hidden");
 root.querySelector("#m_pip").onchange = (e) => { pipOn = e.target.checked; };
 root.querySelector("#m_dbg").onchange = (e) => { debugOn = e.target.checked; scene?.setDebug(debugOn); };
@@ -147,7 +148,53 @@ root.querySelector("#m_audio").onchange = (e) => bridge.setMaster("audio", e.tar
 root.querySelector("#m_haptic").onchange = (e) => bridge.setMaster("haptic", e.target.checked);
 root.querySelector("#testBtn").onclick = () => { unlockAudio(); bridge.testHaptic(); };
 root.querySelector("#menuBtn").onclick = () => { location.href = "../"; };
+root.querySelector("#recBtn").onclick = () => startRecording(10);
 root.querySelector("#recalBtn").onclick = () => { gestures.recalibrate(); if (state === "FIGHT") setState("CALIB"); };
+
+/**
+ * 診断用の信号レコーダー。10 秒ぶんの各信号を貯めて CSV で落とす。
+ * 実機でしか出ない挙動（腕が戻らない等）を、実データで詰めるための入口。
+ */
+const NL = String.fromCharCode(10);
+const recorder = { active: false, untilMs: 0, rows: [] };
+function startRecording(seconds = 10) {
+  recorder.rows.length = 0;
+  recorder.active = true;
+  recorder.untilMs = performance.now() + seconds * 1000;
+  setStatus(`信号を記録中… ${seconds} 秒`);
+}
+function recordFrame(nowMs, g) {
+  if (!recorder.active) return;
+  if (nowMs > recorder.untilMs) { recorder.active = false; downloadCsv(); return; }
+  const d = g.debug ?? {};
+  const row = { t: Math.round(nowMs), dist: (d.distanceRatio ?? 1).toFixed(3), step: (playerPose?.step ?? 0).toFixed(3) };
+  for (const side of ["left", "right"]) {
+    const a = d[side] ?? {};
+    const f = g.frame?.arms?.[side];
+    const num = (v) => (v == null ? "" : (+v).toFixed(3));
+    Object.assign(row, {
+      [`${side}_angle`]: num(a.angle), [`${side}_shorten`]: num(a.shorten),
+      [`${side}_hand4`]: num(a.handSize), [`${side}_hand21`]: num(a.handModel), [`${side}_imgZ`]: num(a.depthZ),
+      [`${side}_raw`]: num(a.raw), [`${side}_reach`]: num(a.reach),
+      [`${side}_handFresh`]: a.handFresh ? 1 : 0, [`${side}_home`]: a.home ? 1 : 0,
+      [`${side}_swing`]: a.swing ? 1 : 0,
+      [`${side}_wx`]: num(f?.wrist?.x), [`${side}_wy`]: num(f?.wrist?.y),
+    });
+  }
+  recorder.rows.push(row);
+}
+function downloadCsv() {
+  if (!recorder.rows.length) { setStatus("記録できませんでした（姿勢が取れていない）", "warn"); return; }
+  const cols = Object.keys(recorder.rows[0]);
+  const csv = [cols.join(","), ...recorder.rows.map((r) => cols.map((c) => r[c]).join(","))].join(NL);
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `boxing-signals-${new Date().toISOString().replace(/[:.]/g, "-")}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  setStatus(`CSV を保存しました（${recorder.rows.length} 行）`);
+}
 
 function syncConn() {
   const ok = bridgeReady && bridge.connected;
@@ -187,6 +234,7 @@ let elapsed = 0, hitstopUntil = 0, slowMoUntil = 0, flash = 0, enemyHurt = 0;
 let playerPose = null;      // combat.buildPlayerPose の結果（判定・描画で共用）
 let gestureArms = null;     // gestures の arms（スイング中かの参照用）
 let resetAtMs = 0;          // テストモードの自動回復時刻
+let countdownUntilMs = 0;   // キャリブ前カウントダウンの終了時刻
 let lastDebug = null;       // 判定デバッグのプロット用
 
 /** 敵。idle → attack（接近→打撃→戻り）。攻撃中はガードが開く＝頭を狙える。 */
@@ -381,16 +429,21 @@ function setState(next) {
       <h1>🥊 触覚ボクシング</h1>
       <p>カメラの前に立って、体で戦う。<br>
       <b>殴る</b>＝拳をカメラへ突き出す　<b>守る</b>＝腕を頭の前に上げる　<b>避ける</b>＝上体を振る／しゃがむ</p>
-      <p style="color:#8b97a6">画面は自分の背後から。青く光る球とカプセルが自分の頭と胴の当たり判定。<br>
+      <p style="color:#8b97a6">スタート後、<b>2 秒のカウントダウン</b>のあいだに<b>両拳を胸の前に構えて</b>ください。<br>
+      その姿勢が「腕を伸ばしていない状態」の基準になります。<br>
+      画面は自分の背後から。青く光る球とカプセルが自分の頭と胴の当たり判定。<br>
       敵は頭か胴を狙って腕を伸ばしてくるので、腕で止めるか、体ごと動かして外す。<br>
       全身が映るように 1.5〜2m 離れて立ってください。${GAME.testMode ? "<br>（テストモード: 勝敗を出さず、体力が尽きても自動で回復して続きます）" : ""}</p>
       <div class="actions"><button class="primary" id="cardStart">スタート（Space）</button></div>`);
     card.querySelector("#cardStart").onclick = () => startFight();
-    setStatus("スタートを押すと構えの計測（約 1.5 秒）が始まります");
+    setStatus("スタート → 2 秒のカウントダウン → 構えを計測（約 1.5 秒）");
+  } else if (next === "COUNTDOWN") {
+    hideCard();
+    countdownUntilMs = performance.now() + TUNING.calibCountdownMs;
   } else if (next === "CALIB") {
     hideCard();
     gestures.recalibrate();
-    setStatus("フレーム内に立って、ボクシングの構えを取ってください…");
+    setStatus("そのまま構えたまま… 計測中");
   } else if (next === "FIGHT") {
     hideCard();
     setStatus("");
@@ -408,7 +461,7 @@ function startFight() {
   timeLeft = GAME.roundSec; score = 0; combo = 0; bestCombo = 0; elapsed = 0;
   flash = 0; hitstopUntil = 0; slowMoUntil = 0; enemyHurt = 0; resetAtMs = 0;
   enemy.phase = "idle"; enemy.attack = null; enemy.resolved = false;
-  setState("CALIB");
+  setState("COUNTDOWN");
 }
 
 function endRound(result) {
@@ -504,14 +557,17 @@ function drawSignalBars() {
   ctx.textAlign = "left";
   // 前後距離（1.00 = 構え位置）と、それを換算した踏み込み量
   ctx.fillStyle = "#ffd479";
+  const res = pose.resolution;
   ctx.fillText(`dist ${(lastDebug.distanceRatio ?? 1).toFixed(2)}  step ${(playerPose?.step ?? 0).toFixed(2)}m`
-    + `${lastDebug.hands ? "  hand21" : ""}`, 14 * s, y);
+    + `  cam ${res ? `${res.width}x${res.height} (${(res.width / res.height).toFixed(2)})` : "?"}`
+    + `${lastDebug.hands ? "  hand21 OK" : "  hand21 なし"}`, 14 * s, y);
   y += rowH * 1.2;
   for (const side of ["left", "right"]) {
     const d = lastDebug[side];
     if (!d) continue;
-    ctx.fillStyle = d.swing ? "#ffd479" : "#8b97a6";
-    ctx.fillText(`${side}${d.swing ? " SWING" : ""}${lastDebug.guardLocked ? " guard-lock" : ""}`, 14 * s, y);
+    ctx.fillStyle = d.swing ? "#ffd479" : d.home ? "#4cc38a" : "#8b97a6";
+    ctx.fillText(`${side}${d.swing ? " SWING" : ""}${d.home ? " home" : ""}`
+      + `${d.handFresh ? " hand" : ""}${lastDebug.guardLocked ? " guard-lock" : ""}`, 14 * s, y);
     y += rowH * 0.9;
     for (const [k, v] of [["angle", d.angle], ["shorten", d.shorten], ["hand4", d.handSize],
       ["hand21", d.handModel], ["imgZ", d.depthZ], ["raw", d.raw], ["reach", d.reach]]) {
@@ -596,12 +652,18 @@ function frame(nowMs) {
   playerPose = g.frame ? buildPlayerPose(g.frame, COMBAT.rig) : null;
   gestureArms = g.frame?.arms ?? null;
   lastDebug = g.debug;
+  recordFrame(nowMs, g);
 
   // ── 状態遷移 ──
-  if (state === "CALIB") {
+  if (state === "COUNTDOWN") {
+    // 構えを作る時間。押した瞬間の姿勢で基準を取らないための待ち。
+    const left = countdownUntilMs - nowMs;
+    if (left <= 0) setState("CALIB");
+    else setStatus(`両拳を胸の前に構えてください… ${Math.ceil(left / 1000)}`);
+  } else if (state === "CALIB") {
     if (!g.visible) setStatus("全身がフレームに入るように立ってください", "warn");
     else {
-      setStatus(`構えを計測中… ${Math.round(gestures.calibProgress * 100)}%`);
+      setStatus(`構えを計測中… ${Math.round(gestures.calibProgress * 100)}%（この姿勢が基準になります）`);
       if (gestures.calibProgress >= 1) setState("FIGHT");
     }
   } else if (state === "FIGHT") {
@@ -666,7 +728,7 @@ function fail(message) {
   resize();
   requestAnimationFrame(frame);
   setStatus("カメラ・3D・姿勢推定モデルを準備中…");
-  if (!(await pose.start(video, { width: 640, height: 480 }))) { fail(pose.error); return; }
+  if (!(await pose.start(video, { width: 1280, height: 720 }))) { fail(pose.error); return; }
   try {
     const { Scene3D } = await import("./scene3d.js");
     scene = new Scene3D(glCanvas, COMBAT);

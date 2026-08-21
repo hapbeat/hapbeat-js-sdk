@@ -55,20 +55,39 @@ export class ReachFilter {
   /**
    * @param {number} raw combineSignals の出力
    * @param {number} dt 秒
-   * @param {{visible?:boolean, guardLocked?:boolean}} opts
+   * @param {{visible?:boolean, guardLocked?:boolean, inHome?:boolean}} opts
    *   visible=false … 推定を更新せず直前値を保持（ランドマークが見えていないフレーム）
    *   guardLocked=true … 顔の前で静止＝ガード中とみなし、上限でクランプ（腕を伸ばさせない）
+   *   inHome=true … 手が構え領域（胸〜顔の前）に戻っている。0 へ**積極的に**引き戻す。
+   *     推定が何らかの理由で高いまま張り付いても腕が戻るようにするための保険で、
+   *     「拳を戻したのに腕が伸びっぱなし」を防ぐ最後の砦。
    */
-  update(raw, dt, { visible = true, guardLocked = false } = {}) {
+  update(raw, dt, { visible = true, guardLocked = false, inHome = false } = {}) {
     if (!visible) return this.value;
     this.raw = raw;
     const c = this.cfg;
+    if (inHome) {
+      // 構えに戻っている間は**推定値を見ない**で 0 へ指数的に引く。
+      // 推定が高いまま張り付いていても（手を見失った等）確実に腕が戻るようにするため。
+      // 拳を出した瞬間は手首速度が上がって home 判定が外れるので、パンチは妨げない。
+      const k = 1 - Math.exp(-Math.max(dt, 0) / c.home.pullTauSec);
+      this.value = clamp(this.value * (1 - k), 0, 1);
+      this.euro.x = this.value; // 次フレームで跳ね返らないようフィルタ内部も揃える
+      return this.value;
+    }
     let target = deadband(this.value, raw, c.deadband);
     target = slew(this.value, target, dt, c.slewUp, c.slewDown);
     let v = this.euro.filter(target, dt);
     if (guardLocked) v = Math.min(v, c.guardLock.maxReach);
     this.value = clamp(v, 0, 1);
     return this.value;
+  }
+
+  /** スタック時の強制復帰（基準を取り直した瞬間に呼ぶ）。 */
+  forceHome() {
+    this.value = 0;
+    this.raw = 0;
+    this.euro.reset();
   }
 }
 
@@ -103,6 +122,19 @@ export class SwingDetector {
     }
     return { fired, active: this.active, speed };
   }
+}
+
+/**
+ * 手が「構え領域」に戻っているか（胸〜顔の前で、ゆっくりしか動いていない）。
+ * すべて肩幅で正規化した 2D 量。中心は鼻と肩中点の間＝胸の前あたり。
+ * @param {{x:number,y:number}|null} wrist 鼻を原点とした肩幅正規化座標
+ */
+export function isHome(wrist, speed, cfg) {
+  if (!wrist) return false;
+  // 胸の前（鼻より少し下）を中心にした円で見る
+  const dx = wrist.x;
+  const dy = wrist.y - 0.35;
+  return Math.hypot(dx, dy) <= cfg.radius && speed < cfg.maxSpeed;
 }
 
 /**

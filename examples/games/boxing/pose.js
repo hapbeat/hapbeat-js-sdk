@@ -72,7 +72,7 @@ export class PoseTracker {
    * カメラ → モデルの順に初期化する。どちらかが落ちても throw せず `error` に理由を入れて false を返す。
    * @param {HTMLVideoElement} video
    */
-  async start(video, { width = 640, height = 480 } = {}) {
+  async start(video, { width = 1280, height = 720 } = {}) {
     this.video = video;
     if (!(await this._openCamera(video, width, height))) return false;
     if (!(await this._loadModel())) return false;
@@ -121,8 +121,10 @@ export class PoseTracker {
       return false;
     }
     try {
+      // 16:9 を要求する。4:3 を要求すると 16:9 センサーでは左右がクロップされ、
+      // 「画角が狭い」＝腕を広げるとフレームから出る状態になりやすい。
       this.stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: width }, height: { ideal: height }, facingMode: "user" },
+        video: { width: { ideal: width }, height: { ideal: height }, aspectRatio: { ideal: width / height }, facingMode: "user" },
         audio: false,
       });
     } catch (e) {
@@ -142,6 +144,8 @@ export class PoseTracker {
       this.error = `カメラエラー: 映像を再生できません（${e?.message ?? e}）`;
       return false;
     }
+    const st = this.stream.getVideoTracks()[0]?.getSettings?.() ?? {};
+    this.resolution = { width: st.width ?? width, height: st.height ?? height };
     return true;
   }
 

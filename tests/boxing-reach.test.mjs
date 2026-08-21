@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { OneEuro, slew, deadband, weightedMedian } from "../examples/games/boxing/filters.js";
-import { combineSignals, ReachFilter, SwingDetector, isGuardLocked } from "../examples/games/boxing/reach.js";
+import { combineSignals, ReachFilter, SwingDetector, isGuardLocked, isHome } from "../examples/games/boxing/reach.js";
 import { TUNING, COMBAT as _COMBAT } from "../examples/games/boxing/tuning.js";
 const COMBAT_REACH = TUNING.reach;
 
@@ -20,7 +20,9 @@ function rng(seed = 1) {
   return () => (((s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32) * 2 - 1); // -1..1
 }
 
-test("1€ フィルタ: 静止時のノイズを潰しつつ、速いステップには追従する", () => {
+// 方針は「平滑化は弱め＝速い」。静止ノイズを完全に消すのではなく、遅延を出さない側に振り、
+// 震えでの誤発火はスイング（速度）判定で防ぐ。実測: 入力 ±0.02 → 残 ±0.0144、166ms で 0.95 到達。
+test("1€ フィルタ: 静止ノイズを半分以下にしつつ、速いステップにはほぼ素通しで追従する", () => {
   const rand = rng(7);
   const f = new OneEuro(TUNING.filter.landmark);
   let peak = 0;
@@ -28,13 +30,13 @@ test("1€ フィルタ: 静止時のノイズを潰しつつ、速いステッ�
     const out = f.filter(0.5 + rand() * 0.02, DT); // ±0.02 の静止ノイズ
     if (i > 30) peak = Math.max(peak, Math.abs(out - 0.5));
   }
-  assert.ok(peak < 0.011, `静止ノイズが残りすぎ (±${peak.toFixed(4)})`); // 入力 ±0.02 の約半分まで落ちる
+  assert.ok(peak < 0.016, `静止ノイズが残りすぎ (±${peak.toFixed(4)})`); // 入力 ±0.02 に対し ±0.014 程度
 
   const g = new OneEuro(TUNING.filter.landmark);
   for (let i = 0; i < 60; i++) g.filter(0, DT);
   let v = 0;
   for (let i = 0; i < 5; i++) v = g.filter(1, DT); // 5 フレーム(≈166ms)でステップ
-  assert.ok(v > 0.65, `速い変化への追従が遅すぎ (${v.toFixed(3)})`);
+  assert.ok(v > 0.9, `速い変化への追従が遅すぎ (${v.toFixed(3)})`); // 5 フレーム(166ms)で 0.95
 });
 
 test("スルーレート制限とデッドバンド", () => {
@@ -161,13 +163,15 @@ test("踏み込むと間合いが詰まる: 同じリーチでも敵の頭まで
   assert.ok(at(0.8) > base, "下がっても間合いが変わらない");
 });
 
-test("画像空間 z 信号のスケール: 構えで 0、伸ばしきりで ~1（モデル実測値を基準）", () => {
+test("画像空間 z 信号は『構え時からの差分』で見る: 構えで 0、伸ばしきりで ~1", () => {
   const c = COMBAT_REACH.depthZ;
-  // ピンホール投影モデルで測った (肩z - 手首z)/肩幅 の実測値
-  assert.equal(mapRange(0.316, c.minRatio, c.maxRatio), 0, "構えで 0 にならない");
-  assert.equal(mapRange(0.053, c.minRatio, c.maxRatio), 0, "真横に伸ばした腕を拾ってしまう");
-  const mid = mapRange(0.789, c.minRatio, c.maxRatio);   // 前へ 0.3m
-  const full = mapRange(1.579, c.minRatio, c.maxRatio);  // 前へ 0.6m
+  // ピンホール投影モデルの実測値 (肩z - 手首z)/肩幅。構え 0.316 を基準に引き算する。
+  const GUARD = 0.316;
+  const at = (abs) => mapRange(abs - GUARD, c.minDelta, c.maxDelta);
+  assert.equal(at(GUARD), 0, "構えで 0 にならない（腕が最初から前に出て見える）");
+  assert.equal(at(0.053), 0, "真横に伸ばした腕を拾ってしまう");
+  const mid = at(0.789);   // 前へ 0.3m
+  const full = at(1.579);  // 前へ 0.6m
   assert.ok(mid > 0.25 && mid < 0.6, `中間が飽和 / 鈍すぎ (${mid.toFixed(2)})`);
   assert.ok(full > 0.95, `伸ばしきりで 1 に届かない (${full.toFixed(2)})`);
 });
@@ -188,4 +192,46 @@ test("手の骨格（デバッグ PIP 用）は 21 点の範囲に収まり、5 
   const touched = new Set(HAND_CONNECTIONS.flat());
   for (const tip of [4, 8, 12, 16, 20]) assert.ok(touched.has(tip), `指先 ${tip} が描かれない`);
   assert.ok(touched.has(HL.wrist) && touched.has(HL.middleMcp), "手のひら長に使う点が描かれない");
+});
+
+// ── 「拳を戻したのに腕が伸びっぱなし」への対処 ────────────────────────────────
+// 実機で一番効いた不具合。推定が高いまま張り付いても、手が構え領域に戻ったら
+// リーチは速やかに 0 へ戻らなければならない。
+test("構えに戻せば 300ms 以内に reach < 0.2（推定が高いまま張り付いても引き戻す）", () => {
+  const filter = new ReachFilter(TUNING.reach);
+  let t = 0;
+  for (let i = 0; i < 30; i++) { t += DT * 1000; filter.update(0.95, DT, {}); } // 伸ばしきり
+  assert.ok(filter.value > 0.85, `伸ばしきりに達していない (${filter.value.toFixed(2)})`);
+  // 手は構えに戻したが、推定は 0.95 のまま張り付いている（手を見失った等）状況
+  let elapsed = 0;
+  while (elapsed < 300) { elapsed += DT * 1000; filter.update(0.95, DT, { inHome: true }); }
+  assert.ok(filter.value < 0.2, `構えに戻しても戻らない (${filter.value.toFixed(2)})`);
+});
+
+test("構え領域の判定: 胸の前で低速なら home、伸ばした先や高速移動中は home ではない", () => {
+  const c = TUNING.reach.home;
+  // 座標は鼻を原点にした肩幅正規化（y は下が +）
+  assert.equal(isHome({ x: 0.25, y: 0.35 }, 0.2, c), true, "胸の前が home にならない");
+  assert.equal(isHome({ x: 0.25, y: 0.35 }, 5.0, c), false, "高速で動いていても home 扱いになる");
+  assert.equal(isHome({ x: 0.2, y: 1.8 }, 0.2, c), false, "腕を下ろした位置まで home 扱い");
+  assert.equal(isHome(null, 0.2, c), false);
+});
+
+test("スイング後の強制復帰: forceHome でフィルタ内部ごと 0 に戻る", () => {
+  const filter = new ReachFilter(TUNING.reach);
+  for (let i = 0; i < 30; i++) filter.update(0.9, DT, {});
+  filter.forceHome();
+  assert.equal(filter.value, 0);
+  // 直後に高い生値が来ても、跳ね返らずスルーレート内で上がる
+  const after = filter.update(0.9, DT, {});
+  assert.ok(after <= TUNING.reach.slewUp * DT + 1e-6, `跳ね返った (${after.toFixed(3)})`);
+});
+
+test("見失った信号は合成から外れる（保持しない）", () => {
+  const cfg = { combine: "median", weights: { angle: 0.15, shorten: 0.15, handSize: 0.3, handModel: 0.5, depthZ: 0.4 } };
+  const extended = { angle: 1, shorten: 0.3, handSize: 0.95, handModel: 0.98, depthZ: 1 };
+  assert.ok(combineSignals(extended, cfg) > 0.9);
+  // 手を見失い（handModel/handSize = null）、構えに戻して z も戻った状態
+  const back = { angle: 1, shorten: 0, handSize: null, handModel: null, depthZ: 0 };
+  assert.ok(combineSignals(back, cfg) < 0.2, "見失った手の値が残って高いままになる");
 });

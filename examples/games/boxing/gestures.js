@@ -24,7 +24,7 @@
 import { LM, HL, HAND_POINTS } from "./pose.js";
 import { TUNING } from "./tuning.js";
 import { OneEuroVec3, OneEuro, deadband } from "./filters.js";
-import { combineSignals, ReachFilter, SwingDetector, isGuardLocked, mapRange } from "./reach.js";
+import { combineSignals, ReachFilter, SwingDetector, isGuardLocked, isHome, mapRange } from "./reach.js";
 import { weightedMedian } from "./filters.js";
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
@@ -74,6 +74,8 @@ class ArmState {
     this.lastPunchMs = -1e9;
     this.punchSpeed = 0;
     this.sig = { angle: null, shorten: null, handSize: null, handModel: null, depthZ: null };
+    this.lastHandSeenMs = -1e9;  // HandLandmarker が最後にこの手を見た時刻
+    this.inHome = false;         // 構え領域に戻っているか
     this.raw = 0;
     this.reach = 0;
     this.swingActive = false;
@@ -142,6 +144,7 @@ export class GestureTracker {
 
     const dt = Math.max(dtSec, 1e-3);
     this._aspect = aspect;
+    this._nowMs = nowMs;
     const p = this._points(lms, aspect, dt);
     const need = [LM.nose, LM.shoulderL, LM.shoulderR];
     if (!need.every((i) => this.visible.get(i))) return out;
@@ -225,16 +228,31 @@ export class GestureTracker {
       distanceRatio: this.distanceRatio,   // 1.0 = 構え位置 / >1 = 近づいた
       arms: {},
     };
+    const homeCfg = this.t.reach.home;
     for (const [side] of SIDES) {
       const a = this.arms[side];
       const s = seg[side];
-      a.sig = this._signals(side, s, dt);
+      // 手首が「構え領域」（胸〜顔の前）でゆっくりしているか
+      const wristRel = s.ok ? { x: (s.wr.x - this.base.midX) / w, y: (s.wr.y - this.base.noseY) / w } : null;
+      a.inHome = isHome(wristRel, a.wristSpeed2d, homeCfg);
+      a.sig = this._signals(side, s, dt, nowMs);
       a.raw = combineSignals(a.sig, this.t.reach);
-      const reach = a.reachFilter.update(a.raw, dt, { visible: s.ok, guardLocked: this.guardLocked });
-      const sw = a.swing.update(reach, nowMs);
+      // 構えに戻っている間は基準をゆっくり再学習してドリフトを吸収する
+      if (a.inHome && s.ok) this._relearn(side, s, dt, homeCfg.relearnTauSec);
+      const reach = a.reachFilter.update(a.raw, dt, {
+        visible: s.ok, guardLocked: this.guardLocked, inHome: a.inHome,
+      });
+      // スタック防止: パンチから一定時間たっても伸びたままで、手は構えに戻っている
+      //   → 基準がずれていると判断して今の姿勢で取り直し、強制的に 0 へ戻す
+      if (a.inHome && s.ok && reach > homeCfg.stuckReach && nowMs - a.lastPunchMs > homeCfg.stuckMs) {
+        this._relearn(side, s, dt, 0);   // tau=0 → 即座に現在値を基準にする
+        a.reachFilter.forceHome();
+        a.swing.reset();
+      }
+      const sw = a.swing.update(a.reachFilter.value, nowMs);
       if (sw.fired) { a.lastPunchMs = nowMs; a.punchSpeed = a.speed; }
       a.swingActive = sw.active;
-      a.reach = clamp(Math.max(reach, this._snap(a, nowMs)), 0, 1);
+      a.reach = clamp(Math.max(a.reachFilter.value, this._snap(a, nowMs)), 0, 1);
       if (side === "left") out.punchL = sw.fired; else out.punchR = sw.fired;
       frame.arms[side] = {
         elbow: { x: (s.el.x - s.sh.x) / w, y: (s.el.y - s.sh.y) / w },
@@ -258,7 +276,8 @@ export class GestureTracker {
     const a = this.arms[side];
     return { angle: a.sig.angle, shorten: a.sig.shorten, handSize: a.sig.handSize,
       handModel: a.sig.handModel, depthZ: a.sig.depthZ,
-      raw: a.raw, reach: a.reach, swing: a.swingActive, elbowDeg: a.elbowDeg };
+      raw: a.raw, reach: a.reach, swing: a.swingActive, elbowDeg: a.elbowDeg,
+      home: a.inHome, handFresh: (this._nowMs - a.lastHandSeenMs) <= this.t.reach.handStaleMs };
   }
 
   /**
@@ -283,7 +302,7 @@ export class GestureTracker {
         if (d < bestD) { bestD = d; best = side; }
       }
       // 手首から遠すぎる検出は別人 / 誤検出として捨てる（肩幅の半分より遠い）
-      if (best && bestD < shoulderWidth * 0.5) out[best] = palm;
+      if (best && bestD < shoulderWidth * 0.5) { out[best] = palm; this.arms[best].lastHandSeenMs = this._nowMs; }
     }
     return out;
   }
@@ -324,10 +343,11 @@ export class GestureTracker {
   }
 
   /** 各信号（肘角度 / 前腕の短縮 / 手の見かけサイズ / 手モデル / 画像空間 z）を 0..1 に正規化して返す。 */
-  _signals(side, s, dt) {
+  _signals(side, s, dt, nowMs) {
     const a = this.arms[side];
     const cfg = this.t.reach;
-    if (!s.ok) return a.sig; // 見えていない → 直前の信号を保持
+    // 見えていないフレームは**直前値を保持しない**（保持すると、伸ばした値のまま張り付いて腕が戻らない）
+    if (!s.ok) return { angle: null, shorten: null, handSize: null, handModel: null, depthZ: null };
 
     // 肘角度: 3D / 2D の両方を出し、フレーム間のブレが小さい方を採用する
     const ang3d = jointAngle(s.sh, s.el, s.wr, true);
@@ -347,15 +367,35 @@ export class GestureTracker {
     const handSize = (baseHand > 1e-4 && s.handSpan != null)
       ? mapRange(s.handSpan / baseHand, cfg.handSize.minRatio, cfg.handSize.maxRatio) : null;
     // HandLandmarker 版（手のひら長）。pose の 4 点版より安定するので、あればこちらを主に使う。
+    // ただし**見失ったら合成から外す**（最後の大きい値を持ち続けると腕が戻らなくなる）。
     const baseModel = this.base.handModel[side];
-    const handModel = (baseModel > 1e-4 && s.handModel != null)
+    const fresh = nowMs - a.lastHandSeenMs <= cfg.handStaleMs;
+    const handModel = (fresh && baseModel > 1e-4 && s.handModel != null)
       ? mapRange(s.handModel / baseModel, cfg.handModel.minRatio, cfg.handModel.maxRatio) : null;
     // pose の画像空間 z（腰中心の相対値・x と同スケール）。手首が肩より手前に出た量を肩幅で正規化。
     // ※ 最初に捨てた worldLandmarks.z とは別の量。
-    // 肩幅は x を aspect 倍した空間で測っているが z は素のままなので、比較のため aspect を戻す
+    // 肩幅は x を aspect 倍した空間で測っているが z は素のままなので、比較のため aspect を戻す。
+    // 値は**構え時からの差分**で見る（構えで必ず 0 になる ＝ 胸の前に戻せば 0）。
     const swRaw = this.base.shoulderWidth / (this._aspect || 1);
-    const depthZ = mapRange((s.wr.z - s.sh.z) / swRaw, cfg.depthZ.minRatio, cfg.depthZ.maxRatio);
+    const dz = (s.wr.z - s.sh.z) / swRaw;
+    a.rawDepthZ = dz;
+    const depthZ = mapRange(dz - (this.base.depthZ[side] ?? 0), cfg.depthZ.minDelta, cfg.depthZ.maxDelta);
     return { angle, shorten, handSize, handModel, depthZ };
+  }
+
+  /**
+   * 構えに戻っている間の基準の再学習。tau=0 なら即座に今の値を基準にする（スタック復帰）。
+   * 「構え姿勢＝reach 0」を保ち続けるための仕組みで、キャリブレーション時とのズレ
+   * （立ち位置・服・照明の変化）を吸収する。
+   */
+  _relearn(side, s, dt, tauSec) {
+    const k = tauSec > 0 ? 1 - Math.exp(-Math.max(dt, 0) / tauSec) : 1;
+    const b = this.base;
+    if (s.forearm > 1e-4) b.forearm[side] += k * (s.forearm - b.forearm[side]);
+    if (s.handSpan != null) b.handSpan[side] += k * (s.handSpan - b.handSpan[side]);
+    if (s.handModel != null) b.handModel[side] += k * (s.handModel - b.handModel[side]);
+    const a = this.arms[side];
+    if (a.rawDepthZ != null) b.depthZ[side] += k * (a.rawDepthZ - (b.depthZ[side] ?? 0));
   }
 
   /** パンチ発火からの経過で 0 → 1 → 0 と動く突き出し量。速いパンチほど深い。 */
@@ -376,6 +416,7 @@ export class GestureTracker {
         fa: { left: 0, right: 0 }, ua: { left: 0, right: 0 }, an: { left: 0, right: 0 },
         hs: { left: 0, right: 0 }, hn: { left: 0, right: 0 },
         hm: { left: 0, right: 0 }, hmn: { left: 0, right: 0 },
+        dz: { left: 0, right: 0 }, dzn: { left: 0, right: 0 },
         torso: 0, torsoN: 0, face: 0, faceN: 0 };
     }
     this._acc.sw += shoulderWidth; this._acc.mx += midX; this._acc.ny += noseY; this._acc.n++;
@@ -386,6 +427,12 @@ export class GestureTracker {
       this._acc.an[side]++;
       if (seg[side].handSpan != null) { this._acc.hs[side] += seg[side].handSpan; this._acc.hn[side]++; }
       if (seg[side].handModel != null) { this._acc.hm[side] += seg[side].handModel; this._acc.hmn[side]++; }
+      // 画像空間 z（構えでの肩→手首の手前方向の差）
+      if (seg[side].sh && seg[side].wr) {
+        const swRaw = shoulderWidth / (this._aspect || 1);
+        this._acc.dz[side] += (seg[side].wr.z - seg[side].sh.z) / swRaw;
+        this._acc.dzn[side]++;
+      }
     }
     if (body?.torso != null) { this._acc.torso += body.torso; this._acc.torsoN++; }
     if (body?.face != null) { this._acc.face += body.face; this._acc.faceN++; }
@@ -398,6 +445,8 @@ export class GestureTracker {
       upperArm: { left: avg(this._acc.ua, this._acc.an, "left"), right: avg(this._acc.ua, this._acc.an, "right") },
       handSpan: { left: avg(this._acc.hs, this._acc.hn, "left"), right: avg(this._acc.hs, this._acc.hn, "right") },
       handModel: { left: avg(this._acc.hm, this._acc.hmn, "left"), right: avg(this._acc.hm, this._acc.hmn, "right") },
+      // 画像空間 z の構え時の値（この差分でリーチを見る）
+      depthZ: { left: avg(this._acc.dz, this._acc.dzn, "left"), right: avg(this._acc.dz, this._acc.dzn, "right") },
       // 前後距離の基準（構え位置での見かけサイズ）
       torsoLen: this._acc.torsoN ? this._acc.torso / this._acc.torsoN : 0,
       faceWidth: this._acc.faceN ? this._acc.face / this._acc.faceN : 0,
