@@ -1,179 +1,47 @@
 #!/usr/bin/env node
-/**
- * boxing デモの外部アセット取得（Node 標準のみ・依存なし）。
- *
- * 取得するもの（いずれも CC0。出典は examples/games/boxing/assets/CREDITS.md に書き出す）:
- *   1. 背景 HDRI  … Poly Haven "Wrestling Gym"（API から直接ダウンロードできる）
- *   2. 人型モデル … Quaternius "Universal Base Characters"
- *                   ※ 配布が itch.io のボタン経由で**直リンクが無い**ため自動取得できない。
- *                     手動でダウンロードした zip を assets/downloads/ に置けば、この
- *                     スクリプトが必要な glTF だけ取り出して配置する。
- *
- * アセットはバイナリなのでリポジトリにコミットしない（assets/ は .gitignore）。
- * 置かれていない場合、デモは自動的にプリミティブ表現へフォールバックする。
- *
- *   node scripts/fetch-boxing-assets.mjs          # HDRI を取得 + zip があれば展開
- *   node scripts/fetch-boxing-assets.mjs --1k     # 軽い 1K HDRI にする（非力な PC 向け）
- */
-
-import { createWriteStream } from "node:fs";
-import { mkdir, readdir, readFile, writeFile, stat } from "node:fs/promises";
+/** Extract optional CC0 humanoids from a user-supplied Quaternius zip. No photo/HDRI assets. */
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { pipeline } from "node:stream/promises";
 import { inflateRawSync } from "node:zlib";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const ASSETS = resolve(HERE, "../examples/games/boxing/assets");
-const DOWNLOADS = join(ASSETS, "downloads");
+const assets = resolve(dirname(fileURLToPath(import.meta.url)), "../examples/games/boxing/assets");
+const downloads = join(assets, "downloads");
+const characters = { name: "Universal Base Characters", author: "Quaternius",
+  page: "https://quaternius.com/packs/universalbasecharacters.html", itch: "https://quaternius.itch.io/universal-base-characters", license: "CC0" };
+const wanted = [{ out: "player.glb", match: /(male|man|regular).*\.glb$/i }, { out: "enemy.glb", match: /(female|woman|regular).*\.glb$/i }];
 
-const HDRI = {
-  name: "Wrestling Gym",
-  author: "Sergej Majboroda",
-  page: "https://polyhaven.com/a/wrestling_gym",
-  license: "CC0",
-  url: (size) => `https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/${size}/wrestling_gym_${size}.hdr`,
-};
-const CHARACTERS = {
-  name: "Universal Base Characters",
-  author: "Quaternius",
-  page: "https://quaternius.com/packs/universalbasecharacters.html",
-  itch: "https://quaternius.itch.io/universal-base-characters",
-  license: "CC0",
-};
-/** zip から取り出したい glTF（プレイヤー / 敵で別モデルにする）。 */
-const WANTED = [
-  { out: "player.glb", match: /(male|man|regular).*\.glb$/i },
-  { out: "enemy.glb", match: /(female|woman|regular).*\.glb$/i },
-];
-
-async function download(url, dest, redirects = 5) {
-  await mkdir(dirname(dest), { recursive: true });
-  const res = await fetch(url, { redirect: "follow" });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${url}`);
-  await pipeline(res.body, createWriteStream(dest));
-  const { size } = await stat(dest);
-  return size;
-}
-
-/**
- * 最小限の zip 展開（末尾の中央ディレクトリを読んで、必要なエントリだけ inflate する）。
- * 依存を増やさないための実装。store(0) と deflate(8) のみ対応。
- */
-function unzipEntries(buf, wantFn) {
-  const eocd = (() => {
-    for (let i = buf.length - 22; i >= 0 && i > buf.length - 66000; i--) {
-      if (buf.readUInt32LE(i) === 0x06054b50) return i;
-    }
-    return -1;
-  })();
+function unzipEntries(buffer, want) {
+  let eocd = -1;
+  for (let i = buffer.length - 22; i > buffer.length - 66000 && i >= 0; i--) if (buffer.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
   if (eocd < 0) throw new Error("zip の中央ディレクトリが見つかりません");
-  const count = buf.readUInt16LE(eocd + 10);
-  let p = buf.readUInt32LE(eocd + 16);
-  const out = [];
+  const count = buffer.readUInt16LE(eocd + 10); let pos = buffer.readUInt32LE(eocd + 16); const out = [];
   for (let i = 0; i < count; i++) {
-    if (buf.readUInt32LE(p) !== 0x02014b50) break;
-    const method = buf.readUInt16LE(p + 10);
-    const compSize = buf.readUInt32LE(p + 20);
-    const nameLen = buf.readUInt16LE(p + 28);
-    const extraLen = buf.readUInt16LE(p + 30);
-    const commentLen = buf.readUInt16LE(p + 32);
-    const localOff = buf.readUInt32LE(p + 42);
-    const name = buf.slice(p + 46, p + 46 + nameLen).toString("utf8");
-    p += 46 + nameLen + extraLen + commentLen;
-    if (!wantFn(name)) continue;
-    // ローカルヘッダを読んでデータ位置を出す
-    const lnLen = buf.readUInt16LE(localOff + 26);
-    const leLen = buf.readUInt16LE(localOff + 28);
-    const start = localOff + 30 + lnLen + leLen;
-    const raw = buf.slice(start, start + compSize);
-    out.push({ name, data: method === 0 ? raw : inflateRawSync(raw) });
+    if (buffer.readUInt32LE(pos) !== 0x02014b50) break;
+    const method = buffer.readUInt16LE(pos + 10), size = buffer.readUInt32LE(pos + 20), nameLength = buffer.readUInt16LE(pos + 28);
+    const extra = buffer.readUInt16LE(pos + 30), comment = buffer.readUInt16LE(pos + 32), local = buffer.readUInt32LE(pos + 42);
+    const name = buffer.slice(pos + 46, pos + 46 + nameLength).toString("utf8"); pos += 46 + nameLength + extra + comment;
+    if (!want(name)) continue;
+    const start = local + 30 + buffer.readUInt16LE(local + 26) + buffer.readUInt16LE(local + 28);
+    out.push({ name, data: method === 0 ? buffer.slice(start, start + size) : inflateRawSync(buffer.slice(start, start + size)) });
   }
   return out;
 }
 
 async function extractCharacters() {
-  let zips = [];
-  try {
-    zips = (await readdir(DOWNLOADS)).filter((f) => f.toLowerCase().endsWith(".zip"));
-  } catch {
-    return false; // downloads/ が無い
-  }
-  if (!zips.length) return false;
+  let zips = []; try { zips = (await readdir(downloads)).filter((file) => file.toLowerCase().endsWith(".zip")); } catch { return false; }
   let placed = 0;
-  for (const zip of zips) {
-    const buf = await readFile(join(DOWNLOADS, zip));
-    for (const want of WANTED) {
-      const hit = unzipEntries(buf, (n) => want.match.test(n))[0];
-      if (!hit) continue;
-      await writeFile(join(ASSETS, want.out), hit.data);
-      console.log(`  ✓ ${want.out}  ← ${zip}:${hit.name} (${(hit.data.length / 1e6).toFixed(1)}MB)`);
-      placed++;
-    }
+  for (const zip of zips) for (const entry of wanted) {
+    const hit = unzipEntries(await readFile(join(downloads, zip)), (name) => entry.match.test(name))[0];
+    if (hit) { await writeFile(join(assets, entry.out), hit.data); console.log(`  ✓ ${entry.out} ← ${zip}:${hit.name}`); placed++; }
   }
   return placed > 0;
 }
 
-async function writeCredits(hdriFile, hasChars) {
-  const lines = [
-    "# boxing デモの外部アセット（出典）",
-    "",
-    "いずれも **CC0**（パブリックドメイン相当）。CC0 は表示義務が無いが、出典は残す。",
-    "このフォルダの中身は git にコミットしていない（`scripts/fetch-boxing-assets.mjs` で取得する）。",
-    "",
-    `## 背景 HDRI — ${HDRI.name}`,
-    "",
-    `- 作者: ${HDRI.author}`,
-    `- 出典: ${HDRI.page}`,
-    `- ライセンス: ${HDRI.license}`,
-    `- ファイル: \`${hdriFile ?? "(未取得)"}\``,
-    "",
-    `## 人型モデル — ${CHARACTERS.name}`,
-    "",
-    `- 作者: ${CHARACTERS.author}`,
-    `- 出典: ${CHARACTERS.page}`,
-    `- 配布: ${CHARACTERS.itch}`,
-    `- ライセンス: ${CHARACTERS.license}`,
-    `- 状態: ${hasChars ? "配置済み（player.glb / enemy.glb）" : "**未配置**（手動ダウンロードが必要。README 参照）"}`,
-    "",
-    "リング（マット・ポスト・ロープ・コーナーパッド）は Three.js の簡易ジオメトリで自作。",
-    "",
-  ];
-  await writeFile(join(ASSETS, "CREDITS.md"), lines.join("\n"), "utf8");
-}
-
 async function main() {
-  const size = process.argv.includes("--1k") ? "1k" : "2k";
-  await mkdir(ASSETS, { recursive: true });
-  console.log("boxing アセット取得");
-
-  let hdriFile = null;
-  try {
-    const dest = join(ASSETS, `wrestling_gym_${size}.hdr`);
-    const bytes = await download(HDRI.url(size), dest);
-    hdriFile = `wrestling_gym_${size}.hdr`;
-    console.log(`  ✓ ${hdriFile} (${(bytes / 1e6).toFixed(1)}MB) — ${HDRI.page} / CC0`);
-  } catch (e) {
-    console.warn(`  ✗ HDRI を取得できませんでした: ${e.message}`);
-    console.warn(`    手動: ${HDRI.page} から 2K .hdr を ${ASSETS} に置く`);
-  }
-
-  const hasChars = await extractCharacters();
-  if (!hasChars) {
-    console.log("");
-    console.log("  ! 人型モデルは自動取得できません（itch.io のボタン経由で配布されているため）。");
-    console.log("    1. " + CHARACTERS.itch + " から glTF 版をダウンロード（CC0 / 0 円でも可）");
-    console.log("    2. zip をそのまま " + DOWNLOADS + " に置く");
-    console.log("    3. もう一度このスクリプトを実行すると player.glb / enemy.glb を取り出します");
-    console.log("    （手動で置く場合は assets/player.glb, assets/enemy.glb という名前にする）");
-  }
-
-  await writeCredits(hdriFile, hasChars);
-  console.log("");
-  console.log(`アセットが無い場合、デモは自動的にプリミティブ表現で動きます（${ASSETS}）。`);
+  await mkdir(assets, { recursive: true });
+  const present = await extractCharacters();
+  await writeFile(join(assets, "CREDITS.md"), ["# boxing デモの任意人型アセット", "", `- ${characters.name} — ${characters.author}`, `- 出典: ${characters.page}`, `- 配布: ${characters.itch}`, `- ライセンス: ${characters.license}`, `- 状態: ${present ? "配置済み（player.glb / enemy.glb）" : "未配置"}`, "", "背景・リング・照明は Three.js の自作表現。写真背景・HDRI は使用しない。", ""].join("\n"));
+  if (!present) console.log(`人型は ${characters.itch} から glTF zip を取得し、${downloads} に置いてください。`);
 }
-
-main().catch((e) => {
-  console.error(e);
-  process.exitCode = 1;
-});
+main().catch((error) => { console.error(error); process.exitCode = 1; });

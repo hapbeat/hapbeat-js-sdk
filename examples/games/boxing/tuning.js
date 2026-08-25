@@ -177,8 +177,6 @@ export const TUNING = {
 export const COMBAT = {
   /** リングの寸法（簡易ジオメトリで自作する部分）。 */
   ring: { half: 2.6, postHeight: 1.35, ropeYs: [0.45, 0.8, 1.15] },
-  /** HDRI 背景の露出。明るすぎ / 暗すぎるならここ。 */
-  env: { exposure: 0.9 },
 
   /**
    * 敵の初期の正面距離 [m]。骨長が固定になったので、拳が届く距離は腕の長さで決まる

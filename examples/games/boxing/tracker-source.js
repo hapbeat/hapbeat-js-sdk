@@ -1,187 +1,209 @@
-/**
- * tracker-source.js — 姿勢トラッキングの入力層。
- *
- * ゲーム側は「どこから姿勢が来るか」を知らなくてよい。実装は 2 つ:
- *   LocalMediaPipeSource   … 現行の Web カメラ + MediaPipe（2D のみ。奥行きは推定）
- *   WebSocketTrackerSource … 外部トラッカー（深度カメラ）。**本物の 3D (m)** が来る
- *
- * 起動時に WS へ繋がればそちらを使い、失敗・切断したら Web カメラへ自動フォールバックする。
- * フレーム形式とプロトコルは ./tracker/PROTOCOL.md を参照。
- *
- * 統一フレーム:
- *   { t, source: "local"|"depth",
- *     landmarks, worldLandmarks, hands,   // MediaPipe 互換（2D 経路がそのまま使える）
- *     xyz }                               // { nose:{x,y,z}, shoulderL:..., ... } メートル / 深度時のみ
- */
-
+/** External RGB-D and local MediaPipe input, with strict external-frame gating. */
 import { LM } from "./pose.js";
 
-/** xyz が来る関節名 → pose ランドマーク index。 */
 export const XYZ_JOINTS = {
-  nose: LM.nose,
-  shoulderL: LM.shoulderL, shoulderR: LM.shoulderR,
-  elbowL: LM.elbowL, elbowR: LM.elbowR,
-  wristL: LM.wristL, wristR: LM.wristR,
+  nose: LM.nose, shoulderL: LM.shoulderL, shoulderR: LM.shoulderR,
+  elbowL: LM.elbowL, elbowR: LM.elbowR, wristL: LM.wristL, wristR: LM.wristR,
   hipL: LM.hipL, hipR: LM.hipR,
 };
+export const REQUIRED_JOINTS = ["nose", "shoulderL", "shoulderR"];
+const finitePoint = (point) => point && [point.x, point.y, point.z].every(Number.isFinite);
+const finitePx = (point) => point && Number.isFinite(point.x) && Number.isFinite(point.y)
+  && point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1;
+const finiteNonNegative = (value) => Number.isFinite(value) && value >= 0;
+const safeSize = (size) => size && Number.isSafeInteger(size.width) && size.width > 0
+  && Number.isSafeInteger(size.height) && size.height > 0 && Number.isSafeInteger(size.seq) && size.seq >= 0;
 
-/**
- * 外部トラッカーの 1 行 JSON → 統一フレーム。**純関数**（node でテストできる）。
- * 壊れた入力では null を返す（接続は切らない）。
- * @param {string|object} msg
- * @returns {{t:number, source:string, landmarks:Array, worldLandmarks:null, hands:Array|null, xyz:object}|null}
- */
+function normalizeTelemetry(value) {
+  if (!value || typeof value !== "object" || typeof value.source !== "string" || !finiteNonNegative(value.sentAtMs)
+    || !finiteNonNegative(value.trackerFps) || !safeSize(value.rgb)) return null;
+  const numeric = ["syncDeltaMs", "sequenceDelta", "validDepthRatio", "joint3dCount", "processingLatencyMs"];
+  if (numeric.some((key) => value[key] != null && !finiteNonNegative(value[key]))) return null;
+  if (value.depth != null && !safeSize(value.depth)) return null;
+  if (value.dropCounts != null && (typeof value.dropCounts !== "object"
+    || Object.values(value.dropCounts).some((count) => !Number.isSafeInteger(count) || count < 0))) return null;
+  const device = value.device && typeof value.device === "object" ? {
+    deviceId: typeof value.device.deviceId === "string" ? value.device.deviceId : "",
+    usbSpeed: typeof value.device.usbSpeed === "string" ? value.device.usbSpeed : "",
+  } : null;
+  return { ...value, device, dropCounts: value.dropCounts ?? {} };
+}
+
+/** Parse the current tracker schema. Reject malformed 3D rather than letting it reach combat. */
 export function parseTrackerMessage(msg) {
   let obj = msg;
-  if (typeof msg === "string") {
-    try { obj = JSON.parse(msg); } catch { return null; }
-  }
-  if (!obj || typeof obj !== "object" || !obj.joints) return null;
-  // MediaPipe 互換の 33 点配列を作る（2D 経路をそのまま動かせるように）
-  const landmarks = new Array(33).fill(null).map(() => ({ x: 0, y: 0, z: 0, visibility: 0 }));
+  if (typeof msg === "string") { try { obj = JSON.parse(msg); } catch { return null; } }
+  if (!obj || typeof obj !== "object" || !obj.joints || !Number.isSafeInteger(obj.seq) || !Number.isFinite(obj.t)) return null;
+  const telemetry = normalizeTelemetry(obj.telemetry);
+  if (!telemetry) return null;
+  const landmarks = Array.from({ length: 33 }, () => ({ x: 0, y: 0, z: 0, visibility: 0 }));
   const xyz = {};
-  for (const [name, idx] of Object.entries(XYZ_JOINTS)) {
-    const j = obj.joints[name];
-    if (!j) continue;
-    if (j.px) {
-      landmarks[idx] = { x: j.px.x, y: j.px.y, z: j.px.z ?? 0, visibility: j.px.visibility ?? 1 };
+  for (const [name, index] of Object.entries(XYZ_JOINTS)) {
+    const joint = obj.joints[name];
+    if (!joint) continue;
+    if (joint.px && finitePx(joint.px)) {
+      landmarks[index] = { x: joint.px.x, y: joint.px.y, z: Number.isFinite(joint.px.z) ? joint.px.z : 0,
+        visibility: Number.isFinite(joint.px.visibility) ? joint.px.visibility : 1 };
     }
-    if (j.xyz && Number.isFinite(j.xyz.z)) xyz[name] = { x: j.xyz.x, y: j.xyz.y, z: j.xyz.z };
+    if (joint.xyz && finitePoint(joint.xyz)) {
+      xyz[name] = { x: joint.xyz.x, y: joint.xyz.y, z: joint.xyz.z };
+    }
   }
-  const hands = Array.isArray(obj.hands)
-    ? obj.hands.filter((h) => Array.isArray(h?.landmarks)).map((h) => ({ landmarks: h.landmarks, handedness: h.handedness ?? "" }))
-    : null;
-  return {
-    t: Number.isFinite(obj.t) ? obj.t : Date.now(),
-    source: Object.keys(xyz).length ? "depth" : "local",
-    landmarks, worldLandmarks: null, hands,
-    xyz: Object.keys(xyz).length ? xyz : null,
-  };
+  if (!REQUIRED_JOINTS.every((name) => finitePx(obj.joints[name]?.px))) return null;
+  const has3d = Object.keys(xyz).length > 0;
+  if (has3d && !REQUIRED_JOINTS.every((name) => finitePoint(xyz[name]))) return null;
+  const hands = Array.isArray(obj.hands) ? obj.hands.filter((hand) => Array.isArray(hand?.landmarks)
+    && hand.landmarks.every(finitePx)).map((hand) => ({ landmarks: hand.landmarks, handedness: hand.handedness ?? "" })) : null;
+  return { t: obj.t, seq: obj.seq, source: has3d ? "depth" : "local", landmarks, worldLandmarks: null, hands,
+    xyz: has3d ? xyz : null, telemetry, debug: obj.debug ?? null };
 }
 
-/**
- * カメラ座標（+X 右 / +Y 上 / −Z 奥 = カメラ前方）→ ゲームのリグ座標
- * （+X 画面右 = プレイヤーの右 / +Y 上 / −Z 敵の方向）。
- *
- * プレイヤーはカメラと向かい合っているので **左右は反転**し（カメラから見て左に写る手が
- * プレイヤーの右手）、**カメラに近づく = 敵の方へ進む** ので z も反転する。
- * diag(-1, +1, -1) は行列式 +1 の回転なので鏡像にはならない。
- * @param {{x,y,z}} p カメラ座標 [m]
- * @param {{x,y,z}} origin 原点に置きたい点（通常は肩中点や胴の中心）
- */
-export function xyzToRig(p, origin = { x: 0, y: 0, z: 0 }) {
-  return { x: -(p.x - origin.x), y: p.y - origin.y, z: -(p.z - origin.z) };
+/** Stateful order/freshness gate, intentionally exported for non-browser tests. */
+export class ExternalFrameGate {
+  constructor({ staleTtlMs = 750 } = {}) { this.staleTtlMs = staleTtlMs; this.lastSeq = -1; this.lastSentAtMs = -1; this.drops = 0; }
+  accept(frame, nowMs = Date.now()) {
+    if (!frame || frame.seq <= this.lastSeq || frame.telemetry.sentAtMs <= this.lastSentAtMs
+      || nowMs - frame.telemetry.sentAtMs > this.staleTtlMs) { this.drops++; return false; }
+    this.lastSeq = frame.seq; this.lastSentAtMs = frame.telemetry.sentAtMs; return true;
+  }
+  stale(nowMs = Date.now()) { return this.lastSentAtMs < 0 || nowMs - this.lastSentAtMs > this.staleTtlMs; }
 }
 
-/**
- * 深度トラッカーのフレーム → buildPlayerPose に渡す入力。**純関数**。
- * xyz があるときは前方リーチの推定を捨てて、**実測の 3D 手首位置**をそのまま目標にする。
- * @returns {{head:{x,y}, root:{x}, stepMeters:number, yaw:number, arms:object}|null}
- */
+export function xyzToRig(point, origin = { x: 0, y: 0, z: 0 }) {
+  return { x: -(point.x - origin.x), y: point.y - origin.y, z: -(point.z - origin.z) };
+}
+
 export function frameToPlayerInput(frame, cfg) {
-  const j = frame?.xyz;
-  if (!j || !j.shoulderL || !j.shoulderR || !j.nose) return null;
-  const mid = {
-    x: (j.shoulderL.x + j.shoulderR.x) / 2,
-    y: (j.shoulderL.y + j.shoulderR.y) / 2,
-    z: (j.shoulderL.z + j.shoulderR.z) / 2,
-  };
-  const rig = (p) => xyzToRig(p, mid);
-  const shoulderWidth = Math.hypot(j.shoulderL.x - j.shoulderR.x, j.shoulderL.z - j.shoulderR.z) || cfg.shoulderWidthM;
-  const head = rig(j.nose);
-  const out = {
-    // head は「体に対する頭の位置」（肩幅で正規化した体基準の量に戻す）
-    head: { x: head.x / shoulderWidth, y: -head.y / shoulderWidth },
-    root: { x: 0 },
-    // 前後は実測。基準距離より近づいた分だけ前へ出る。
-    stepMeters: (cfg.trackerBaseDistance ?? 2.0) + mid.z,
-    yaw: Math.atan2(rig(j.shoulderR).z - rig(j.shoulderL).z, rig(j.shoulderR).x - rig(j.shoulderL).x),
-    arms: {},
-  };
-  for (const [side, w] of [["left", "wristL"], ["right", "wristR"]]) {
-    const wrist = j[w];
-    if (!wrist) { out.arms[side] = null; continue; }
-    const t = rig(wrist);
-    // reach は表示・デバッグ用（実際の手首位置は target で直接渡す）
-    const reach = Math.max(0, Math.min(1, -t.z / (cfg.forwardMeters || 0.62)));
-    out.arms[side] = { elbow: { x: 0, y: 0 }, wrist: { x: 0, y: 0 }, reach, target: t };
+  const joints = frame?.xyz;
+  if (!joints || !REQUIRED_JOINTS.every((name) => finitePoint(joints[name]))) return null;
+  const middle = { x: (joints.shoulderL.x + joints.shoulderR.x) / 2, y: (joints.shoulderL.y + joints.shoulderR.y) / 2,
+    z: (joints.shoulderL.z + joints.shoulderR.z) / 2 };
+  const rig = (point) => xyzToRig(point, middle);
+  const shoulderWidth = Math.hypot(joints.shoulderL.x - joints.shoulderR.x, joints.shoulderL.z - joints.shoulderR.z) || cfg.shoulderWidthM;
+  const head = rig(joints.nose);
+  const output = { head: { x: head.x / shoulderWidth, y: -head.y / shoulderWidth }, root: { x: 0 },
+    stepMeters: (cfg.trackerBaseDistance ?? 2) + middle.z,
+    yaw: Math.atan2(rig(joints.shoulderR).z - rig(joints.shoulderL).z, rig(joints.shoulderR).x - rig(joints.shoulderL).x), arms: {} };
+  for (const [side, wristName] of [["left", "wristL"], ["right", "wristR"]]) {
+    if (!finitePoint(joints[wristName])) { output.arms[side] = null; continue; }
+    const target = rig(joints[wristName]);
+    output.arms[side] = { elbow: { x: 0, y: 0 }, wrist: { x: 0, y: 0 }, target,
+      reach: Math.max(0, Math.min(1, -target.z / (cfg.forwardMeters || 0.62))) };
   }
-  return out;
+  return output;
 }
 
-/** 共通インターフェース: start() / stop() / onFrame(cb) / label。 */
 class BaseSource {
-  constructor() { this._cbs = new Set(); this.label = ""; this.error = ""; }
-  onFrame(cb) { this._cbs.add(cb); return () => this._cbs.delete(cb); }
-  _emit(frame) { for (const cb of this._cbs) { try { cb(frame); } catch { /* 1 つの購読者の失敗で止めない */ } } }
+  constructor() { this._cbs = new Set(); this.label = ""; this.error = ""; this.last = null; }
+  onFrame(callback) { this._cbs.add(callback); return () => this._cbs.delete(callback); }
+  _emit(frame) { this.last = frame; for (const callback of this._cbs) { try { callback(frame); } catch {} } }
 }
 
-/** 現行の Web カメラ + MediaPipe を包む（奥行きは 2D からの推定のまま）。 */
 export class LocalMediaPipeSource extends BaseSource {
-  /** @param {import("./pose.js").PoseTracker} pose */
   constructor(pose) { super(); this.pose = pose; this.label = "Web カメラ"; }
-  async start(video, opts) {
-    const ok = await this.pose.start(video, opts);
-    this.error = this.pose.error;
-    return ok;
-  }
-  /** ゲームのループから毎フレーム呼ぶ（pull 型。push も onFrame で受けられる）。 */
+  async start(video, opts) { const ok = await this.pose.start(video, opts); this.error = this.pose.error; return ok; }
   poll(nowMs) {
-    const frame = {
-      t: nowMs, source: "local",
-      landmarks: this.pose.detect(nowMs)?.landmarks ?? null,
-      worldLandmarks: this.pose._last?.worldLandmarks ?? null,
-      hands: this.pose.detectHands(nowMs),
-      xyz: null,
-    };
-    this._emit(frame);
-    return frame;
+    const result = this.pose.detect(nowMs);
+    const frame = { t: Date.now(), seq: Math.floor(nowMs), source: "local", landmarks: result?.landmarks ?? null,
+      worldLandmarks: result?.worldLandmarks ?? null, hands: this.pose.detectHands(nowMs), xyz: null, telemetry: null };
+    this._emit(frame); return frame;
   }
   stop() { this.pose.stop(); }
 }
 
-/**
- * 外部トラッカー（深度カメラ）。1 行 1 JSON の WebSocket。
- * 接続できない / 切れた場合は `onLost` を呼ぶ（呼び出し側が Web カメラへ切り替える）。
- */
 export class WebSocketTrackerSource extends BaseSource {
-  constructor(url = "ws://localhost:8770", { onLost } = {}) {
-    super();
-    this.url = url;
-    this.onLost = onLost;
-    this.label = "深度トラッカー";
-    this.last = null;
-    this.ws = null;
+  constructor(url = "ws://localhost:8770", { onLost, staleTtlMs = 750 } = {}) {
+    super(); this.url = url; this.onLost = onLost; this.label = "OAK-D Lite"; this.staleTtlMs = staleTtlMs;
+    this.ws = null; this.generation = 0; this.gate = new ExternalFrameGate({ staleTtlMs }); this._lost = false;
   }
-  /** @param {number} timeoutMs 接続を諦めるまで */
-  start(_video, { timeoutMs = 1200 } = {}) {
+  start(_video, { timeoutMs = 10_000 } = {}) {
+    const generation = ++this.generation; this._lost = false; this.gate = new ExternalFrameGate({ staleTtlMs: this.staleTtlMs });
     return new Promise((resolve) => {
-      let settled = false;
-      const done = (ok) => { if (!settled) { settled = true; resolve(ok); } };
-      try { this.ws = new WebSocket(this.url); } catch (e) { this.error = String(e?.message ?? e); return done(false); }
-      const timer = setTimeout(() => { this.error = "接続タイムアウト"; try { this.ws.close(); } catch { /* noop */ } done(false); }, timeoutMs);
-      this.ws.onopen = () => { clearTimeout(timer); done(true); };
-      this.ws.onerror = () => { clearTimeout(timer); this.error = "接続できません"; done(false); };
-      this.ws.onclose = () => { if (settled) this.onLost?.(); else { clearTimeout(timer); done(false); } };
-      this.ws.onmessage = (ev) => {
-        const frame = parseTrackerMessage(ev.data);
-        if (frame) { this.last = frame; this._emit(frame); }
+      let settled = false, timer = null;
+      const clear = () => { clearTimeout(timer); this._timer = null; clearInterval(this._watchdog); this._watchdog = null; };
+      const done = (ok) => {
+        if (!settled) { settled = true; clearTimeout(timer); this._timer = null; if (this._settle === done) this._settle = null; resolve(ok); }
+      };
+      this._settle = done;
+      const lose = (reason) => {
+        if (generation !== this.generation || this._lost) return;
+        this._lost = true; this.error = reason; clear();
+        const socket = this.ws; this.ws = null;
+        try { socket?.close(); } catch {}
+        if (settled) this.onLost?.(reason); else done(false);
+      };
+      try { this.ws = new WebSocket(this.url); } catch (error) { this.error = String(error?.message ?? error); done(false); return; }
+      timer = setTimeout(() => { try { this.ws?.close(); } catch {} lose("接続タイムアウト"); }, timeoutMs);
+      this._timer = timer;
+      this.ws.onopen = () => { /* A TCP/WS open is not an external tracker frame. */ };
+      this.ws.onerror = () => { if (generation === this.generation) lose("接続できません"); };
+      this.ws.onclose = () => lose("接続が切れました");
+      this.ws.onmessage = (event) => {
+        if (generation !== this.generation) return;
+        const frame = parseTrackerMessage(event.data);
+        if (!frame || !this.gate.accept(frame)) return;
+        this._emit(frame);
+        if (!settled) {
+          done(true);
+          this._watchdog = setInterval(() => {
+            if (generation === this.generation && this.gate.stale()) lose("フレームタイムアウト");
+          }, Math.min(250, this.staleTtlMs));
+        }
       };
     });
   }
-  /** push 型なので、poll は直近フレームを返すだけ。 */
   poll() { return this.last; }
-  stop() { try { this.ws?.close(); } catch { /* noop */ } }
+  stop() { this._settle?.(false); ++this.generation; clearTimeout(this._timer); clearInterval(this._watchdog); this._watchdog = null; const socket = this.ws; this.ws = null; try { socket?.close(); } catch {} }
 }
 
-/**
- * 外部トラッカーを試し、駄目なら Web カメラにフォールバックする。
- * @returns {Promise<{source:BaseSource, ok:boolean}>}
- */
-export async function createTrackerSource({ pose, video, url, startOpts, onLost }) {
-  const ws = new WebSocketTrackerSource(url, { onLost });
-  if (await ws.start(video, {})) return { source: ws, ok: true };
-  const local = new LocalMediaPipeSource(pose);
-  const ok = await local.start(video, startOpts);
-  return { source: local, ok };
+/** Switches actual camera ownership on loss, and retries external input without stale socket events. */
+export class TrackerSourceController extends BaseSource {
+  constructor({ pose, video, url, startOpts = {}, onStatus, reconnectMs = 1500 }) {
+    super(); Object.assign(this, { pose, video, url, startOpts, onStatus, reconnectMs, active: null, stopped: false }); this.label = "入力を準備中";
+  }
+  async start() { return this._tryExternalOrLocal(); }
+  async _tryExternalOrLocal() {
+    if (this.stopped) return false;
+    const external = new WebSocketTrackerSource(this.url, { onLost: (reason) => this._fallback(reason) });
+    if (await external.start(this.video) && !this.stopped) { this._activate(external); return true; }
+    external.stop();
+    if (this.stopped) return false;
+    return this._startLocal(external.error);
+  }
+  _activate(source) {
+    if (this.stopped) { source.stop(); return; }
+    if (this.active && this.active !== source) this.active.stop();
+    this.active = source; this.label = source.label; this.error = source.error;
+    source.onFrame((frame) => this._emit(frame)); this.onStatus?.({ mode: source instanceof WebSocketTrackerSource ? "external" : "local", reason: source.error });
+  }
+  async _startLocal(reason = "") {
+    const local = new LocalMediaPipeSource(this.pose);
+    const ok = await local.start(this.video, this.startOpts);
+    if (this.stopped) { local.stop(); return false; }
+    if (ok) { this._activate(local); this.error = reason; this._scheduleReconnect(); }
+    else { this.error = local.error || reason; this._scheduleReconnect(); }
+    return ok || !this.stopped;
+  }
+  async _fallback(reason) {
+    if (this.stopped || !(this.active instanceof WebSocketTrackerSource)) return;
+    this.active.stop();
+    this.active = null;
+    await this._startLocal(reason);
+  }
+  _scheduleReconnect() {
+    clearTimeout(this._reconnect);
+    this._reconnect = setTimeout(async () => {
+      if (this.stopped || (this.active && !(this.active instanceof LocalMediaPipeSource))) return;
+      const external = new WebSocketTrackerSource(this.url, { onLost: (reason) => this._fallback(reason) });
+      if (await external.start(this.video) && !this.stopped) this._activate(external);
+      else { external.stop(); if (!this.stopped) this._scheduleReconnect(); }
+    }, this.reconnectMs);
+  }
+  poll(nowMs) { return this.active?.poll(nowMs) ?? null; }
+  stop() { this.stopped = true; clearTimeout(this._reconnect); this.active?.stop(); }
+}
+
+export async function createTrackerSource(options) {
+  const source = new TrackerSourceController(options);
+  return { source, ok: await source.start() };
 }

@@ -11,14 +11,15 @@ Web カメラだけでも同じプロトコルで動く。
 
 ## 使い方
 
-```bash
+```powershell
 cd examples/games/boxing/tracker
-pip install -r requirements.txt
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
-python tracker.py --source webcam          # Web カメラ（2D のみ）
-python tracker.py --source webcam --hands  # 手の 21 点も送る
-python tracker.py --source oak             # OAK-D Lite で 3D（未検証）
-python tracker.py --selftest               # カメラ・依存なしでフレーム生成だけ検証
+.\.venv\Scripts\python.exe tracker.py --source webcam          # Web カメラ（2D のみ）
+.\.venv\Scripts\python.exe tracker.py --source webcam --hands  # 手の 21 点も送る
+.\.venv\Scripts\python.exe tracker.py --source oak --hands --debug-preview # OAK-D Lite で3D + PIP debug
+.\.venv\Scripts\python.exe tracker.py --selftest               # カメラ・依存なしでフレーム生成だけ検証
 ```
 
 起動したままブラウザで `http://localhost:8170/examples/games/boxing/` を開く。
@@ -28,7 +29,7 @@ python tracker.py --selftest               # カメラ・依存なしでフレ�
 | モード | 内容 | 状態 |
 |---|---|---|
 | `--source webcam` | OpenCV の Web カメラ + MediaPipe Pose(+Hands)。`px`（正規化 2D）のみ送る | 実装済み。ブラウザ側は従来どおり奥行きを推定する |
-| `--source oak` | OAK-D Lite（DepthAI）で RGB + 深度（RGB にアライン）を取り、関節画素まわりの 5×5 メディアン深度と内部パラメータから 3D 化して `xyz` も送る | **ハード未入手のため未検証**。DepthAI の使い方はコード内コメントに公式 docs の URL を残してある |
+| `--source oak` | OAK-D Lite（DepthAI v3）で同期RGB-Dを取り、関節画素まわりの5×5有効値medianと変換後intrinsicsから `xyz` を送る | OAK-D Lite / DepthAI 3.9.0で同期frameとtelemetryを実機確認済み。RVC2/RVC4公式Depth Align構成を使用 |
 
 `xyz` が届いているフレームでは、ブラウザは**前方リーチの推定（単眼の手のサイズ・肘角度など）を
 使わず、実測の 3D 手首位置をそのまま IK の目標**にする。前後の立ち位置も実測の胴の z を使う。
@@ -36,9 +37,15 @@ python tracker.py --selftest               # カメラ・依存なしでフレ�
 
 ## 検証状況
 
-- `--selftest`: 2m 先の被写体が `z = -2.0`（カメラ前方が −Z）になること、画像上寄りが `+Y` に
-  なること、無効値 0 を除いたメディアン深度が正しいことを確認済み。
+- `--selftest`: deprojection、ROI有効値median/sample数、変換後intrinsics、同期閾値計算を実機なしで確認する。
 - `--source webcam`: 実カメラでの通し確認は**利用者の環境で実施**（このリポジトリの CI では未実施）。
   依存が入っていない場合は導入方法を出して終了する。
-- `--source oak`: **未検証**（OAK-D Lite 未入手）。パイプラインの組み方・深度アライン・
-  内部パラメータの取得は公式 docs に沿って書いてあるが、実機で動かして確かめていない。
+- `--source oak`: OAK-D Lite実機でUSB SuperSpeed、RGB/Depth 1280×720、同期差、変換後intrinsics、
+  3D関節、debug previewのWebSocket受信を確認済み。出力queueは最新1組だけを保持し、低速なMediaPipeで古い姿勢が滞留しない。
+
+## OAK-D Lite再起動時の既知問題
+
+DepthAI 3.9.0でOAK-D Liteのstereo pipelineを異常終了後に再起動すると、約6秒周期で
+`X_LINK_ERROR` と再接続を繰り返す場合がある。同じ症状は [Luxonis issue #1248](https://github.com/luxonis/depthai/issues/1248)
+で未解決として追跡中。trackerはdevice ID/USB speedを起動時に1回だけ取得し、毎frameのdevice RPCによる再現要因を除去している。
+それでも発生した場合は、OAK側のUSB-Cを抜いて10秒待ってから同じUSB 3ポートへ再接続し、trackerを1プロセスだけ起動する。

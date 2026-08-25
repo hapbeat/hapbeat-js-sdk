@@ -1,8 +1,8 @@
-# boxing の外部トラッカー（tracker.py）
-# webcam モード（2D のみ）に必要なもの:
-mediapipe>=0.10.9
+# Boxing external tracker (tracker.py).
+# Webcam mode (2D only):
+mediapipe==0.10.21
 opencv-python>=4.8
 websockets>=12.0
 
-# oak モード（OAK-D Lite で 3D）は追加で depthai が要る。**ハード未入手のため未検証**:
-#   pip install depthai>=2.24
+# OAK-D Lite RGB-D (DepthAI v3; tracker.py does not support the v2 API).
+depthai>=3.7,<4

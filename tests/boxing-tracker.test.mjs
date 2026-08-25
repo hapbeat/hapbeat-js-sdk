@@ -6,7 +6,7 @@
 //   ・xyz が来たら奥行き推定を使わず、実測の手首位置がそのまま IK の目標になる
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseTrackerMessage, xyzToRig, frameToPlayerInput, XYZ_JOINTS } from "../examples/games/boxing/tracker-source.js";
+import { parseTrackerMessage, xyzToRig, frameToPlayerInput, XYZ_JOINTS, ExternalFrameGate, TrackerSourceController, WebSocketTrackerSource } from "../examples/games/boxing/tracker-source.js";
 import { buildPlayerPose, dist } from "../examples/games/boxing/combat.js";
 import { COMBAT } from "../examples/games/boxing/tuning.js";
 
@@ -14,7 +14,9 @@ import { COMBAT } from "../examples/games/boxing/tuning.js";
 function sampleMessage({ wristRz = -1.4 } = {}) {
   const j = (px, xyz) => ({ px, xyz });
   return JSON.stringify({
-    t: 123456,
+    t: 123456, seq: 12, telemetry: { source: "oak", sentAtMs: 123456, trackerFps: 25, rgb: { width: 1280, height: 720, seq: 12 },
+      depth: { width: 1280, height: 720, seq: 12 }, syncDeltaMs: 1, validDepthRatio: 0.9, joint3dCount: 9,
+      processingLatencyMs: 20, dropCounts: {} },
     joints: {
       nose: j({ x: 0.51, y: 0.28, visibility: 0.99 }, { x: 0.02, y: 0.35, z: -1.9 }),
       shoulderL: j({ x: 0.57, y: 0.4, visibility: 0.98 }, { x: 0.19, y: 0.15, z: -1.92 }),
@@ -34,6 +36,7 @@ test("パース: プロトコルの 1 行 JSON → MediaPipe 互換の配列 + x
   const f = parseTrackerMessage(sampleMessage());
   assert.equal(f.source, "depth");
   assert.equal(f.t, 123456);
+  assert.equal(f.seq, 12);
   // 2D 経路がそのまま動くよう 33 点の配列になっている
   assert.equal(f.landmarks.length, 33);
   assert.equal(f.landmarks[XYZ_JOINTS.nose].x, 0.51);
@@ -48,9 +51,119 @@ test("パース: 壊れた入力では null を返す（接続は切らない）
     assert.equal(parseTrackerMessage(bad), null, `${JSON.stringify(bad)} で null にならない`);
   }
   // xyz が無い（Web カメラだけのトラッカー）なら source は local で xyz は null
-  const only2d = parseTrackerMessage(JSON.stringify({ joints: { nose: { px: { x: 0.5, y: 0.3 } } } }));
+  const only2d = parseTrackerMessage(JSON.stringify({ t: 2, seq: 2, telemetry: { source: "webcam", sentAtMs: 2, trackerFps: 1, rgb: { width: 1, height: 1, seq: 2 } }, joints: {
+    nose: { px: { x: 0.5, y: 0.3 } }, shoulderL: { px: { x: 0.4, y: 0.4 } }, shoulderR: { px: { x: 0.6, y: 0.4 } } } }));
   assert.equal(only2d.source, "local");
   assert.equal(only2d.xyz, null);
+});
+
+test("パース: optional joint/handは局所的に捨て、telemetryは描画安全な値だけ受ける", () => {
+  const optionalBad = JSON.parse(sampleMessage());
+  optionalBad.joints.wristR.px.x = 2;
+  optionalBad.joints.wristR.xyz.z = Number.NaN;
+  optionalBad.hands[0].landmarks[2].x = -0.1;
+  const frame = parseTrackerMessage(JSON.stringify(optionalBad));
+  assert.ok(frame, "必須点以外は全frameを捨てない");
+  assert.equal(frame.xyz.wristR, undefined);
+  assert.equal(frame.hands.length, 0, "壊れた手だけを捨てる");
+  const invalidTelemetry = JSON.parse(sampleMessage()); invalidTelemetry.telemetry.rgb.width = "1280";
+  assert.equal(parseTrackerMessage(JSON.stringify(invalidTelemetry)), null);
+});
+
+test("外部フレーム gate: schema、単調seq/timestamp、stale TTLを強制する", () => {
+  const gate = new ExternalFrameGate({ staleTtlMs: 100 });
+  const frame = parseTrackerMessage(sampleMessage());
+  frame.t = 1_000; frame.telemetry.sentAtMs = 1_000;
+  assert.equal(gate.accept(frame, 1_050), true);
+  assert.equal(gate.accept(frame, 1_051), false, "同じseqを再採用しない");
+  const next = { ...frame, seq: 13, telemetry: { ...frame.telemetry, sentAtMs: 1_101 } };
+  assert.equal(gate.accept(next, 1_201), true);
+  assert.equal(gate.stale(1_202), true, "TTLを越えればcontrollerがfallbackする");
+  const nonFinite = JSON.parse(sampleMessage()); nonFinite.joints.nose.xyz.x = null;
+  assert.equal(parseTrackerMessage(JSON.stringify(nonFinite)), null, "xyzの全軸finiteが必須");
+});
+
+test("接続断は実カメラfallbackを開始し、再接続でexternalへ戻る", async () => {
+  const saved = globalThis.WebSocket;
+  class FakeSocket {
+    static instances = [];
+    constructor() { FakeSocket.instances.push(this); queueMicrotask(() => {
+      this.onopen?.();
+      const message = JSON.parse(sampleMessage()); message.t = Date.now(); message.telemetry.sentAtMs = message.t;
+      this.onmessage?.({ data: JSON.stringify(message) });
+    }); }
+    close() { this.onclose?.(); }
+  }
+  globalThis.WebSocket = FakeSocket;
+  const pose = { starts: 0, stops: 0, async start() { this.starts++; return true; }, stop() { this.stops++; }, detect() { return null; }, detectHands() { return null; } };
+  const controller = new TrackerSourceController({ pose, video: {}, url: "ws://test", reconnectMs: 5 });
+  try {
+    assert.equal(await controller.start(), true);
+    assert.ok(controller.active instanceof WebSocketTrackerSource);
+    FakeSocket.instances[0].onclose();
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    assert.equal(pose.starts, 1, "外部停止後にLocalMediaPipeを実際に開始する");
+    await new Promise((resolve) => setTimeout(resolve, 12));
+    assert.ok(controller.active instanceof WebSocketTrackerSource, "復帰したexternalを再選択する");
+    assert.ok(pose.stops >= 1, "external復帰時にlocal cameraを停止する");
+  } finally {
+    controller.stop();
+    globalThis.WebSocket = saved;
+  }
+});
+
+test("ローカルカメラ開始失敗後もexternal再接続を継続する", async () => {
+  const saved = globalThis.WebSocket;
+  class FakeSocket {
+    static instances = [];
+    constructor() { FakeSocket.instances.push(this); queueMicrotask(() => {
+      this.onopen?.();
+      const message = JSON.parse(sampleMessage()); message.t = Date.now(); message.telemetry.sentAtMs = message.t;
+      this.onmessage?.({ data: JSON.stringify(message) });
+    }); }
+    close() { this.onclose?.(); }
+  }
+  globalThis.WebSocket = FakeSocket;
+  const pose = { async start() { return false; }, stop() {}, detect() { return null; }, detectHands() { return null; } };
+  const controller = new TrackerSourceController({ pose, video: {}, url: "ws://test", reconnectMs: 5 });
+  try {
+    assert.equal(await controller.start(), true);
+    FakeSocket.instances[0].onclose();
+    await new Promise((resolve) => setTimeout(resolve, 12));
+    assert.ok(FakeSocket.instances.length >= 2, "Webカメラ無しでもexternal再接続を試みる");
+    assert.ok(controller.active instanceof WebSocketTrackerSource, "復帰したexternalを再選択する");
+  } finally {
+    controller.stop();
+    globalThis.WebSocket = saved;
+  }
+});
+
+test("WS openのみではexternalを採用せず、初回valid frame前のcloseは失敗としてcleanupする", async () => {
+  const saved = globalThis.WebSocket;
+  class OpenOnlySocket { constructor() { queueMicrotask(() => this.onopen?.()); } close() { this.onclose?.(); } }
+  globalThis.WebSocket = OpenOnlySocket;
+  const source = new WebSocketTrackerSource("ws://test");
+  try {
+    const pending = source.start({}, { timeoutMs: 1000 });
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    assert.equal(source.last, null);
+    source.ws.onclose();
+    assert.equal(await pending, false);
+    assert.equal(source.ws, null);
+  } finally { source.stop(); globalThis.WebSocket = saved; }
+});
+
+test("stop中の初回frame待機は解決し、遅いsocket callbackで再activateしない", async () => {
+  const saved = globalThis.WebSocket;
+  class DelayedSocket { close() {} }
+  globalThis.WebSocket = DelayedSocket;
+  const source = new WebSocketTrackerSource("ws://test");
+  try {
+    const pending = source.start({}, { timeoutMs: 1000 });
+    source.stop();
+    assert.equal(await pending, false);
+    assert.equal(source.ws, null);
+  } finally { globalThis.WebSocket = saved; }
 });
 
 test("座標変換: 左右反転・奥行き反転で、鏡像にはならない", () => {

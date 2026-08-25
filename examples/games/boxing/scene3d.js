@@ -83,7 +83,7 @@ export class Scene3D {
     );
     mat.position.set(0, floorY - 0.06, 0);
     g.add(mat);
-    // 場外（会場の床）— HDRI が入る前でも地平線が見えるように広めに敷く
+    // 場外（会場の床）— 単色背景に地平線が出るよう広めに敷く
     const apron = new THREE.Mesh(
       new THREE.CircleGeometry(14, 40),
       new THREE.MeshStandardMaterial({ color: 0x11161f, roughness: 1 }),
@@ -239,28 +239,15 @@ export class Scene3D {
     this.scene.add(this.dbg);
   }
 
-  // ── 外部アセット（CC0）。無ければプリミティブ表現のまま動く ──────────────────
+  // ── 任意の人型アセット（CC0）。無ければプリミティブ表現のまま動く ─────────────
   /**
-   * HDRI 背景と人型モデルを読み込む。**すべて任意**で、失敗しても例外にせず
+   * 人型モデルを読み込む。**すべて任意**で、失敗しても例外にせず
    * プリミティブ表現のまま続行する（アセットは git に入れていないため未配置が普通）。
-   * @param {{hdri?:string, player?:string, enemy?:string}} urls
-   * @returns {Promise<{hdri:boolean, player:boolean, enemy:boolean, errors:string[]}>}
+   * @param {{player?:string, enemy?:string}} urls
+   * @returns {Promise<{player:boolean, enemy:boolean, errors:string[]}>}
    */
   async loadAssets(urls = {}) {
-    const result = { hdri: false, player: false, enemy: false, errors: [] };
-    if (urls.hdri) {
-      try {
-        const { RGBELoader } = await import("three/addons/loaders/RGBELoader.js");
-        const tex = await new RGBELoader().loadAsync(urls.hdri);
-        tex.mapping = THREE.EquirectangularReflectionMapping;
-        this.scene.environment = tex;
-        this.scene.background = tex;
-        this.scene.fog = null;                       // 背景が入ったらフォグは邪魔
-        this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        this.renderer.toneMappingExposure = this.cfg.env?.exposure ?? 0.9;
-        result.hdri = true;
-      } catch (e) { result.errors.push(`HDRI: ${e?.message ?? e}`); }
-    }
+    const result = { player: false, enemy: false, errors: [] };
     for (const who of ["player", "enemy"]) {
       if (!urls[who]) continue;
       try {

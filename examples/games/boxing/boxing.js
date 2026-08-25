@@ -119,6 +119,7 @@ root.innerHTML = `
     <div style="font-size:12px;margin:4px 0">Helper: <span id="conn" class="badge off">未接続</span></div>
     <div style="font-size:12px;margin:4px 0">推論: <span id="delegate" class="badge off">未初期化</span></div>
     <div style="font-size:12px;margin:4px 0">入力: <span id="srcBadge" class="badge off">未接続</span></div>
+    <div id="trackerStatus" style="font:10px/1.45 ui-monospace,monospace;color:#9fb0c4;min-height:58px;overflow:hidden">外部テレメトリ待ち</div>
     <div class="t">クレジット</div>
     <div id="credits" style="font-size:10.5px;line-height:1.6;color:#8b97a6">読み込み中…</div>
     <button id="recBtn">📝 10 秒記録して CSV 保存</button>
@@ -142,6 +143,7 @@ const card = root.querySelector("#card");
 const connEl = root.querySelector("#conn");
 const delegateEl = root.querySelector("#delegate");
 const menuEl = root.querySelector("#menu");
+const trackerStatusEl = root.querySelector("#trackerStatus");
 
 let pipOn = true, debugOn = true;
 root.querySelector("#gear").onclick = () => menuEl.classList.toggle("hidden");
@@ -156,7 +158,7 @@ root.querySelector("#recBtn").onclick = () => startRecording(10);
 // 押してから画面の前に戻って構える時間が要るので、スタートと同じ COUNTDOWN → CALIB を通す。
 // recalibrate() は CALIB 遷移時に呼ばれるのでここでは呼ばない（二重呼び出しにしない）。
 root.querySelector("#recalBtn").onclick = () => {
-  if (!pose.ready) return;
+  if (!(tracker?.active || pose.ready)) return;
   menuEl.classList.add("hidden");
   setState("COUNTDOWN");
 };
@@ -179,6 +181,11 @@ function recordFrame(nowMs, g) {
   const d = g.debug ?? {};
   const row = { t: Math.round(nowMs), dist: (d.distanceRatio ?? 1).toFixed(3),
     step: (playerPose?.step ?? 0).toFixed(3), yawDeg: (d.yawDeg ?? 0).toFixed(1) };
+  const tm = tracker?.last?.telemetry;
+  if (tm) Object.assign(row, { input: tracker.label, seq: tracker.last.seq, frameAgeMs: Math.round(Date.now() - tm.sentAtMs),
+    trackerFps: Number(tm.trackerFps ?? 0).toFixed(1), rgb: tm.rgb ? `${tm.rgb.width}x${tm.rgb.height}` : "",
+    depth: tm.depth ? `${tm.depth.width}x${tm.depth.height}` : "", syncDeltaMs: tm.syncDeltaMs ?? "",
+    validDepthRatio: tm.validDepthRatio ?? "", joint3dCount: tm.joint3dCount ?? "", latencyMs: tm.processingLatencyMs ?? "" });
   for (const side of ["left", "right"]) {
     const a = d[side] ?? {};
     const f = g.frame?.arms?.[side];
@@ -193,6 +200,18 @@ function recordFrame(nowMs, g) {
     });
   }
   recorder.rows.push(row);
+}
+
+function trackerDiagnostic(frame) {
+  const tm = frame?.telemetry;
+  if (!tm) return "Web カメラ（外部テレメトリなし）";
+  const age = Math.max(0, Date.now() - tm.sentAtMs);
+  const rgb = tm.rgb ? `${tm.rgb.width}×${tm.rgb.height} #${tm.rgb.seq}` : "-";
+  const depth = tm.depth ? `${tm.depth.width}×${tm.depth.height} #${tm.depth.seq}` : "-";
+  const drops = Object.entries(tm.dropCounts ?? {}).filter(([, value]) => value).map(([key, value]) => `${key}:${value}`).join(" ") || "0";
+  return `${frame.source === "depth" ? "外部" : "外部2D"} seq ${frame.seq} age ${age.toFixed(0)}ms FPS ${(tm.trackerFps ?? 0).toFixed(1)}\n`
+    + `RGB ${rgb} / Depth ${depth} Δ ${(tm.syncDeltaMs ?? 0).toFixed?.(1) ?? "-"}ms  valid ${((tm.validDepthRatio ?? 0) * 100).toFixed(0)}%  3D ${tm.joint3dCount ?? 0}\n`
+    + `lat ${(tm.processingLatencyMs ?? 0).toFixed?.(1) ?? "-"}ms drops ${drops} ${tm.device ? `${tm.device.deviceId ?? ""} ${tm.device.usbSpeed ?? ""}` : ""}`;
 }
 function downloadCsv() {
   if (!recorder.rows.length) { setStatus("記録できませんでした（姿勢が取れていない）", "warn"); return; }
@@ -247,7 +266,7 @@ let elapsed = 0, hitstopUntil = 0, slowMoUntil = 0, flash = 0, enemyHurt = 0;
 let playerPose = null;      // combat.buildPlayerPose の結果（判定・描画で共用）
 let gestureArms = null;     // gestures の arms（スイング中かの参照用）
 let enemyPose = null;       // combat.buildEnemyPose の結果（判定・描画で共用）
-let assetStatus = null;     // 外部アセット（HDRI / 人型）の読み込み結果
+let assetStatus = null;     // 任意の人型アセットの読み込み結果
 let resetAtMs = 0;          // テストモードの自動回復時刻
 let countdownUntilMs = 0;   // キャリブ前カウントダウンの終了時刻
 let lastDebug = null;       // 判定デバッグのプロット用
@@ -637,7 +656,7 @@ function setState(next) {
 }
 
 function startFight() {
-  if (!pose.ready) return;
+  if (!(tracker?.active || pose.ready)) return;
   unlockAudio();
   playerHp = GAME.playerHp; enemyHp = GAME.enemyHp;
   timeLeft = GAME.roundSec; score = 0; combo = 0; bestCombo = 0; elapsed = 0;
@@ -746,6 +765,15 @@ function drawSignalBars() {
     + `  yaw ${(lastDebug.yawDeg ?? 0).toFixed(0)}°  入力 ${tracker?.label ?? "-"}`
     + `${lastDebug.hands ? "  hand21 OK" : "  hand21 なし"}`, 14 * s, y);
   y += rowH;
+  const tm = tracker?.last?.telemetry;
+  if (tm) {
+    ctx.fillStyle = "#6cd1ff";
+    ctx.fillText(`EXT #${tracker.last.seq} age ${Math.max(0, Date.now() - tm.sentAtMs).toFixed(0)}ms ${(tm.trackerFps ?? 0).toFixed(1)}fps`
+      + ` RGB ${tm.rgb?.width ?? "?"}x${tm.rgb?.height ?? "?"} D ${tm.depth?.width ?? "-"}x${tm.depth?.height ?? "-"}`
+      + ` sync ${(tm.syncDeltaMs ?? 0).toFixed(1)}ms valid ${((tm.validDepthRatio ?? 0) * 100).toFixed(0)}% 3D ${tm.joint3dCount ?? 0}`
+      + ` lat ${(tm.processingLatencyMs ?? 0).toFixed(1)}ms`, 14 * s, y);
+    y += rowH;
+  }
   // 敵 AI: フェーズ / 下位ステート / 今の攻撃 / 難度（予備動作の倍率）
   ctx.fillStyle = "#c9a4ff";
   const atk = enemy.attack;
@@ -787,18 +815,25 @@ function drawSignalBars() {
  * 手が検出できているかを PIP だけで判断できるように、pose とは別色で重ねる。
  * オーバーレイ配置なのでレイアウトは動かない。
  */
-function drawPip(landmarks, hands) {
-  if (!pipOn || !pose.ready || video.readyState < 2) return;
+const externalPreview = new Image();
+let externalPreviewUrl = "";
+function drawPip(landmarks, hands, previewDataUrl, source) {
+  if (!pipOn) return;
+  if (source !== "depth") { externalPreviewUrl = ""; externalPreview.removeAttribute("src"); }
+  if (previewDataUrl && previewDataUrl !== externalPreviewUrl) { externalPreviewUrl = previewDataUrl; externalPreview.src = previewDataUrl; }
+  const hasExternalPreview = externalPreview.complete && externalPreview.naturalWidth > 0;
+  if (!hasExternalPreview && (!pose.ready || video.readyState < 2)) return;
   const W = hudCanvas.width, H = hudCanvas.height;
   const frac = state === "FIGHT" || state === "RESULT" ? 0.16 : 0.28;
   const w = W * frac;
-  const h = w * ((video.videoHeight / Math.max(1, video.videoWidth)) || 0.75);
+  const h = w * (hasExternalPreview ? externalPreview.naturalHeight / externalPreview.naturalWidth
+    : (video.videoHeight / Math.max(1, video.videoWidth)) || 0.75);
   const pad = 14 * (W / 620);
   const x = W - w - pad, yTop = H - h - pad;
   ctx.save();
   ctx.beginPath(); ctx.rect(x, yTop, w, h); ctx.clip();
   ctx.translate(x + w, yTop); ctx.scale(-1, 1); // ミラー
-  ctx.drawImage(video, 0, 0, w, h);
+  ctx.drawImage(hasExternalPreview ? externalPreview : video, 0, 0, w, h);
   if (landmarks) {
     ctx.strokeStyle = "rgba(124,92,255,0.9)";
     ctx.lineWidth = Math.max(1.5, w / 120);
@@ -919,7 +954,10 @@ function frame(nowMs) {
   fx.draw(ctx);
   if (state === "FIGHT" || state === "RESULT") drawHud();
   drawSignalBars();
-  drawPip(result?.landmarks, hands);
+  trackerStatusEl.textContent = trackerDiagnostic(srcFrame);
+  const srcBadge = root.querySelector("#srcBadge");
+  if (tracker) { srcBadge.className = "badge on"; srcBadge.textContent = tracker.label; }
+  drawPip(result?.landmarks, hands, srcFrame?.debug?.previewDataUrl, srcFrame?.source);
 }
 
 // ── 起動 ─────────────────────────────────────────────────────────────────────
@@ -952,15 +990,12 @@ function fail(message) {
     scene = new Scene3D(glCanvas, COMBAT);
     scene.resize(cssW, cssH);
     scene.setDebug(debugOn);
-    // 外部アセット（CC0）。未配置でも 404 を投げずにプリミティブのまま続行する。
+    // 任意の人型アセット。未配置でもプリミティブのまま続行する。
     const present = async (url) => {
       try { return (await fetch(url, { method: "HEAD" })).ok ? url : null; } catch { return null; }
     };
-    const [hdri, playerGlb, enemyGlb] = await Promise.all([
-      present("assets/wrestling_gym_2k.hdr").then((u) => u ?? present("assets/wrestling_gym_1k.hdr")),
-      present("assets/player.glb"), present("assets/enemy.glb"),
-    ]);
-    assetStatus = await scene.loadAssets({ hdri, player: playerGlb, enemy: enemyGlb });
+    const [playerGlb, enemyGlb] = await Promise.all([present("assets/player.glb"), present("assets/enemy.glb")]);
+    assetStatus = await scene.loadAssets({ player: playerGlb, enemy: enemyGlb });
   } catch (e) {
     fail(`3D 表示エラー: Three.js を読み込めません（オフライン？ ${e?.message ?? e}）`);
     return;
@@ -970,15 +1005,12 @@ function fail(message) {
   const srcBadge = root.querySelector("#srcBadge");
   srcBadge.className = "badge on";
   srcBadge.textContent = tracker.label;
-  // CC0 でも出典は出す（未配置ならその旨と入手方法）
+  // 任意 CC0 人型の出典だけを示す。背景はThree.jsの単色・自作リング/照明のみ。
   root.querySelector("#credits").innerHTML = [
-    assetStatus?.hdri
-      ? '背景 HDRI: <b>Wrestling Gym</b> — Sergej Majboroda / <a href="https://polyhaven.com/a/wrestling_gym" target="_blank" style="color:#9ab">Poly Haven</a>（CC0）'
-      : "背景 HDRI: 未配置（<code>npm run fetch:boxing-assets</code>）",
     assetStatus?.player || assetStatus?.enemy
       ? '人型: <b>Universal Base Characters</b> — <a href="https://quaternius.com/packs/universalbasecharacters.html" target="_blank" style="color:#9ab">Quaternius</a>（CC0）'
       : "人型: 未配置（プリミティブ表示中・assets/README 参照）",
-    "リングは簡易ジオメトリで自作",
+    "背景・リング・照明は Three.js の自作表現",
   ].join("<br>");
   setState("TITLE");
 })();

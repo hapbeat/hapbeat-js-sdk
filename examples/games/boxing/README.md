@@ -346,18 +346,17 @@ boxing/
 
 ### 見た目のアセット（CC0・任意）
 
-背景 HDRI と人型モデルは**外部アセット**で、リポジトリには入れていない（バイナリのため）。
-**未配置でも動く** — その場合はプリミティブ（球とカプセル）で表示される。
+背景は Three.js の単色、リングと照明は自作ジオメトリであり、写真背景・HDRI は使わない。
+任意の人型モデルだけは外部アセットで、未配置ならプリミティブ（球とカプセル）で表示される。
 
 ```bash
-npm run fetch:boxing-assets        # 背景 HDRI を取得（--1k で軽い版）
+npm run fetch:boxing-assets        # assets/downloads/ の人型 zip から glb を抽出
 ```
 
 | アセット | 取得 | 出典 / ライセンス |
 |---|---|---|
-| 背景 HDRI **Wrestling Gym** | ✅ 自動（Poly Haven API） | Sergej Majboroda / [Poly Haven](https://polyhaven.com/a/wrestling_gym) / CC0 |
 | 人型 **Universal Base Characters** | ⚠️ **手動** | [Quaternius](https://quaternius.com/packs/universalbasecharacters.html) / CC0 |
-| リング（マット・ポスト・ロープ・コーナーパッド） | — | Three.js の簡易ジオメトリで自作 |
+| 背景・リング・照明 | — | Three.js の自作表現 |
 
 人型は itch.io のダウンロードボタン経由で配布されていて直リンクが無いため、自動取得できない:
 
@@ -373,14 +372,32 @@ npm run fetch:boxing-assets        # 背景 HDRI を取得（--1k で軽い版�
 ### 入力ソース（Web カメラ / 深度カメラ）
 
 姿勢の入力は差し替えられる。起動時に外部トラッカー（`ws://localhost:8770`）へ繋ぎに行き、
-**繋がればそれを使い、繋がらなければ Web カメラ**で動く（途中で切れても Web カメラへ戻る）。
-今どちらを使っているかは ⚙ メニューの「入力」とデバッグ表示に出る。
+**繋がればそれを使い、繋がらなければ Web カメラ**で動く。切断または 750ms のフレーム停止時は
+Web カメラを実際に開始し、外部トラッカーが復帰したら再び外部入力へ戻る。今どちらを使っているかと
+seq・frame age・FPS・RGB/深度サイズ・同期差・有効深度率・3D関節数・遅延・drop・MXID/USB は、⚙ の状態とHUD/CSVに出る。
 
 - 外部トラッカー: [`tracker/`](./tracker/)（Python）。プロトコルは [`tracker/PROTOCOL.md`](./tracker/PROTOCOL.md)。
   深度カメラ（OAK-D Lite）から**本物の 3D（メートル）**が来ると、単眼の奥行き推定
   （手のサイズ・肘角度・画像 z）は使わず、**実測の手首位置をそのまま IK の目標**にする。
   前後の立ち位置も実測の胴の z を使う。骨長は固定なので、実測が多少暴れても腕は伸び縮みしない。
 - 接続先は `?tracker=ws://...` で差し替えられる。
+
+#### OAK-D Lite（Windows）
+
+```powershell
+cd examples/games/boxing/tracker
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+python tracker.py --source oak --hands --debug-preview
+```
+
+OAK-D Lite を USB 3 接続してから起動する。USB/MXID・接続失敗はトラッカーの標準エラーとデモの入力バッジを確認する。
+深度が不要または接続できない場合は `python tracker.py --source webcam --hands`、または Python プロセスを止めてブラウザのWebcam fallbackを使う。
+`--debug-preview` は localhost のPIPだけにRGB+深度+landmark JPEGを最大10fpsで送り、`--preview-width` と `--preview-quality` で負荷を下げられる。
+異常終了後の再起動で約6秒周期の `X_LINK_ERROR` が続く場合は、OAK側のUSB-Cを抜いて10秒待ってから再接続する。
+OAK-D Liteのstereoを2回目に開始すると落ちる症状は [Luxonis issue #1248](https://github.com/luxonis/depthai/issues/1248) でも未解決として追跡されている。
 
 ### 検証用の URL パラメータ
 
@@ -422,8 +439,8 @@ MediaPipe 公式アセット `storage.googleapis.com/mediapipe-assets/pose.jpg` 
   `punch.swing.deltaMin` を上げる、`reach.guardLock.maxReach` を下げる。
 - 敵は回避しない（ガードの開閉と足さばきのみ）。本格的な AI と人型アセットは別途。
 - **腕の骨長は固定**（伸びない）。届かない間合いでは当たらないので、踏み込むか相手が詰めてくるのを待つ。
-- 深度カメラ経路（`tracker/tracker.py --source oak`）は**ハード未入手のため未検証**。
-  Web カメラ経路（`--source webcam`）と、プロトコルのパース・座標変換・IK は検証済み。
+- 深度カメラ経路（`tracker/tracker.py --source oak`）は実機OAK-D Lite / DepthAI 3.9.0で、USB SuperSpeed、
+  RGB/Depth 1280×720、同期WebSocket frame、デモ用telemetry/debug previewまで確認済み。長時間の身体動作・打撃精度は継続調整が必要。
 - **HandLandmarker は実カメラでのみ検証可能**。`?fakecam=1` のサンプル写真には検出可能な手が
   写っておらず（IMAGE モードでも 0 検出）、この経路だけは実機確認が要る。手が取れない間は
   自動的に他の信号だけで動く（pose の 4 点版と画像 z が代替する）。

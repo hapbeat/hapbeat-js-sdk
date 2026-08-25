@@ -24,6 +24,8 @@ CLAUDE.md
 instructions/
 .claude/
 examples/games/demo-kit/**/.studio-cache.json
+examples/games/boxing/tracker/.venv/
+examples/games/boxing/tracker/.codex-tmp/
 
 # boxing デモの外部アセット（CC0）はコミットしない。scripts/fetch-boxing-assets.mjs で取得する。
 examples/games/boxing/assets/
