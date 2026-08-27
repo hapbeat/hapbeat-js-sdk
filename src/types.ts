@@ -1,7 +1,7 @@
 /** Shared types for the Hapbeat Web SDK. */
 
 import type { EventMap } from "./eventmap.js";
-import type { StreamMeta } from "./clip.js";
+import type { EndpointStreamSink } from "./stream.js";
 
 export interface Device {
   ip: string;
@@ -49,8 +49,9 @@ export interface HapbeatOptions {
    */
   keepalive?: boolean;
   /**
-   * Send PLAY/STOP/STOP_ALL and clip streams straight to devices that answered
-   * a PING (Node/RN only), instead of broadcasting. Default true.
+   * Send PLAY/STOP/STOP_ALL straight to devices that answered a PING (Node/RN
+   * only), instead of broadcasting. Default true. Streaming always requires
+   * exact PONG-reported endpoints and is never broadcast.
    *
    * Wi-Fi APs hold broadcast frames until the next DTIM beacon (100-300 ms)
    * whenever any client on the AP is power-saving, which is heard as late
@@ -86,7 +87,7 @@ export interface HapbeatOptions {
  * JSON to hapbeat-helper, which builds the packets. The Hapbeat facade is
  * written against this interface and never touches bytes.
  */
-export interface Transport {
+export interface Transport extends EndpointStreamSink {
   connect(): Promise<void>;
   /** `pan`: -1 = left only, 0 = centre, +1 = right only (contracts §0x01, DEC-055). */
   play(eventId: string, gain: number, target: string, targetTimeUs: number, pan: number): void;
@@ -95,8 +96,4 @@ export interface Transport {
   ping(): void;
   discover(timeoutMs: number): Promise<Device[]>;
   close(): Promise<void> | void;
-  // Clip streaming (UDP audio). The ClipStreamer paces calls to these.
-  streamBegin(meta: StreamMeta): void;
-  streamData(offset: number, data: Uint8Array): void;
-  streamEnd(): void;
 }

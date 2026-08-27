@@ -6,8 +6,8 @@ devices from JS/TS correctly from one file. Package name: `@hapbeat/sdk`.
 - last-verified-against: 0.1.0
 - Source of truth is the code: public surface in `src/index.ts`, the facade in
   `src/hapbeat.ts`, options/types in `src/types.ts`, the tuning side in
-  `src/eventmap.ts`, the persistent stream in `src/live-stream.ts`, clip pacing in
-  `src/clip.ts`, the wire layer in `src/protocol.ts`, and the two `connect()`
+  `src/eventmap.ts`, endpoint-scoped mixing/pacing in `src/stream.ts`, the wire
+  layer in `src/protocol.ts`, and the three `connect()`
   entries in `src/node.ts` / `src/browser.ts`. If this file disagrees with the
   code, the code wins.
 - Canonical docs: https://devtools.hapbeat.com/docs/sdk-integration/
@@ -29,9 +29,9 @@ Entries: `src/node.ts` (dgram), `src/react-native.ts` (`react-native-udp`),
 `src/browser.ts` (helper WS); all three share `src/transport-udp-base.ts` /
 `src/protocol.ts`.
 
-It does **not** author haptics, run a cloud, mix multiple sources, or modulate
-gain/pan mid-clip. The waveform lives in the kit on the device; the SDK sends the
-instruction.
+It does **not** author haptics or run a cloud. The waveform lives in the kit or
+is supplied as PCM; streamed logical sources are normalized and mixed per exact
+device endpoint.
 
 ## Core model: fire vs tuning, linked by event id
 
@@ -110,30 +110,42 @@ streamSendAheadSec?: number;     // clip send-ahead (< 0.256). Default 0.15.
 
 ```ts
 play(eventId: string, opts?: PlayOpts): void
+playStream(eventId: string, opts?: PlayOpts): StreamPlayback | null
 stop(eventId: string, target?: string): void
 stopAll(target?: string): void
 ping(): void
 discover(timeoutMs?: number /* = 1500 */): Promise<Device[]>
-streamPcm(pcm: Uint8Array, opts?: { sampleRate?: number; channels?: number; gain?: number; target?: string }): void
-openStream(opts?: { sampleRate?: number; channels?: number; gain?: number; target?: string }): LiveStreamHandle
+streamPcm(pcm: Uint8Array, opts?: { sampleRate?: number; channels?: number; gain?: number; pan?: number; loop?: boolean; target?: string }): StreamPlayback
+openStream(opts?: { sampleRate?: number; channels?: number; gain?: number; pan?: number; target?: string }): LiveStreamHandle
 preloadClips(): Promise<void>
 connect(): Promise<this>   // connect() already calls this for you
 close(): Promise<void>
 ```
 
 ```ts
-interface LiveStreamHandle { write(pcm: Uint8Array): void; close(): void; readonly closed: boolean; }
+type PlaybackStatus = "Deferred" | "Active" | "Stopped";
+interface StreamPlayback {
+  readonly id: string; readonly status: PlaybackStatus;
+  readonly deferredReason?: "NoResolvedEndpoint";
+  gain: number; pan: number; loop: boolean; stop(): void;
+}
+interface LiveStreamHandle extends StreamPlayback {
+  write(pcm: Uint8Array): boolean; close(): void; readonly closed: boolean;
+}
 ```
 
 ```ts
 interface PlayOpts { gain?: number; target?: string; targetTimeUs?: number; pan?: number; }
-// pan: -1 = left only, 0 = centre (default), +1 = right only. Fire events only
-// (clips carry L/R in their PCM); the device applies it as a linear balance.
+// pan: -1 = left only, 0 = centre (default), +1 = right only.
+// Fire events apply it on-device; streamed sources apply it in the endpoint mixer.
 interface Device { ip: string; name?: string; address?: string; firmwareVersion?: string; lastSeen: number; }
 ```
 
-Note: `play` / `stop` / `stopAll` / `ping` / `streamPcm` are **fire-and-forget**
-(return `void`). Only `discover`, `connect`, `close`, `preloadClips` are async.
+Note: `play` / `stop` / `stopAll` / `ping` are fire-and-forget. `streamPcm`
+and `playStream` returns a source handle immediately. An uncached manifest WAV
+keeps that handle Deferred (without an endpoint defer reason) until loading
+finishes, so it remains controllable during the load. `discover`, `connect`,
+`close`, `preloadClips` are async.
 
 ## EventMap — the tuning side (optional, `src/eventmap.ts`)
 
@@ -167,24 +179,29 @@ at the call site or via `defaultTarget`).
 | `stream_events` | clip | SDK loads the WAV (via `clipLoader` + `clipBase`) and streams it over UDP | no |
 
 - No `eventMap` → everything is command mode (gain defaults to `1.0`).
-- Clip WAVs must be **16 kHz mono PCM16**; the SDK does not resample (non-16 kHz
-  warns). One stream at a time — a new clip cancels the previous.
+- Clip WAVs must be PCM16 mono or stereo. The SDK resamples and normalizes every
+  source to canonical 16 kHz stereo before mixing.
 
 ## Continuous / live streaming (`streamPcm` vs `openStream` vs clip)
 
-Three ways to send haptic PCM, all sharing **one** stream session (a new one ends
-the previous — "1 session = 1 stream"):
+Three ways to create logical haptic PCM sources. The deep `StreamHub` module owns
+target resolution, normalization, mixing, pacing and endpoint wire sessions:
 
 - **clip** `play(streamEventId)` — the SDK loads a WAV and **paces** it out
   (`streamSendAheadSec`, ring ≈ 256 ms), deferring STREAM_END until drained.
 - **`streamPcm(pcm, opts)`** — a single ad-hoc PCM16 buffer, paced like a clip.
   Use for a one-shot synthesized cue. `channels: 2` carries L/R direction (fire
   events use `play(id, { pan })` instead).
-- **`openStream(opts) → handle`** — a **persistent** session: `STREAM_BEGIN` once,
-  then `handle.write(pcm)` chunks in ~real time, `handle.close()` at the end. Use
-  for continuously-modulated haptics (per-frame directional tone in a game loop).
-  The SDK does **not** pace here — the caller must feed at ~real time or the device
-  ring (≈256 ms) underruns. `handle.closed` reports the state.
+- **`openStream(opts) → handle`** — a live logical source. Feed
+  `handle.write(pcm)` in approximately real time and `handle.close()` at the end.
+  `write()` returns `false` and drops input while Deferred or when the bounded
+  queue is full, preventing unbounded late haptics.
+
+Sources for the same exact device endpoint are mixed into one canonical 16 kHz
+stereo PCM16 wire session. Different endpoints have independent sessions and
+cursors. A source handle owns gain/pan/loop/status and `stop()` affects only that
+source. Empty sessions linger for at least 300 ms so rapid cues reuse the session
+without an unsafe `STREAM_END` → `STREAM_BEGIN` pair.
 
 ## Discovery & targeting
 
@@ -206,16 +223,14 @@ Device addresses are always `player_<N>/<position>/group_<M>` (defaults
 `player_1/*`). `protocol.addressMatches(target, address)` is the same check the
 device runs.
 
-Sending: Node/RN **unicast** commands and streams to devices that answered a
-recent PING, falling back to broadcast while none is known (APs delay broadcast
-frames up to one DTIM beacon, 100–300 ms, whenever any client is power-saving).
-`{ unicast: false }` forces broadcast — better when many devices must fire in
-lockstep. PING/CONNECT_STATUS stay broadcast; the keep-alive PING is what keeps
-unicast alive, since devices reply PONG only to a PING.
+Sending: Node/RN unicast commands to devices that answered a recent PING and fall
+back to broadcast while none matches. Streaming has no broadcast fallback because
+DATA/END carry no target; it requires an exact PONG-reported `(IP, address)` endpoint.
+`{ unicast: false }` affects commands only. PING/CONNECT_STATUS stay broadcast.
 
-Browser caveats (helper WS): clip-mode playback reaches **all** helper-known devices
-(per-device browser clip targeting is deferred); `targetTimeUs` is **ignored** over
-the helper (immediate playback only). Command-mode `target` works on both transports.
+Browser caveat (helper WS): every stream BEGIN/DATA/END carries the exact endpoint
+IP, so per-device clip targeting is supported. `targetTimeUs` is ignored over the
+helper (immediate playback only).
 
 ## Patterns / gotchas
 
@@ -228,7 +243,7 @@ the helper (immediate playback only). Command-mode `target` works on both transp
   deployed kit (#1 cause), or `target` doesn't match (try `""`).
 - **`gain` is absolute 0..1** and is clamped on the SDK side.
 - **Lifecycle**: always `await hb.close()` — it tells the device the app left and
-  cancels any active clip stream.
+  stops all logical sources and closes endpoint sessions.
 - **clipBase + clipLoader**: clip mode needs `clipBase` pointing at the WAVs (Node:
   a directory path, Browser: a URL prefix). The default loader is `fs.readFile`
   (Node) / `fetch` (Browser); override `clipLoader` to load from a bundle.
@@ -238,16 +253,12 @@ the helper (immediate playback only). Command-mode `target` works on both transp
 
 ## Not implemented (don't reach for these)
 
-- **Mid-clip realtime gain/pan modulation** — gain is set per fire / per stream
-  session; you don't tween a playing clip. For continuous modulation use
-  `openStream` and write the modulated PCM yourself.
-- **Multi-source mixing / mic-capture streaming** — the SDK sends one stream at a
-  time; mixing is the app's job.
+- **Built-in mic capture** — pass captured PCM to `openStream`; device endpoint
+  resolution, mixing and bounded buffering are provided, capture itself is not.
 - **Authoring / cloud / a kit format** — kits are authored in Hapbeat Studio; the
   manifest schema is owned by hapbeat-contracts. Don't invent a manifest.
 - **mDNS discovery** — discovery is broadcast PING/PONG (`discover()`), not mDNS.
-- **Per-device browser clip targeting** and **`targetTimeUs` over the helper** — see
-  the browser caveats above.
+- **`targetTimeUs` over the helper** — see the browser caveat above.
 - **OSC bridge / CLI / launchpad** — those live in the Python SDK, not here.
 
 ## More detail

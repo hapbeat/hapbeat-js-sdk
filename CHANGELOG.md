@@ -8,7 +8,35 @@
 
 ### 追加（Added）
 
-- `play(id, { pan })` で左右バランスを指定できるようにしました（-1 = 左のみ / 0 = 中央 / +1 = 右のみ）。PLAY パケット末尾に `pan`(f32) を常時付与します（contracts §0x01, DEC-055）。CLIP イベントは PCM 側に L/R を持つため対象外です。
+- `play(id, { pan })` で左右バランスを指定できるようにしました（-1 = 左のみ / 0 = 中央 / +1 = 右のみ）。command event は PLAY パケット末尾の `pan`(f32)、clip event は source mixer で適用します（contracts §0x01, DEC-055）。
+- target に一致するデバイス endpoint ごとに独立した WifiUdp ストリームを
+  管理する `StreamHub` を追加しました。同じ endpoint の複数 source は 16 kHz
+  stereo PCM16 に正規化して mix し、異なる endpoint は別 session / cursor で
+  同時送信します。
+- `streamPcm()` は source 単位の `StreamPlayback` を返し、`gain` / `pan` /
+  `loop` / `status` と冪等な `stop()` を公開します。`openStream()` の handle も
+  同じ source 制御を持ちます。
+- manifest clip を source 単位で制御する `playStream(eventId, opts)` を追加し、
+  `StreamPlayback` を同期的に返します。初回 WAV load 中も proxy handle から
+  stop / gain / pan / loop / status を扱えます。従来の `play()` は
+  fire-and-forget の利便 API として同じ StreamHub へ委譲します。
+
+### 変更（Changed）
+
+- ストリームは broadcast fallback せず、PONG で判明した exact `(IP, address)`
+  endpoint だけへ送ります。未解決の finite source は `Deferred`、live input は
+  遅延を蓄積せず `write() === false` で drop します。
+- Browser 経路も helper の全 `stream_begin` / `stream_data` / `stream_end` に
+  endpoint IP を明示し、BEGIN には完全 address target も載せます。offline device
+  は endpoint table から除外し、target ごとの同時 session に対応しました。
+- source ごとの gain / pan、target 指定 stop、300 ms 以上の空 session linger、
+  route-only endpoint 変更時の session / offset 継続に対応しました。
+- 旧 single-session 実装の `ClipStreamer` / `LiveStream` は削除しました。
+
+### 検証（Validation）
+
+- `npm run build`、通信・multi-stream・broadcast の 52 test が通過しました。
+- 実機、および React Native 実機は未検証です。
 
 ## [0.4.0] - 2026-08-09
 

@@ -25,7 +25,10 @@ function makeWav({ sampleRate = 16000, channels = 1, samples = [] }) {
 }
 
 class FakeTransport {
-  constructor() { this.calls = []; }
+  constructor(endpoints = [{ ip: "192.168.1.10", address: "p1" }]) {
+    this.calls = [];
+    this.endpoints = endpoints;
+  }
   async connect() {}
   play(id, gain, target, targetTimeUs, pan) { this.calls.push(["play", id, gain, target, pan]); }
   stop(id, target) { this.calls.push(["stop", id, target]); }
@@ -33,9 +36,12 @@ class FakeTransport {
   ping() {}
   async discover() { return []; }
   close() {}
-  streamBegin(meta) { this.calls.push(["begin", meta]); }
-  streamData(offset, data) { this.calls.push(["data", offset, data.length]); }
-  streamEnd() { this.calls.push(["end"]); }
+  streamEndpoints() { return this.endpoints; }
+  streamBeginEndpoint(endpoint) { this.calls.push(["begin", endpoint]); }
+  streamDataEndpoint(endpoint, offset, data) {
+    this.calls.push(["data", endpoint, offset, new Uint8Array(data)]);
+  }
+  streamEndEndpoint(endpoint) { this.calls.push(["end", endpoint]); }
 }
 
 test("header magic, version, size", () => {
@@ -249,82 +255,140 @@ test("facade play() branches fire vs clip from the manifest", async () => {
   hb.play("k.hit", { gain: 0.3 });
   assert.deepEqual(transport.calls[0], ["play", "k.hit", 0.3, "", 0]);
 
-  // pan reaches the transport (fire events only — a clip carries L/R in its PCM)
+  // pan reaches the transport for fire events.
   hb.play("k.hit", { gain: 0.3, pan: 1 });
   assert.deepEqual(transport.calls[1], ["play", "k.hit", 0.3, "", 1]);
 
-  // clip event → async load then STREAM_BEGIN/DATA*/END
+  // clip event → async load, then one canonical endpoint session.
   hb.play("k.stream");
   await new Promise((r) => setTimeout(r, 130));
   const begin = transport.calls.find((c) => c[0] === "begin");
   assert.ok(begin, "streamBegin called");
-  assert.equal(begin[1].channels, 1);
-  assert.equal(begin[1].sampleRate, 16000);
-  assert.ok(Math.abs(begin[1].gain - 0.6) < 1e-6, "clip gain = manifest intensity");
-  const dataBytes = transport.calls.filter((c) => c[0] === "data").reduce((s, c) => s + c[2], 0);
-  assert.equal(dataBytes, 320 * 2, "all PCM bytes streamed");
-  await new Promise((r) => setTimeout(r, 90));
+  assert.equal(begin[1].address, "p1");
+  const dataBytes = transport.calls.filter((c) => c[0] === "data").reduce((s, c) => s + c[3].length, 0);
+  assert.equal(dataBytes, 320 * 4, "mono input is normalized to canonical stereo PCM16");
+  await new Promise((r) => setTimeout(r, 330));
   assert.ok(transport.calls.some((c) => c[0] === "end"), "streamEnd called after drain");
+  await hb.close();
 });
 
-// ── Persistent stream (openStream / LiveStream) ────────────────────────────
+test("stop cancels a clip source that is still loading", async () => {
+  let resolveLoad;
+  const eventMap = EventMap.fromManifest({
+    stream_events: { "k.slow": { clip: "slow.wav" } },
+  });
+  const transport = new FakeTransport();
+  const hb = new Hapbeat(transport, {
+    eventMap,
+    clipLoader: () => new Promise((resolve) => { resolveLoad = resolve; }),
+  });
+  hb.play("k.slow", { target: "p1" });
+  hb.stop("k.slow", "p1");
+  resolveLoad(makeWav({ samples: new Array(32).fill(1000) }));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(transport.calls.some(([kind]) => kind === "begin"), false);
+  await hb.close();
+});
 
-test("openStream: BEGIN once, write() streams DATA with running offset, close() ENDs", () => {
+test("playStream returns a controllable Playback before the first WAV load completes", async () => {
+  let resolveLoad;
+  const eventMap = EventMap.fromManifest({
+    stream_events: { "k.stream": { clip: "stream.wav", parameters: { loop: true } } },
+  });
+  const transport = new FakeTransport();
+  const hb = new Hapbeat(transport, {
+    eventMap,
+    clipLoader: () => new Promise((resolve) => { resolveLoad = resolve; }),
+  });
+  const playback = hb.playStream("k.stream", { target: "p1", pan: -0.5 });
+  assert.equal(playback.status, "Deferred");
+  assert.equal(playback.deferredReason, undefined, "loading is not an endpoint-resolution failure");
+  playback.gain = 0.25;
+  playback.pan = 0.5;
+  playback.loop = true;
+  resolveLoad(makeWav({ samples: new Array(64).fill(1000) }));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(playback.status, "Active");
+  assert.equal(playback.loop, true);
+  assert.equal(playback.pan, 0.5);
+  assert.equal(playback.gain, 0.25);
+  playback.stop();
+  assert.equal(playback.status, "Stopped");
+  await hb.close();
+});
+
+// ── Endpoint-scoped multi-source streaming ─────────────────────────────────
+
+test("openStream: live source writes canonical DATA and closes idempotently", async () => {
   const transport = new FakeTransport();
   const hb = new Hapbeat(transport);
   const s = hb.openStream({ sampleRate: 16000, channels: 2, gain: 0.7, target: "p1" });
   const begin = transport.calls.find((c) => c[0] === "begin");
   assert.ok(begin, "STREAM_BEGIN sent on open");
-  assert.equal(begin[1].channels, 2);
-  assert.equal(begin[1].sampleRate, 16000);
-  assert.ok(Math.abs(begin[1].gain - 0.7) < 1e-6);
-  assert.equal(begin[1].totalSamples, 0, "open-ended (totalSamples 0)");
-  assert.equal(begin[1].target, "p1");
+  assert.equal(begin[1].address, "p1");
+  assert.equal(s.status, "Active");
 
-  s.write(new Uint8Array(8));
-  s.write(new Uint8Array(12));
+  assert.equal(s.write(new Uint8Array(8)), true);
+  assert.equal(s.write(new Uint8Array(12)), true);
+  await new Promise((r) => setTimeout(r, 20));
   const data = transport.calls.filter((c) => c[0] === "data");
-  assert.deepEqual(data.map((c) => [c[1], c[2]]), [[0, 8], [8, 12]], "running offset");
+  assert.equal(data.reduce((total, c) => total + c[3].length, 0), 20);
+  assert.equal(data[0][2], 0, "endpoint byte offset starts at zero");
 
   s.close();
-  assert.equal(transport.calls.filter((c) => c[0] === "end").length, 1);
   assert.equal(s.closed, true);
-  s.write(new Uint8Array(4)); // no-op after close
-  assert.equal(transport.calls.filter((c) => c[0] === "data").length, 2);
+  assert.equal(s.write(new Uint8Array(4)), false);
   s.close(); // idempotent
+  await new Promise((r) => setTimeout(r, 330));
   assert.equal(transport.calls.filter((c) => c[0] === "end").length, 1);
+  await hb.close();
 });
 
-test("openStream chunks large writes to <=1024 frame-aligned DATA packets", () => {
-  const transport = new FakeTransport();
+test("different targets get independent wire sessions", async () => {
+  const transport = new FakeTransport([
+    { ip: "192.168.1.10", address: "p1" },
+    { ip: "192.168.1.11", address: "p2" },
+  ]);
   const hb = new Hapbeat(transport);
-  const s = hb.openStream({ channels: 2 }); // bytesPerFrame = 4
-  s.write(new Uint8Array(3000)); // → 1024 + 1024 + 952
-  const data = transport.calls.filter((c) => c[0] === "data");
-  assert.deepEqual(data.map((c) => c[2]), [1024, 1024, 952]);
-  assert.ok(data.every((c) => c[2] % 4 === 0), "frame-aligned");
-  assert.deepEqual(data.map((c) => c[1]), [0, 1024, 2048], "contiguous offsets");
-  s.close();
+  const p1 = hb.streamPcm(new Uint8Array(640), { channels: 1, target: "p1" });
+  const p2 = hb.streamPcm(new Uint8Array(640), { channels: 1, target: "p2" });
+  assert.equal(p1.status, "Active");
+  assert.equal(p2.status, "Active");
+  assert.deepEqual(
+    transport.calls.filter((c) => c[0] === "begin").map((c) => c[1].ip).sort(),
+    ["192.168.1.10", "192.168.1.11"],
+  );
+  await new Promise((r) => setTimeout(r, 30));
+  const dataIps = new Set(transport.calls.filter((c) => c[0] === "data").map((c) => c[1].ip));
+  assert.deepEqual([...dataIps].sort(), ["192.168.1.10", "192.168.1.11"]);
+  await hb.close();
 });
 
-test("a new openStream / streamPcm / stopAll ends the previous live stream (1 session = 1 stream)", () => {
+test("same-endpoint sources coexist; stopping one leaves its sibling active", async () => {
   const transport = new FakeTransport();
   const hb = new Hapbeat(transport);
-  const s1 = hb.openStream({ channels: 1 });
-  transport.calls.length = 0;
-  const s2 = hb.openStream({ channels: 1 }); // ends s1, begins s2
-  assert.equal(s1.closed, true);
-  assert.equal(transport.calls[0][0], "end");
-  assert.equal(transport.calls[1][0], "begin");
+  const s1 = hb.openStream({ channels: 1, target: "p1" });
+  const s2 = hb.openStream({ channels: 1, target: "p1" });
+  assert.equal(transport.calls.filter((c) => c[0] === "begin").length, 1);
+  s1.stop();
+  assert.equal(s1.status, "Stopped");
+  assert.equal(s2.status, "Active");
+  assert.equal(s2.write(new Uint8Array(16)), true);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(transport.calls.some((c) => c[0] === "data"));
+  assert.equal(transport.calls.some((c) => c[0] === "end"), false);
+  await hb.close();
+});
 
-  transport.calls.length = 0;
-  hb.streamPcm(new Uint8Array(8), { channels: 1 }); // a clip ends the live stream
-  assert.equal(s2.closed, true);
-  assert.ok(transport.calls.some((c) => c[0] === "end"));
-
-  const s3 = hb.openStream({ channels: 1 });
-  hb.stopAll();
-  assert.equal(s3.closed, true);
+test("unresolved sources are Deferred and live writes are dropped", async () => {
+  const transport = new FakeTransport([]);
+  const hb = new Hapbeat(transport);
+  const live = hb.openStream({ target: "p1" });
+  assert.equal(live.status, "Deferred");
+  assert.equal(live.deferredReason, "NoResolvedEndpoint");
+  assert.equal(live.write(new Uint8Array(16)), false);
+  assert.equal(transport.calls.length, 0);
+  await hb.close();
 });
 
 test("browser transport: stream_* WS messages match the helper shape", async () => {
@@ -343,19 +407,36 @@ test("browser transport: stream_* WS messages match the helper shape", async () 
     const { BrowserWsTransport } = await import("../dist/transport-browser.js");
     const t = new BrowserWsTransport({});
     await t.connect();
-    t.streamBegin({ sampleRate: 16000, channels: 2, format: 0, totalSamples: 800, gain: 0.5 });
-    t.streamData(0, new Uint8Array([1, 2, 3, 4]));
-    t.streamEnd();
+    t.onMessage(JSON.stringify({
+      type: "device_list",
+      payload: { devices: [
+        { ipAddress: "192.168.1.10", name: "dev", address: "p1", online: true },
+        { ipAddress: "192.168.1.20", name: "dev", address: "p1", online: true },
+      ] },
+    }));
+    const [endpoint] = t.streamEndpoints();
+    assert.deepEqual(endpoint, { ip: "192.168.1.20", address: "p1" });
+    t.streamBeginEndpoint(endpoint);
+    t.streamDataEndpoint(endpoint, 0, new Uint8Array([1, 2, 3, 4]));
+    t.streamEndEndpoint(endpoint);
     const begin = sent.find((m) => m.type === "stream_begin");
+    assert.equal(begin.payload.ip, endpoint.ip);
+    assert.equal(begin.payload.target, endpoint.address);
     assert.equal(begin.payload.sample_rate, 16000);
     assert.equal(begin.payload.channels, 2);
-    assert.equal(begin.payload.format, "pcm"); // format 0 → "pcm" for helper
-    assert.equal(begin.payload.total_samples, 800);
-    assert.ok(Math.abs(begin.payload.gain - 0.5) < 1e-6);
+    assert.equal(begin.payload.format, "pcm");
+    assert.equal(begin.payload.total_samples, 0);
+    assert.equal(begin.payload.gain, 1);
     const data = sent.find((m) => m.type === "stream_data");
+    assert.equal(data.payload.ip, endpoint.ip);
     assert.equal(data.payload.offset, 0);
     assert.equal(data.payload.data, Buffer.from([1, 2, 3, 4]).toString("base64")); // base64 PCM
-    assert.ok(sent.some((m) => m.type === "stream_end"));
+    assert.equal(sent.find((m) => m.type === "stream_end").payload.ip, endpoint.ip);
+    t.onMessage(JSON.stringify({
+      type: "device_list",
+      payload: { devices: [{ ipAddress: endpoint.ip, address: "p1", online: false }] },
+    }));
+    assert.deepEqual(t.streamEndpoints(), []);
   } finally {
     delete globalThis.WebSocket;
   }
@@ -511,25 +592,35 @@ test("UDP transport: PING stays broadcast (discovery)", async () => {
   assert.deepEqual(t.dests(), [null]);
 });
 
-test("UDP transport: stream snapshot is reused for DATA and END", async () => {
+test("UDP transport: streaming exposes exact PONG endpoints and unicasts every packet", async () => {
   const t = new RoutingProbe();
   await t.connect();
-  t.saw("192.168.1.10");
+  t.saw("192.168.1.10", "player_1/pos_neck");
   t.sends.length = 0;
-  t.streamBegin({ sampleRate: 16000, channels: 1, totalSamples: 10, gain: 1, target: "" });
-  t.streamData(0, new Uint8Array([0, 0]));
-  t.streamEnd();
+  const [endpoint] = t.streamEndpoints();
+  assert.deepEqual(endpoint, {
+    ip: "192.168.1.10", address: "player_1/pos_neck", port: 7700,
+  });
+  t.streamBeginEndpoint(endpoint);
+  t.streamDataEndpoint(endpoint, 0, new Uint8Array([0, 0, 0, 0]));
+  t.streamEndEndpoint(endpoint);
   assert.deepEqual(t.dests(), ["192.168.1.10", "192.168.1.10", "192.168.1.10"]);
 });
 
-test("UDP transport: a stream matching nobody is dropped, not broadcast", async () => {
-  // Hundreds of packets of airtime for devices that would ignore them; and a
-  // lost stream leaves nothing stuck, unlike a lost STOP.
+test("UDP transport: a new IP for the same PONG identity atomically replaces the old endpoint", async () => {
   const t = new RoutingProbe();
   await t.connect();
-  t.saw("192.168.1.10", "player_1/pos_neck/group_1");
-  t.sends.length = 0;
-  t.streamBegin({ sampleRate: 16000, channels: 1, totalSamples: 10, gain: 1, target: "player_5" });
-  t.streamData(0, new Uint8Array([0, 0]));
-  assert.deepEqual(t.dests(), []);
+  t.saw("192.168.1.10", "player_1/pos_neck");
+  t.saw("192.168.1.20", "player_1/pos_neck");
+  assert.deepEqual(t.streamEndpoints(), [{
+    ip: "192.168.1.20", address: "player_1/pos_neck", port: 7700,
+  }]);
+});
+
+test("UDP transport: streaming has no broadcast or addressless endpoint fallback", async () => {
+  const t = new RoutingProbe({ unicast: false });
+  await t.connect();
+  assert.deepEqual(t.streamEndpoints(), []);
+  t.handleMessage(protocol.buildPacket(protocol.CMD_PONG, 1, new Uint8Array(16)), "192.168.1.10");
+  assert.deepEqual(t.streamEndpoints(), []);
 });

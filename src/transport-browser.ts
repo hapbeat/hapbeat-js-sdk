@@ -1,20 +1,19 @@
 /**
  * Browser transport: relays semantic commands to hapbeat-helper over a
  * WebSocket. Browsers cannot open raw UDP sockets, so the locally-running
- * helper (pip install hapbeat-helper) does the UDP broadcast on our behalf.
+ * helper (pip install hapbeat-helper) does the UDP I/O on our behalf.
  *
  * Helper WS protocol (hapbeat-helper server.py):
  *   -> { type: "play_event",  payload: { event_id, target, gain } }
  *   -> { type: "stop_event",  payload: { event_id, target } }   // "" id = stop all
  *   -> { type: "ping" } / { type: "rescan" }
- *   -> { type: "stream_begin", payload: { sample_rate, channels, format, total_samples, gain } }
- *   -> { type: "stream_data",  payload: { offset, data } }        // data = base64 PCM16
- *   -> { type: "stream_end",   payload: {} }
+ *   -> { type: "stream_begin", payload: { ip, target, sample_rate, channels, format, total_samples, gain } }
+ *   -> { type: "stream_data",  payload: { ip, offset, data } } // data = base64 PCM16
+ *   -> { type: "stream_end",   payload: { ip } }
  *   <- { type: "device_list", payload: { devices: [...] } }
  */
 
-import type { StreamMeta } from "./clip.js";
-import { STREAM_FORMAT_ADPCM } from "./protocol.js";
+import type { StreamEndpoint } from "./stream.js";
 import type { Device, HapbeatOptions, Transport } from "./types.js";
 
 function toBase64(bytes: Uint8Array): string {
@@ -25,6 +24,7 @@ function toBase64(bytes: Uint8Array): string {
 }
 
 const DEFAULT_HELPER_URL = "ws://localhost:7703";
+const DEFAULT_DEVICE_TTL_MS = 15_000;
 
 // Minimal structural WebSocket type so we depend on neither the DOM lib nor
 // @types/node's global. The real constructor is resolved from globalThis.
@@ -55,12 +55,14 @@ export class BrowserWsTransport implements Transport {
   private open = false;
   private readonly connectTimeoutMs: number;
   private readonly onConnectionLost?: () => void;
+  private readonly deviceTtlMs: number;
   private readonly devices = new Map<string, Device>();
 
   constructor(options: HapbeatOptions = {}) {
     this.url = options.helperUrl ?? DEFAULT_HELPER_URL;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 4000;
     this.onConnectionLost = options.onConnectionLost;
+    this.deviceTtlMs = options.deviceTtlMs ?? DEFAULT_DEVICE_TTL_MS;
   }
 
   connect(): Promise<void> {
@@ -124,18 +126,30 @@ export class BrowserWsTransport implements Transport {
       return;
     }
     if (msg.type !== "device_list" || !Array.isArray(msg.payload?.devices)) return;
+    const nextDevices = new Map<string, Device>();
+    const identityIps = new Map<string, string>();
     for (const raw of msg.payload.devices) {
       const d = raw as Record<string, unknown>;
-      const ip = String(d.ip ?? d.address ?? "");
+      const ip = String(d.ip ?? d.ipAddress ?? "");
       if (!ip) continue;
-      this.devices.set(ip, {
+      if (d.online === false) continue;
+      const device: Device = {
         ip,
         name: (d.name ?? d.device_name) as string | undefined,
         address: d.address as string | undefined,
         firmwareVersion: (d.firmware_version ?? d.firmwareVersion) as string | undefined,
         lastSeen: Date.now(),
-      });
+      };
+      if (device.name && device.address) {
+        const identity = `${device.name}\0${device.address}`;
+        const oldIp = identityIps.get(identity);
+        if (oldIp) nextDevices.delete(oldIp);
+        identityIps.set(identity, ip);
+      }
+      nextDevices.set(ip, device);
     }
+    this.devices.clear();
+    for (const [ip, device] of nextDevices) this.devices.set(ip, device);
   }
 
   private send(type: string, payload: Record<string, unknown> = {}): void {
@@ -169,26 +183,31 @@ export class BrowserWsTransport implements Transport {
     this.send("ping");
   }
 
-  streamBegin(meta: StreamMeta): void {
-    // target is omitted: the helper resolves stream targets to known-device IPs
-    // (it treats `target` as an IP, not an address string), so per-device clip
-    // addressing over the browser path is deferred — streams reach all known
-    // devices. Node clip streaming honours the in-packet address target.
+  streamEndpoints(): StreamEndpoint[] {
+    const cutoff = Date.now() - this.deviceTtlMs;
+    return [...this.devices.values()]
+      .filter((device) => device.lastSeen >= cutoff && Boolean(device.address))
+      .map((device) => ({ ip: device.ip, address: device.address! }));
+  }
+
+  streamBeginEndpoint(endpoint: StreamEndpoint): void {
     this.send("stream_begin", {
-      sample_rate: meta.sampleRate,
-      channels: meta.channels,
-      format: meta.format === STREAM_FORMAT_ADPCM ? "adpcm" : "pcm",
-      total_samples: meta.totalSamples ?? 0,
-      gain: meta.gain ?? 1.0,
+      ip: endpoint.ip,
+      target: endpoint.address,
+      sample_rate: 16000,
+      channels: 2,
+      format: "pcm",
+      total_samples: 0,
+      gain: 1.0,
     });
   }
 
-  streamData(offset: number, data: Uint8Array): void {
-    this.send("stream_data", { offset, data: toBase64(data) });
+  streamDataEndpoint(endpoint: StreamEndpoint, offset: number, data: Uint8Array): void {
+    this.send("stream_data", { ip: endpoint.ip, offset, data: toBase64(data) });
   }
 
-  streamEnd(): void {
-    this.send("stream_end");
+  streamEndEndpoint(endpoint: StreamEndpoint): void {
+    this.send("stream_end", { ip: endpoint.ip });
   }
 
   async discover(timeoutMs: number): Promise<Device[]> {

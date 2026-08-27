@@ -10,10 +10,16 @@ export { EventMap } from "./eventmap.js";
 export type { EventDef, KitManifest } from "./eventmap.js";
 export { parseWav } from "./wav.js";
 export type { WavPcm } from "./wav.js";
-export { ClipStreamer } from "./clip.js";
-export type { StreamMeta, StreamSink, ClipPlayOpts, ClipHandle } from "./clip.js";
-export { LiveStream } from "./live-stream.js";
-export type { LiveStreamHandle } from "./live-stream.js";
+export { StreamHub } from "./stream.js";
+export type {
+  DeferredReason,
+  EndpointStreamSink,
+  LiveStreamHandle,
+  PlaybackStatus,
+  StreamEndpoint,
+  StreamPlayback,
+  StreamPlayOptions,
+} from "./stream.js";
 export type { Device, HapbeatOptions, Transport } from "./types.js";
 // Re-export the wire layer as a namespace. Written as import+export (not
 // `export * as protocol`) so React Native's Metro/babel can transform it

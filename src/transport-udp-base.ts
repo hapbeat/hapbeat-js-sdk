@@ -8,7 +8,7 @@
  */
 
 import * as protocol from "./protocol.js";
-import type { StreamMeta } from "./clip.js";
+import type { StreamEndpoint } from "./stream.js";
 import type { Device, HapbeatOptions, Transport } from "./types.js";
 
 export const DEFAULT_UDP_PORT = 7700;
@@ -142,12 +142,6 @@ export abstract class UdpTransportBase implements Transport {
   private readonly autoRoutes: boolean;
   /** Destinations currently in a failed state, so each outage is logged once. */
   private readonly failedDestinations = new Set<string>();
-  /**
-   * Destinations for the active stream session, snapshotted in streamBegin
-   * (STREAM_DATA/END carry no target of their own). `null` = broadcast the
-   * session; `[]` = the snapshot matched nobody, so send nothing.
-   */
-  private streamDests: string[] | null = null;
 
   constructor(options: HapbeatOptions = {}) {
     this.port = options.port ?? DEFAULT_UDP_PORT;
@@ -283,6 +277,18 @@ export abstract class UdpTransportBase implements Transport {
     // broadcast still goes out limited, which on a multi-homed host may be
     // leaving through an interface with no Hapbeat behind it.
     this.lockRouteFor(ip);
+    // A device can obtain a new DHCP address while the previous PONG entry is
+    // still inside the TTL. Treat the stable PONG name+address pair as one
+    // identity so StreamHub sees an atomic route replacement instead of two
+    // endpoints (which would otherwise start a second session at cursor zero).
+    if (pong.deviceName && pong.address) {
+      for (const [knownIp, known] of this.devices) {
+        if (knownIp === ip) continue;
+        if (known.name === pong.deviceName && known.address === pong.address) {
+          this.devices.delete(knownIp);
+        }
+      }
+    }
     const dev: Device = this.devices.get(ip) ?? { ip, lastSeen: 0 };
     dev.name = pong.deviceName ?? dev.name;
     dev.address = pong.address ?? dev.address;
@@ -333,31 +339,6 @@ export abstract class UdpTransportBase implements Transport {
     for (const ip of ips) this.sendBytesTo(packet, ip);
   }
 
-  /** Pick destinations for one stream session (see `streamDests`).
-   *
-   * Unlike a one-shot command, a filtered-to-empty result means *send nothing*
-   * rather than broadcast: a stream is hundreds of packets, and blasting all
-   * of them at devices the target excluded wastes far more airtime than a lost
-   * stream costs (the device just stays silent — nothing gets stuck, unlike a
-   * lost STOP). */
-  private snapshotStreamDests(target: string | undefined): void {
-    if (!this.unicast) {
-      this.streamDests = null;
-      return;
-    }
-    const cutoff = Date.now() - this.deviceTtlMs;
-    const alive = [...this.devices.values()].filter((d) => d.lastSeen >= cutoff);
-    this.streamDests = alive.length === 0
-      ? null // nobody known yet -> broadcast
-      : alive.filter((d) => !d.address || protocol.addressMatches(target, d.address)).map((d) => d.ip);
-  }
-
-  private sendStream(packet: Uint8Array): void {
-    const dests = this.streamDests;
-    if (dests === null) return this.sendBytes(packet);
-    for (const ip of dests) this.sendBytesTo(packet, ip);
-  }
-
   // --- Transport surface (shared) ---
 
   async connect(): Promise<void> {
@@ -394,26 +375,39 @@ export abstract class UdpTransportBase implements Transport {
     this.sendDiscovery(protocol.buildPing(this.nextSeq(), Date.now() * 1000));
   }
 
-  streamBegin(meta: StreamMeta): void {
-    this.snapshotStreamDests(meta.target);
-    this.sendStream(
+  /** Exact PONG-reported endpoints available for WifiUdp streaming.
+   *
+   * There is intentionally no broadcast fallback. STREAM_DATA and STREAM_END
+   * contain no target, so one independent wire session is required per device
+   * endpoint to keep concurrent targets isolated.
+   */
+  streamEndpoints(): StreamEndpoint[] {
+    const cutoff = Date.now() - this.deviceTtlMs;
+    return [...this.devices.values()]
+      .filter((device) => device.lastSeen >= cutoff && Boolean(device.address))
+      .map((device) => ({ ip: device.ip, address: device.address!, port: this.port }));
+  }
+
+  streamBeginEndpoint(endpoint: StreamEndpoint): void {
+    this.sendBytesTo(
       protocol.buildStreamBegin(this.nextSeq(), {
-        sampleRate: meta.sampleRate,
-        channels: meta.channels,
-        format: meta.format,
-        totalSamples: meta.totalSamples,
-        gain: meta.gain,
-        target: meta.target, // device self-filters on the in-packet target
+        sampleRate: 16000,
+        channels: 2,
+        format: protocol.STREAM_FORMAT_PCM16,
+        totalSamples: 0,
+        gain: 1,
+        target: endpoint.address,
       }),
+      endpoint.ip,
     );
   }
 
-  streamData(offset: number, data: Uint8Array): void {
-    this.sendStream(protocol.buildStreamData(this.nextSeq(), offset, data));
+  streamDataEndpoint(endpoint: StreamEndpoint, offset: number, data: Uint8Array): void {
+    this.sendBytesTo(protocol.buildStreamData(this.nextSeq(), offset, data), endpoint.ip);
   }
 
-  streamEnd(): void {
-    this.sendStream(protocol.buildStreamEnd(this.nextSeq()));
+  streamEndEndpoint(endpoint: StreamEndpoint): void {
+    this.sendBytesTo(protocol.buildStreamEnd(this.nextSeq()), endpoint.ip);
   }
 
   private connectStatus(connected: boolean): void {

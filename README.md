@@ -92,7 +92,8 @@ The kit manifest decides the mode per event; your code never changes:
 | `stream_events` | **clip** | SDK loads the event's WAV (`clipBase` + `clipLoader`) and **streams** it over the wire | no |
 
 - No `eventMap` → everything is command mode (gain defaults to `1.0`).
-- Clip WAVs are **16 kHz PCM16**; the SDK does not resample. One stream at a time.
+- Clip WAVs are PCM16 mono or stereo. The SDK normalizes every source to 16 kHz
+  stereo before endpoint mixing.
 
 ## Continuous (live) streaming
 
@@ -102,15 +103,25 @@ rumble), open a **persistent** stream instead of firing discrete clips:
 ```ts
 const live = hb.openStream({ channels: 2, sampleRate: 16000 });
 function frame(pcm /* Uint8Array, your synthesized chunk */) {
-  live.write(pcm);   // STREAM_BEGIN once, then chunks — no per-chunk teardown
+  if (!live.write(pcm)) {
+    // No exact device endpoint is resolved, or the bounded live queue is full.
+    // This input was dropped rather than queued as late haptics.
+  }
 }
 // …later
 live.close();
 ```
 
-`hb.streamPcm(pcm, { channels: 2 })` sends a single ad-hoc PCM16 buffer (stereo = L/R
-direction). One session at a time: a clip, `streamPcm`, or a new `openStream` ends the
-previous live stream.
+`hb.streamPcm(pcm, { channels: 2, target: "player_1" })` starts one finite logical
+source and returns its handle. Multiple sources can play together. Sources aimed at
+the same device endpoint are mixed; sources aimed at different endpoints use separate
+wire sessions. `handle.stop()` stops only that source.
+
+For a manifest `stream_events` clip whose source controls you need, use
+`const playback = hb.playStream("my-kit.loop", { target: "player_1" })`.
+The handle is returned immediately (Deferred while its first WAV load is pending),
+so it can be adjusted or stopped before loading finishes. The ordinary `hb.play(id)`
+remains fire-and-forget.
 
 ## Discovery & targeting
 
@@ -123,9 +134,9 @@ hb.play("sample-kit.sine_100hz", { target: "*/*/group_2" });       // every devi
 hb.play("sample-kit.sine_100hz", { target: "" });                  // all devices (default)
 ```
 
-Fire events also take `pan` (-1 = left only, 0 = centre, +1 = right only), applied by
-the device as a linear L/R balance: `hb.play("sample-kit.sine_100hz", { pan: -1 })`.
-Clip events ignore it — a streamed clip carries its L/R in the PCM itself.
+All events take `pan` (-1 = left only, 0 = centre, +1 = right only). Fire events apply
+it on-device; streamed sources apply it before endpoint mixing:
+`hb.play("sample-kit.sine_100hz", { pan: -1 })`.
 
 Matching is **positional**: segment *i* of the target is compared with segment
 *i* of the device address, `*` stands for one **whole** segment (`pos_*` is
@@ -136,16 +147,22 @@ Device addresses are always `player_<N>/<position>/group_<M>`, defaulting to
 
 ### How packets are sent
 
-The Node and React Native transports **unicast** commands and streams to every
-device that answered a PING, and broadcast only while no device is known. Wi-Fi
+The Node and React Native transports **unicast** commands to devices that answered
+a PING, and commands broadcast only while no matching device is known. Wi-Fi
 APs hold broadcast frames until their next DTIM beacon (100–300 ms) whenever
 any client on the AP is power-saving, which is heard as late haptics and
 stuttering streams; unicast is not batched that way. The 5-second keep-alive
 PING is what keeps this table current, so leave `keepalive` on.
 
-Pass `{ unicast: false }` to always broadcast — worth it when many devices must
-fire in lockstep, since one broadcast reaches them all at once while N unicasts
-go out one after another. (In the browser, hapbeat-helper decides this.)
+Streaming never broadcasts: `STREAM_DATA` and `STREAM_END` have no target field,
+so the SDK creates one wire session per exact PONG-reported `(IP, address)` endpoint.
+Until a matching endpoint is known, finite sources are `Deferred`; live writes return
+`false`. `{ unicast: false }` affects commands only. The browser sends the same exact
+endpoint IP on every helper WebSocket stream message.
+
+Pass `{ unicast: false }` to always broadcast commands — worth it when many devices
+must fire in lockstep, since one broadcast reaches them all at once while N unicasts
+go out one after another.
 
 ## Project layout (where the kit lives)
 

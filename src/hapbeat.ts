@@ -13,23 +13,83 @@
  *    decides which path runs.
  */
 
-import { ClipStreamer } from "./clip.js";
-import { LiveStream, type LiveStreamHandle } from "./live-stream.js";
 import type { EventDef, EventMap } from "./eventmap.js";
+import {
+  StreamHub,
+  type LiveStreamHandle,
+  type StreamPlayback,
+} from "./stream.js";
 import { parseWav, type WavPcm } from "./wav.js";
 import type { Device, HapbeatOptions, Transport } from "./types.js";
 
 const clamp01 = (g: number): number => (g < 0 ? 0 : g > 1 ? 1 : g);
+const clampPan = (pan: number): number => (pan < -1 ? -1 : pan > 1 ? 1 : pan);
+let nextPendingPlaybackId = 0;
+
+class PendingStreamPlayback implements StreamPlayback {
+  readonly id = `pending-stream-${++nextPendingPlaybackId}`;
+  private inner?: StreamPlayback;
+  private stopped = false;
+  private _gain: number;
+  private _pan: number;
+  private _loop: boolean;
+
+  constructor(gain: number, pan: number, loop: boolean, private readonly onStop: () => void) {
+    this._gain = clamp01(gain);
+    this._pan = clampPan(pan);
+    this._loop = loop;
+  }
+
+  get status() { return this.stopped ? "Stopped" as const : this.inner?.status ?? "Deferred"; }
+  get deferredReason() { return this.inner?.deferredReason; }
+  get gain() { return this.inner?.gain ?? this._gain; }
+  set gain(value: number) {
+    this._gain = clamp01(value);
+    if (this.inner) this.inner.gain = this._gain;
+  }
+  get pan() { return this.inner?.pan ?? this._pan; }
+  set pan(value: number) {
+    this._pan = clampPan(value);
+    if (this.inner) this.inner.pan = this._pan;
+  }
+  get loop() { return this.inner?.loop ?? this._loop; }
+  set loop(value: boolean) {
+    this._loop = Boolean(value);
+    if (this.inner) this.inner.loop = this._loop;
+  }
+  stop(): void {
+    if (this.stopped) return;
+    this.stopped = true;
+    this.onStop();
+    this.inner?.stop();
+  }
+
+  bind(playback: StreamPlayback): void {
+    if (this.stopped) {
+      playback.stop();
+      return;
+    }
+    playback.gain = this._gain;
+    playback.pan = this._pan;
+    playback.loop = this._loop;
+    this.inner = playback;
+  }
+}
+
+interface PendingClipPlay {
+  eventId: string;
+  target: string;
+  cancelled: boolean;
+  playback: PendingStreamPlayback;
+}
 
 export interface PlayOpts {
   gain?: number;
   target?: string;
   targetTimeUs?: number;
   /**
-   * Left/right balance for fire events: -1 = left only, 0 = centre (default),
-   * +1 = right only. The device applies it as a linear balance on the voice
-   * (contracts §0x01, DEC-055). Ignored for clip events — a stream carries its
-   * L/R in the PCM itself.
+   * Left/right balance: -1 = left only, 0 = centre (default), +1 = right only.
+   * Fire events apply it on-device; clip events apply it in the endpoint mixer.
    */
   pan?: number;
 }
@@ -39,11 +99,11 @@ export class Hapbeat {
   private readonly eventMap?: EventMap;
   private readonly defaultTarget: string;
 
-  private readonly clipStreamer: ClipStreamer;
-  private liveStream: LiveStream | null = null;
+  private readonly streamHub: StreamHub;
   private readonly clipBase: string;
   private readonly clipLoader?: (ref: string) => Promise<ArrayBuffer | Uint8Array>;
   private readonly clipCache = new Map<string, WavPcm>();
+  private readonly pendingClipPlays = new Set<PendingClipPlay>();
 
   constructor(transport: Transport, options: HapbeatOptions = {}) {
     this.transport = transport;
@@ -51,12 +111,13 @@ export class Hapbeat {
     this.defaultTarget = options.defaultTarget ?? "";
     this.clipBase = options.clipBase ?? "";
     this.clipLoader = options.clipLoader;
-    this.clipStreamer = new ClipStreamer(transport, { sendAheadSec: options.streamSendAheadSec });
+    this.streamHub = new StreamHub(transport, { sendAheadSec: options.streamSendAheadSec });
   }
 
   /** Open the transport (UDP socket / WebSocket). */
   async connect(): Promise<this> {
     await this.transport.connect();
+    this.streamHub.open();
     return this;
   }
 
@@ -71,7 +132,7 @@ export class Hapbeat {
     const gain = clamp01(opts.gain ?? def?.intensity ?? 1.0);
     const target = opts.target ?? this.defaultTarget;
     if (def?.streaming) {
-      this.playClip(eventId, def, gain, target);
+      void this.playStream(eventId, opts);
     } else {
       this.transport.play(eventId, gain, target, opts.targetTimeUs ?? 0, opts.pan ?? 0);
     }
@@ -85,68 +146,94 @@ export class Hapbeat {
    */
   streamPcm(
     pcm: Uint8Array,
-    opts: { sampleRate?: number; channels?: number; gain?: number; target?: string } = {},
-  ): void {
-    this.endLiveStream(); // a one-shot clip replaces any persistent stream (1 session = 1 stream)
-    this.clipStreamer.play(pcm, {
+    opts: {
+      sampleRate?: number;
+      channels?: number;
+      gain?: number;
+      pan?: number;
+      loop?: boolean;
+      target?: string;
+    } = {},
+  ): StreamPlayback {
+    return this.streamHub.playPcm(pcm, {
       sampleRate: opts.sampleRate ?? 16000,
       channels: opts.channels ?? 1,
       gain: clamp01(opts.gain ?? 1.0),
+      pan: opts.pan ?? 0,
+      loop: opts.loop ?? false,
       target: opts.target ?? this.defaultTarget,
     });
   }
 
   /**
-   * Open a PERSISTENT stream session for continuously-modulated haptics. Send
-   * STREAM_BEGIN once, then push chunks via `handle.write(pcm)` in real time, and
-   * `handle.close()` when done. Unlike repeated `streamPcm()` (which tears the
-   * stream down and back up each call → per-chunk gaps), this keeps ONE stream
-   * open so a continuous directional tone has no underrun/re-buffer choppiness.
-   *
-   * Only one active stream exists at a time (1 session = 1 stream): opening a new
-   * one — or any `streamPcm()` / clip `play()` — ends the previous live stream.
-   * The caller must feed chunks at ~real-time rate (the device ring is ~256 ms).
+   * Open a live logical source. Sources aimed at one device endpoint are mixed
+   * into its one wire session; sources aimed at other endpoints remain isolated.
+   * The caller must feed chunks at roughly real-time rate. While no endpoint is
+   * resolved, or when the bounded queue is full, write() returns false and drops
+   * that input rather than accumulating unbounded latency.
    */
-  openStream(opts: { sampleRate?: number; channels?: number; gain?: number; target?: string } = {}): LiveStreamHandle {
-    this.clipStreamer.stop();
-    this.endLiveStream();
-    this.liveStream = new LiveStream(this.transport, {
+  openStream(opts: {
+    sampleRate?: number;
+    channels?: number;
+    gain?: number;
+    pan?: number;
+    target?: string;
+  } = {}): LiveStreamHandle {
+    return this.streamHub.openLive({
       sampleRate: opts.sampleRate ?? 16000,
       channels: opts.channels ?? 1,
       gain: clamp01(opts.gain ?? 1.0),
+      pan: opts.pan ?? 0,
       target: opts.target ?? this.defaultTarget,
     });
-    return this.liveStream;
   }
 
-  private endLiveStream(): void {
-    if (this.liveStream && !this.liveStream.closed) this.liveStream.close();
-    this.liveStream = null;
-  }
-
-  private playClip(eventId: string, def: EventDef, gain: number, target: string): void {
-    this.endLiveStream(); // a clip replaces any persistent stream (1 session = 1 stream)
+  /**
+   * Play one manifest clip source and resolve its independently controllable
+   * Playback. Unlike fire-mode play(), this waits for the first WAV load.
+   */
+  playStream(eventId: string, opts: PlayOpts = {}): StreamPlayback | null {
+    const def = this.eventMap?.get(eventId);
+    if (!def?.streaming) {
+      console.warn(`[hapbeat] "${eventId}" is not a stream event`);
+      return null;
+    }
+    const gain = clamp01(opts.gain ?? def.intensity ?? 1.0);
+    const target = opts.target ?? this.defaultTarget;
+    const pan = opts.pan ?? 0;
     const cached = this.clipCache.get(eventId);
     if (cached) {
-      this.clipStreamer.play(cached.data, {
+      return this.streamHub.playPcm(cached.data, {
         sampleRate: cached.sampleRate,
         channels: cached.channels,
         gain,
+        pan,
+        loop: def.loop,
         target,
+        key: eventId,
       });
-      return;
     }
     // First play: load + decode asynchronously, then stream (cache for next time).
-    void this.loadClip(eventId, def).then((pcm) => {
-      if (pcm) {
-        this.clipStreamer.play(pcm.data, {
-          sampleRate: pcm.sampleRate,
-          channels: pcm.channels,
-          gain,
-          target,
-        });
-      }
+    let pending: PendingClipPlay;
+    const playback = new PendingStreamPlayback(gain, pan, def.loop, () => {
+      pending.cancelled = true;
     });
+    pending = { eventId, target, cancelled: false, playback };
+    this.pendingClipPlays.add(pending);
+    void this.loadClip(eventId, def).then((pcm) => {
+      this.pendingClipPlays.delete(pending);
+      if (!pcm || pending.cancelled) return;
+      pending.playback.bind(this.streamHub.playPcm(pcm.data, {
+        sampleRate: pcm.sampleRate,
+        channels: pcm.channels,
+        gain: pending.playback.gain,
+        pan: pending.playback.pan,
+        loop: pending.playback.loop,
+        target,
+        key: eventId,
+      }));
+    });
+    return pending.playback;
   }
 
   private async loadClip(eventId: string, def: EventDef): Promise<WavPcm | null> {
@@ -163,11 +250,6 @@ export class Hapbeat {
     try {
       const buf = await this.clipLoader(this.clipBase + def.clip);
       const pcm = parseWav(buf);
-      if (pcm.sampleRate !== 16000) {
-        console.warn(
-          `[hapbeat] clip "${def.clip}" is ${pcm.sampleRate}Hz; device expects 16000Hz (pitch will be off)`,
-        );
-      }
       this.clipCache.set(eventId, pcm);
       return pcm;
     } catch (e) {
@@ -193,15 +275,23 @@ export class Hapbeat {
   stop(eventId: string, target?: string): void {
     const def = this.eventMap?.get(eventId);
     if (def?.streaming) {
-      this.clipStreamer.stop(); // a stream is session-level — stop the active one
+      for (const pending of this.pendingClipPlays) {
+        if (pending.eventId === eventId && (target === undefined || pending.target === target)) {
+          pending.playback.stop();
+        }
+      }
+      this.streamHub.stopKey(eventId, target);
     } else {
       this.transport.stop(eventId, target ?? this.defaultTarget);
     }
   }
 
   stopAll(target?: string): void {
-    this.endLiveStream();
-    this.clipStreamer.stop();
+    for (const pending of this.pendingClipPlays) {
+      if (target === undefined || pending.target === target) pending.playback.stop();
+    }
+    if (target === undefined) this.streamHub.stopAll();
+    else this.streamHub.stopTarget(target);
     this.transport.stopAll(target ?? this.defaultTarget);
   }
 
@@ -215,8 +305,8 @@ export class Hapbeat {
   }
 
   async close(): Promise<void> {
-    this.endLiveStream();
-    this.clipStreamer.stop();
+    for (const pending of this.pendingClipPlays) pending.playback.stop();
+    this.streamHub.close();
     await this.transport.close();
   }
 }
