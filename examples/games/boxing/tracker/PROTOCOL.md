@@ -1,29 +1,12 @@
-# 外部トラッカー・プロトコル（現行 schema）
+# PoseInput v3
 
-`ws://localhost:8770` の WebSocketへ、1 JSON message = 1フレームを送る。これは release 前の現行schemaであり、旧 schema との後方互換は持たない。座標は非ミラー、右手系・m（+X右、+Y上、-Zカメラ前方）。
+`ws://localhost:8770` sends one JSON `PoseInputFrame` per capture. This is the only tracker interface; v1 `landmarks`, joints, `xyz`, and DepthAI metadata are not accepted.
 
 ```json
-{
-  "t": 1723459200123, "seq": 812,
-  "joints": { "nose": { "px": {"x":0.51,"y":0.28,"visibility":0.99}, "xyz": {"x":0.02,"y":0.35,"z":-1.90}, "depth": {"valid":23,"samples":25,"validRatio":0.92} } },
-  "hands": [{ "handedness":"Left", "landmarks":[{"x":0.5,"y":0.4,"z":0.0}] }],
-  "telemetry": {
-    "source":"oak", "sentAtMs":1723459200123, "trackerFps":24.9,
-    "device":{"deviceId":"18443010...","usbSpeed":"SUPER"},
-    "rgb":{"width":1280,"height":720,"seq":812,"deviceTimestampMs":8432.4},
-    "depth":{"width":1280,"height":720,"seq":812,"deviceTimestampMs":8434.1},
-    "syncDeltaMs":1.7, "sequenceDelta":0, "validDepthRatio":0.92, "joint3dCount":8,
-    "jointDepth":{"wristR":{"valid":23,"samples":25,"validRatio":0.92}},
-    "intrinsics":{"fx":920.1,"fy":919.8,"cx":640.0,"cy":360.0,"width":1280,"height":720},
-    "processingLatencyMs":31.2, "dropCounts":{"sync":0,"size":0,"sequence":0,"timestamp":0,"error":0}
-  },
-  "debug":{"previewDataUrl":"data:image/jpeg;base64,..."}
-}
+{"v":3,"seq":812,"capturedAtMs":1723459200123,"points":{"head":{"x":0.51,"y":0.28,"depthM":1.08,"confidence":0.99},"torso":{"x":0.50,"y":0.52,"depthM":1.12,"confidence":0.98},"leftHand":null,"rightHand":{"x":0.62,"y":0.47,"depthM":0.82,"confidence":0.95},"leftShoulder":{"x":0.59,"y":0.39,"confidence":0.98},"rightShoulder":{"x":0.41,"y":0.39,"confidence":0.98},"leftElbow":{"x":0.66,"y":0.52,"confidence":0.95},"rightElbow":{"x":0.34,"y":0.52,"confidence":0.95}},"preview":"data:image/jpeg;base64,...","diagnostics":{"fps":25}}
 ```
 
-- 必須: `t`、単調増加の整数`seq`、`telemetry.sentAtMs`、`nose`/`shoulderL`/`shoulderR`の有限`px`。`xyz` を含むフレームは各`x/y/z`がすべて有限で、上記必須点の`xyz`も必須。違反、逆順、送信時刻から750ms超のフレームはブラウザが棄却する。
-- `rgb`/`depth`: サイズ、sequence、device timestampを送る。OAK送信側はサイズ不一致、sequence差の上限超過、FPS由来のSync threshold超過を送信前に棄却する。
-- `jointDepth`: Pose関節ごとの小ROI（既定5×5）の有効サンプル数・総サンプル数・比率。`validDepthRatio`は全関節ROIの集計。
-- `intrinsics`: `rgbFrame.getTransformation().getIntrinsicMatrix()`から取り、Cameraのcrop/resize済みの値を送る。
-- `debug.previewDataUrl`: `--debug-preview`時のみ、RGB+depth overlay+landmarkのJPEG data URL。localhost診断用で最大10fps程度、幅/quality/fpsは引数で制限する。
-- 受信側は接続断またはフレームtimeoutでLocalMediaPipeを実際に開始し、外部接続の復帰時は世代番号で古いsocket eventを無視して外部へ戻す。
+- Required: `v: 3`, non-negative integer `seq`, finite `capturedAtMs`, and all eight named `points`: `head`, `torso`, `leftHand`, `rightHand`, `leftShoulder`, `rightShoulder`, `leftElbow`, `rightElbow`. A point is `null` or normalized `x`/`y` and confidence 0..1.
+- `x`/`y` always come from the same RGB MediaPipe frame, with `x` mirrored for browser display while retaining MediaPipe body-side names. Only `head`, `torso`, `leftHand`, and `rightHand` carry nullable `depthM`: the aligned-depth 5×5 region-of-interest median in metres. Shoulder and elbow points never carry or sample depth.
+- A browser rejects out-of-order and stale frames. Rendering interpolates only points for 50 ms; `seq` and diagnostics remain the latest raw values. Missing depth holds that point for 100 ms, then remains 2D/lost without invalidating other points.
+- `preview` is optional annotated RGB (OAK default: 5 fps, 480 px, JPEG quality 55): Pose skeleton, all landmark depth labels, and the eight game points use the same synchronized RGB-D capture as the frame. `--no-preview` disables it. `diagnostics` is optional and semantic only.

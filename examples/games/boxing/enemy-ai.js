@@ -71,8 +71,6 @@ export class EnemyAI {
     this.lowGuardUntilMs = 0;   // 胴を打たれた直後はガードを下げる
     this.guard = "high";
     this.guardUntilMs = 0;
-    this.strafeDir = 1;
-    this.strafeUntilMs = 0;
     this.guardStaticMs = 0;     // プレイヤーがガードを上げたまま動かない時間
     this.leanSum = 0;           // リーンの偏り（+ が続けば右へ寄る癖）
     this.lastAttack = null;
@@ -268,10 +266,9 @@ export class EnemyAI {
     const now = ctx.nowMs;
     const out = { footwork: "hold", footworkScale: 1, distBias: 0, slip: 0 };
     if (stunned) { out.footwork = "retreat"; out.footworkScale = c.stun.footworkScale; return out; }
-    // スリップ中は横へ素早く逃げる（カウンターの入口）
+    // スリップは上体の演出だけで、fencing 型の足さばきは前後に限定する。
     if (now < this.slipUntilMs) {
-      out.footwork = this.slipDir > 0 ? "circleR" : "circleL";
-      out.footworkScale = c.slipSpeedScale;
+      out.footwork = "hold";
       out.slip = this.slipDir;
       this.state = "SlipDuck";
       return out;
@@ -289,13 +286,6 @@ export class EnemyAI {
       out.footwork = this.phase === "AGGRESSIVE" ? "hold" : "retreat";
       return out;
     }
-    // 間合いが合っている時はゆっくり回り込む（守勢ほど大きく回る）
-    if (now >= this.strafeUntilMs) {
-      this.strafeDir = this.rng() < 0.5 ? -1 : 1;
-      this.strafeUntilMs = now + this._rangeMs(c.strafeSwitchSec);
-    }
-    out.footwork = this.strafeDir > 0 ? "circleR" : "circleL";
-    out.footworkScale = this.phase === "DEFENSIVE" ? c.defensiveStrafeScale : 1;
     return out;
   }
 

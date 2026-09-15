@@ -1,0 +1,329 @@
+{
+  "depthai": "3.9.0",
+  "device": {
+    "id": "1BAC5A00",
+    "platform": null,
+    "usbSpeed": "SUPER"
+  },
+  "os": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.7",
+  "runId": "0907c649-1f2d-4bdb-b8f0-59f58001709b",
+  "schemaVersion": 1,
+  "setup": {
+    "cable": null,
+    "host": null,
+    "label": null,
+    "power": null
+  },
+  "stages": [
+    {
+      "attempt": 1,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "deviceId": "1BAC5A00",
+      "durationMs": 781.0,
+      "exception": null,
+      "firstFrameMs": 0.0,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "discover",
+      "usbSpeed": "SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 2,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "deviceId": "1BAC5A00",
+      "durationMs": 562.0,
+      "exception": null,
+      "firstFrameMs": 0.0,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "discover",
+      "usbSpeed": "SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 3,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "deviceId": "1BAC5A00",
+      "durationMs": 578.0,
+      "exception": null,
+      "firstFrameMs": 0.0,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "discover",
+      "usbSpeed": "SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 1,
+      "childLogs": {
+        "stderr": "Stack trace (most recent call last):\n#29   Object \"\", at ...E777CD87, in BaseThreadInitThunk\n\u7121\u52b9\u306a\u30a2\u30c9\u30ec\u30b9\u306b\u30a2\u30af\u30bb\u30b9\u3057\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002\n\n#28   Object \"\", at ...11A11230, in  ?? \n#27   Object \"\", at ...51DDC0ED, in Py_Main\n#26   Object \"\", at ...51DDE339, in Py_RunMain\n#25   Object \"\", at ...51DDE587, in Py_RunMain\n#24   Object \"\", at ...51EA6593, in PyLong_Sign\n#23   Object \"\", at ...51EA66B6, in PyLong_Sign\n#22   Object \"\", at ...51EA6871, in PyRun_AnyFileObject\n#21   Object \"\", at ...51EA74FE, in PyRun_SimpleFileObject\n#20   Object \"\", at ...51EA82F4, in Py_Exit\n#19   Object \"\", at ...51DEBF34, in PyDict_DelItemIf\n#18   Object \"\", at ...51DEBE70, in PyDict_DelItemIf\n#17   Object \"\", at ...51DEA385, in PyEval_EvalCode\n#16   Object \"\", at ...51DE9EA8, in PyType_CalculateMetaclass\n#15   Object \"\", at ...51DBFD9B, in PyEval_EvalFrameDefault\n#14   Object \"\", at ...51DBE8E5, in PyObject_Vectorcall\n#13   Object \"\", at ...51DBEF32, in PyObject_Vectorcall\n#12   Object \"\", at ...51DFDE88, in PyUnicode_DecodeUTF7Stateful\n\u7121\u52b9\u306a\u30a2\u30c9\u30ec\u30b9\u306b\u30a2\u30af\u30bb\u30b9\u3057\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002\n\n#11   Object \"\", at ...2B05ABFB, in  ?? \n#10   Object \"\", at ...2B12FF8E, in PyInit_depthai\n#9    Object \"\", at ...20597231, in dai::PipelineImpl::stop\n#8    Object \"\", at ...20513697, in dai::DeviceBase::close\n#7    Object \"\", at ...205138B9, in dai::DeviceBase::closeImpl\n#6    Object \"\", at ...20514797, in dai::DeviceBase::collectAndLogCrashDump\n#5    Object \"\", at ...207A13FF, in dai::logCollection::logCrashDump\n#4    Object \"\", at ...204BA36E, in dai::CrashDump::toBytes\n#3    Object \"\", at ...204BA912, in dai::CrashDumpRVC2::toTar\n#2    Object \"\", at ...2078353E, in dai::utility::archiveFilesCompressed\n#1    Object \"\", at ...20F27155, in dai::PointCloudData::setPclDataRGB\n#0    Object \"\", at ...20F27718, in dai::PointCloudData::setPclDataRGB",
+        "stdout": "[...1BAC5A00] [3.1] [1789105290.773] [host] [warning] Monitor thread (device: ...1BAC5A00 [3.1]) - ping was missed, closing the device connection"
+      },
+      "durationMs": 0.0,
+      "exception": {
+        "message": "child exited with status 3221225477",
+        "type": "ChildProcessError"
+      },
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "rgb",
+      "usbSpeed": null,
+      "xLink": false
+    },
+    {
+      "attempt": 2,
+      "childLogs": {
+        "stderr": "Stack trace (most recent call last):\n#29   Object \"\", at ...E777CD87, in BaseThreadInitThunk\n\u7121\u52b9\u306a\u30a2\u30c9\u30ec\u30b9\u306b\u30a2\u30af\u30bb\u30b9\u3057\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002\n\n#28   Object \"\", at ...11A11230, in  ?? \n#27   Object \"\", at ...51DDC0ED, in Py_Main\n#26   Object \"\", at ...51DDE339, in Py_RunMain\n#25   Object \"\", at ...51DDE587, in Py_RunMain\n#24   Object \"\", at ...51EA6593, in PyLong_Sign\n#23   Object \"\", at ...51EA66B6, in PyLong_Sign\n#22   Object \"\", at ...51EA6871, in PyRun_AnyFileObject\n#21   Object \"\", at ...51EA74FE, in PyRun_SimpleFileObject\n#20   Object \"\", at ...51EA82F4, in Py_Exit\n#19   Object \"\", at ...51DEBF34, in PyDict_DelItemIf\n#18   Object \"\", at ...51DEBE70, in PyDict_DelItemIf\n#17   Object \"\", at ...51DEA385, in PyEval_EvalCode\n#16   Object \"\", at ...51DE9EA8, in PyType_CalculateMetaclass\n#15   Object \"\", at ...51DBFD9B, in PyEval_EvalFrameDefault\n#14   Object \"\", at ...51DBE8E5, in PyObject_Vectorcall\n#13   Object \"\", at ...51DBEF32, in PyObject_Vectorcall\n#12   Object \"\", at ...51DFDE88, in PyUnicode_DecodeUTF7Stateful\n\u7121\u52b9\u306a\u30a2\u30c9\u30ec\u30b9\u306b\u30a2\u30af\u30bb\u30b9\u3057\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002\n\n#11   Object \"\", at ...2B05ABFB, in  ?? \n#10   Object \"\", at ...2B12FF8E, in PyInit_depthai\n#9    Object \"\", at ...20597231, in dai::PipelineImpl::stop\n#8    Object \"\", at ...20513697, in dai::DeviceBase::close\n#7    Object \"\", at ...205138B9, in dai::DeviceBase::closeImpl\n#6    Object \"\", at ...20514797, in dai::DeviceBase::collectAndLogCrashDump\n#5    Object \"\", at ...207A13FF, in dai::logCollection::logCrashDump\n#4    Object \"\", at ...204BA36E, in dai::CrashDump::toBytes\n#3    Object \"\", at ...204BA912, in dai::CrashDumpRVC2::toTar\n#2    Object \"\", at ...2078353E, in dai::utility::archiveFilesCompressed\n#1    Object \"\", at ...20F27155, in dai::PointCloudData::setPclDataRGB\n#0    Object \"\", at ...20F27718, in dai::PointCloudData::setPclDataRGB",
+        "stdout": "[...1BAC5A00] [3.1] [1789105301.754] [host] [warning] Monitor thread (device: ...1BAC5A00 [3.1]) - ping was missed, closing the device connection"
+      },
+      "durationMs": 0.0,
+      "exception": {
+        "message": "child exited with status 3221225477",
+        "type": "ChildProcessError"
+      },
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "rgb",
+      "usbSpeed": null,
+      "xLink": false
+    },
+    {
+      "attempt": 3,
+      "childLogs": {
+        "stderr": "Stack trace (most recent call last):\n#29   Object \"\", at ...E777CD87, in BaseThreadInitThunk\n\u7121\u52b9\u306a\u30a2\u30c9\u30ec\u30b9\u306b\u30a2\u30af\u30bb\u30b9\u3057\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002\n\n#28   Object \"\", at ...11A11230, in  ?? \n#27   Object \"\", at ...51DDC0ED, in Py_Main\n#26   Object \"\", at ...51DDE339, in Py_RunMain\n#25   Object \"\", at ...51DDE587, in Py_RunMain\n#24   Object \"\", at ...51EA6593, in PyLong_Sign\n#23   Object \"\", at ...51EA66B6, in PyLong_Sign\n#22   Object \"\", at ...51EA6871, in PyRun_AnyFileObject\n#21   Object \"\", at ...51EA74FE, in PyRun_SimpleFileObject\n#20   Object \"\", at ...51EA82F4, in Py_Exit\n#19   Object \"\", at ...51DEBF34, in PyDict_DelItemIf\n#18   Object \"\", at ...51DEBE70, in PyDict_DelItemIf\n#17   Object \"\", at ...51DEA385, in PyEval_EvalCode\n#16   Object \"\", at ...51DE9EA8, in PyType_CalculateMetaclass\n#15   Object \"\", at ...51DBFD9B, in PyEval_EvalFrameDefault\n#14   Object \"\", at ...51DBE8E5, in PyObject_Vectorcall\n#13   Object \"\", at ...51DBEF32, in PyObject_Vectorcall\n#12   Object \"\", at ...51DFDE88, in PyUnicode_DecodeUTF7Stateful\n\u7121\u52b9\u306a\u30a2\u30c9\u30ec\u30b9\u306b\u30a2\u30af\u30bb\u30b9\u3057\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002\n\n#11   Object \"\", at ...2B05ABFB, in  ?? \n#10   Object \"\", at ...2B12FF8E, in PyInit_depthai\n#9    Object \"\", at ...20597231, in dai::PipelineImpl::stop\n#8    Object \"\", at ...20513697, in dai::DeviceBase::close\n#7    Object \"\", at ...205138B9, in dai::DeviceBase::closeImpl\n#6    Object \"\", at ...20514797, in dai::DeviceBase::collectAndLogCrashDump\n#5    Object \"\", at ...207A13FF, in dai::logCollection::logCrashDump\n#4    Object \"\", at ...204BA36E, in dai::CrashDump::toBytes\n#3    Object \"\", at ...204BA912, in dai::CrashDumpRVC2::toTar\n#2    Object \"\", at ...2078353E, in dai::utility::archiveFilesCompressed\n#1    Object \"\", at ...20F27155, in dai::PointCloudData::setPclDataRGB\n#0    Object \"\", at ...20F27718, in dai::PointCloudData::setPclDataRGB",
+        "stdout": "[...1BAC5A00] [3.1] [1789105312.832] [host] [warning] Monitor thread (device: ...1BAC5A00 [3.1]) - ping was missed, closing the device connection"
+      },
+      "durationMs": 0.0,
+      "exception": {
+        "message": "child exited with status 3221225477",
+        "type": "ChildProcessError"
+      },
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "rgb",
+      "usbSpeed": null,
+      "xLink": false
+    },
+    {
+      "attempt": 1,
+      "childLogs": {
+        "stderr": "Stack trace (most recent call last):\n#29   Object \"\", at ...E777CD87, in BaseThreadInitThunk\n\u7121\u52b9\u306a\u30a2\u30c9\u30ec\u30b9\u306b\u30a2\u30af\u30bb\u30b9\u3057\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002\n\n#28   Object \"\", at ...11A11230, in  ?? \n#27   Object \"\", at ...51DDC0ED, in Py_Main\n#26   Object \"\", at ...51DDE339, in Py_RunMain\n#25   Object \"\", at ...51DDE587, in Py_RunMain\n#24   Object \"\", at ...51EA6593, in PyLong_Sign\n#23   Object \"\", at ...51EA66B6, in PyLong_Sign\n#22   Object \"\", at ...51EA6871, in PyRun_AnyFileObject\n#21   Object \"\", at ...51EA74FE, in PyRun_SimpleFileObject\n#20   Object \"\", at ...51EA82F4, in Py_Exit\n#19   Object \"\", at ...51DEBF34, in PyDict_DelItemIf\n#18   Object \"\", at ...51DEBE70, in PyDict_DelItemIf\n#17   Object \"\", at ...51DEA385, in PyEval_EvalCode\n#16   Object \"\", at ...51DE9EA8, in PyType_CalculateMetaclass\n#15   Object \"\", at ...51DBFD9B, in PyEval_EvalFrameDefault\n#14   Object \"\", at ...51DBE8E5, in PyObject_Vectorcall\n#13   Object \"\", at ...51DBEF32, in PyObject_Vectorcall\n#12   Object \"\", at ...51DFDE88, in PyUnicode_DecodeUTF7Stateful\n\u7121\u52b9\u306a\u30a2\u30c9\u30ec\u30b9\u306b\u30a2\u30af\u30bb\u30b9\u3057\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002\n\n#11   Object \"\", at ...2B05ABFB, in  ?? \n#10   Object \"\", at ...2B12FF8E, in PyInit_depthai\n#9    Object \"\", at ...20597231, in dai::PipelineImpl::stop\n#8    Object \"\", at ...20513697, in dai::DeviceBase::close\n#7    Object \"\", at ...205138B9, in dai::DeviceBase::closeImpl\n#6    Object \"\", at ...20514797, in dai::DeviceBase::collectAndLogCrashDump\n#5    Object \"\", at ...207A13FF, in dai::logCollection::logCrashDump\n#4    Object \"\", at ...204BA36E, in dai::CrashDump::toBytes\n#3    Object \"\", at ...204BA912, in dai::CrashDumpRVC2::toTar\n#2    Object \"\", at ...2078353E, in dai::utility::archiveFilesCompressed\n#1    Object \"\", at ...20F27155, in dai::PointCloudData::setPclDataRGB\n#0    Object \"\", at ...20F27718, in dai::PointCloudData::setPclDataRGB",
+        "stdout": "[...1BAC5A00] [3.1] [1789105324.327] [host] [warning] Monitor thread (device: ...1BAC5A00 [3.1]) - ping was missed, closing the device connection"
+      },
+      "durationMs": 0.0,
+      "exception": {
+        "message": "child exited with status 3221225477",
+        "type": "ChildProcessError"
+      },
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "stereo",
+      "usbSpeed": null,
+      "xLink": false
+    },
+    {
+      "attempt": 2,
+      "childLogs": {
+        "stderr": "Stack trace (most recent call last):\n#10   Object \"\", at ...E777CD87, in BaseThreadInitThunk\n#9    Object \"\", at ...E63DCD30, in wcsrchr\n#8    Object \"\", at ...204CE2E3, in std::thread::_Invoke<std::tuple<void (__cdecl dai::DeviceBase::*)(std::chrono::duration<__int64,std::ratio<1,1000> >,dai::DeviceBase::PrevInfo const & __ptr64) __ptr64,dai::DeviceBase * __ptr64,std::chrono::duration<__int64,std::ratio<1,1000> >,dai::Devi\n#7    Object \"\", at ...2052A9C8, in dai::DeviceBase::monitorCallback\n#6    Object \"\", at ...20514797, in dai::DeviceBase::collectAndLogCrashDump\n#5    Object \"\", at ...207A13FF, in dai::logCollection::logCrashDump\n#4    Object \"\", at ...204BA36E, in dai::CrashDump::toBytes\n#3    Object \"\", at ...204BA912, in dai::CrashDumpRVC2::toTar\n#2    Object \"\", at ...2078353E, in dai::utility::archiveFilesCompressed\n#1    Object \"\", at ...20F27155, in dai::PointCloudData::setPclDataRGB\n#0    Object \"\", at ...20F27718, in dai::PointCloudData::setPclDataRGB",
+        "stdout": "[2026-09-11 14:42:11.067] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_2_depth' (X_LINK_ERROR)'\n[2026-09-11 14:42:11.067] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_6__output' (X_LINK_ERROR)'\n[...1BAC5A00] [3.1] [1789105332.569] [host] [warning] Closed connection\n\n[...1BAC5A00] [3.1] [1789105332.569] [host] [warning] Attempting to reconnect. Timeout is 10000ms\n"
+      },
+      "durationMs": 0.0,
+      "exception": {
+        "message": "child exited with status 3221225477",
+        "type": "ChildProcessError"
+      },
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "stereo",
+      "usbSpeed": null,
+      "xLink": true
+    },
+    {
+      "attempt": 3,
+      "childLogs": {
+        "stderr": "Stack trace (most recent call last):\n#29   Object \"\", at ...E777CD87, in BaseThreadInitThunk\n\u7121\u52b9\u306a\u30a2\u30c9\u30ec\u30b9\u306b\u30a2\u30af\u30bb\u30b9\u3057\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002\n\n#28   Object \"\", at ...11A11230, in  ?? \n#27   Object \"\", at ...51DDC0ED, in Py_Main\n#26   Object \"\", at ...51DDE339, in Py_RunMain\n#25   Object \"\", at ...51DDE587, in Py_RunMain\n#24   Object \"\", at ...51EA6593, in PyLong_Sign\n#23   Object \"\", at ...51EA66B6, in PyLong_Sign\n#22   Object \"\", at ...51EA6871, in PyRun_AnyFileObject\n#21   Object \"\", at ...51EA74FE, in PyRun_SimpleFileObject\n#20   Object \"\", at ...51EA82F4, in Py_Exit\n#19   Object \"\", at ...51DEBF34, in PyDict_DelItemIf\n#18   Object \"\", at ...51DEBE70, in PyDict_DelItemIf\n#17   Object \"\", at ...51DEA385, in PyEval_EvalCode\n#16   Object \"\", at ...51DE9EA8, in PyType_CalculateMetaclass\n#15   Object \"\", at ...51DBFD9B, in PyEval_EvalFrameDefault\n#14   Object \"\", at ...51DBE8E5, in PyObject_Vectorcall\n#13   Object \"\", at ...51DBEF32, in PyObject_Vectorcall\n#12   Object \"\", at ...51DFDE88, in PyUnicode_DecodeUTF7Stateful\n\u7121\u52b9\u306a\u30a2\u30c9\u30ec\u30b9\u306b\u30a2\u30af\u30bb\u30b9\u3057\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002\n\n#11   Object \"\", at ...2B05ABFB, in  ?? \n#10   Object \"\", at ...2B12FF8E, in PyInit_depthai\n#9    Object \"\", at ...20597231, in dai::PipelineImpl::stop\n#8    Object \"\", at ...20513697, in dai::DeviceBase::close\n#7    Object \"\", at ...205138B9, in dai::DeviceBase::closeImpl\n#6    Object \"\", at ...20514797, in dai::DeviceBase::collectAndLogCrashDump\n#5    Object \"\", at ...207A13FF, in dai::logCollection::logCrashDump\n#4    Object \"\", at ...204BA36E, in dai::CrashDump::toBytes\n#3    Object \"\", at ...204BA912, in dai::CrashDumpRVC2::toTar\n#2    Object \"\", at ...2078353E, in dai::utility::archiveFilesCompressed\n#1    Object \"\", at ...20F27155, in dai::PointCloudData::setPclDataRGB\n#0    Object \"\", at ...20F27718, in dai::PointCloudData::setPclDataRGB",
+        "stdout": "[...1BAC5A00] [3.1] [1789105352.267] [host] [warning] Monitor thread (device: ...1BAC5A00 [3.1]) - ping was missed, closing the device connection"
+      },
+      "durationMs": 0.0,
+      "exception": {
+        "message": "child exited with status 3221225477",
+        "type": "ChildProcessError"
+      },
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "stereo",
+      "usbSpeed": null,
+      "xLink": false
+    },
+    {
+      "attempt": 1,
+      "childLogs": {
+        "stderr": "Stack trace (most recent call last):\n#10   Object \"\", at ...E777CD87, in BaseThreadInitThunk\n#9    Object \"\", at ...E63DCD30, in wcsrchr\n#8    Object \"\", at ...204CE2E3, in std::thread::_Invoke<std::tuple<void (__cdecl dai::DeviceBase::*)(std::chrono::duration<__int64,std::ratio<1,1000> >,dai::DeviceBase::PrevInfo const & __ptr64) __ptr64,dai::DeviceBase * __ptr64,std::chrono::duration<__int64,std::ratio<1,1000> >,dai::Devi\n#7    Object \"\", at ...2052A9C8, in dai::DeviceBase::monitorCallback\n#6    Object \"\", at ...20514797, in dai::DeviceBase::collectAndLogCrashDump\n#5    Object \"\", at ...207A13FF, in dai::logCollection::logCrashDump\n#4    Object \"\", at ...204BA36E, in dai::CrashDump::toBytes\n#3    Object \"\", at ...204BA912, in dai::CrashDumpRVC2::toTar\n#2    Object \"\", at ...2078353E, in dai::utility::archiveFilesCompressed\n#1    Object \"\", at ...20F27155, in dai::PointCloudData::setPclDataRGB\n#0    Object \"\", at ...20F27718, in dai::PointCloudData::setPclDataRGB",
+        "stdout": "[2026-09-11 14:42:37.897] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_4_out' (X_LINK_ERROR)'\n[2026-09-11 14:42:37.897] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_8__output' (X_LINK_ERROR)'\n[...1BAC5A00] [3.1] [1789105359.385] [host] [warning] Closed connection\n\n[...1BAC5A00] [3.1] [1789105359.385] [host] [warning] Attempting to reconnect. Timeout is 10000ms\n"
+      },
+      "durationMs": 0.0,
+      "exception": {
+        "message": "child exited with status 3221225477",
+        "type": "ChildProcessError"
+      },
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "rgbd",
+      "usbSpeed": null,
+      "xLink": true
+    },
+    {
+      "attempt": 2,
+      "childLogs": {
+        "stderr": "Stack trace (most recent call last):\n#10   Object \"\", at ...E777CD87, in BaseThreadInitThunk\n#9    Object \"\", at ...E63DCD30, in wcsrchr\n#8    Object \"\", at ...204CE2E3, in std::thread::_Invoke<std::tuple<void (__cdecl dai::DeviceBase::*)(std::chrono::duration<__int64,std::ratio<1,1000> >,dai::DeviceBase::PrevInfo const & __ptr64) __ptr64,dai::DeviceBase * __ptr64,std::chrono::duration<__int64,std::ratio<1,1000> >,dai::Devi\n#7    Object \"\", at ...2052A9C8, in dai::DeviceBase::monitorCallback\n#6    Object \"\", at ...20514797, in dai::DeviceBase::collectAndLogCrashDump\n#5    Object \"\", at ...207A13FF, in dai::logCollection::logCrashDump\n#4    Object \"\", at ...204BA36E, in dai::CrashDump::toBytes\n#3    Object \"\", at ...204BA912, in dai::CrashDumpRVC2::toTar\n#2    Object \"\", at ...2078353E, in dai::utility::archiveFilesCompressed\n#1    Object \"\", at ...20F27155, in dai::PointCloudData::setPclDataRGB\n#0    Object \"\", at ...20F27718, in dai::PointCloudData::setPclDataRGB",
+        "stdout": "[2026-09-11 14:42:53.621] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_4_out' (X_LINK_ERROR)'\n[2026-09-11 14:42:53.621] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_8__output' (X_LINK_ERROR)'\n[...1BAC5A00] [3.1] [1789105375.109] [host] [warning] Closed connection\n\n[...1BAC5A00] [3.1] [1789105375.109] [host] [warning] Attempting to reconnect. Timeout is 10000ms\n"
+      },
+      "durationMs": 0.0,
+      "exception": {
+        "message": "child exited with status 3221225477",
+        "type": "ChildProcessError"
+      },
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "rgbd",
+      "usbSpeed": null,
+      "xLink": true
+    },
+    {
+      "attempt": 3,
+      "childLogs": {
+        "stderr": "Stack trace (most recent call last):\n#10   Object \"\", at ...E777CD87, in BaseThreadInitThunk\n#9    Object \"\", at ...E63DCD30, in wcsrchr\n#8    Object \"\", at ...204CE2E3, in std::thread::_Invoke<std::tuple<void (__cdecl dai::DeviceBase::*)(std::chrono::duration<__int64,std::ratio<1,1000> >,dai::DeviceBase::PrevInfo const & __ptr64) __ptr64,dai::DeviceBase * __ptr64,std::chrono::duration<__int64,std::ratio<1,1000> >,dai::Devi\n#7    Object \"\", at ...2052A9C8, in dai::DeviceBase::monitorCallback\n#6    Object \"\", at ...20514797, in dai::DeviceBase::collectAndLogCrashDump\n#5    Object \"\", at ...207A13FF, in dai::logCollection::logCrashDump\n#4    Object \"\", at ...204BA36E, in dai::CrashDump::toBytes\n#3    Object \"\", at ...204BA912, in dai::CrashDumpRVC2::toTar\n#2    Object \"\", at ...2078353E, in dai::utility::archiveFilesCompressed\n#1    Object \"\", at ...20F27155, in dai::PointCloudData::setPclDataRGB\n#0    Object \"\", at ...20F27718, in dai::PointCloudData::setPclDataRGB",
+        "stdout": "[2026-09-11 14:43:09.305] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_8__output' (X_LINK_ERROR)'\n[2026-09-11 14:43:09.305] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_4_out' (X_LINK_ERROR)'\n[...1BAC5A00] [3.1] [1789105390.798] [host] [warning] Closed connection\n\n[...1BAC5A00] [3.1] [1789105390.798] [host] [warning] Attempting to reconnect. Timeout is 10000ms\n"
+      },
+      "durationMs": 0.0,
+      "exception": {
+        "message": "child exited with status 3221225477",
+        "type": "ChildProcessError"
+      },
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "rgbd",
+      "usbSpeed": null,
+      "xLink": true
+    },
+    {
+      "attempt": 1,
+      "childLogs": {
+        "stderr": "Stack trace (most recent call last):\n\u6307\u5b9a\u3055\u308c\u305f\u30e2\u30b8\u30e5\u30fc\u30eb\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002\n\n#9    Object \"\", at ...E63DCD30, in  ?? \n#8    Object \"\", at ...204CE2E3, in std::thread::_Invoke<std::tuple<void (__cdecl dai::DeviceBase::*)(std::chrono::duration<__int64,std::ratio<1,1000> >,dai::DeviceBase::PrevInfo const & __ptr64) __ptr64,dai::DeviceBase * __ptr64,std::chrono::duration<__int64,std::ratio<1,1000> >,dai::Devi\n#7    Object \"\", at ...2052A9C8, in dai::DeviceBase::monitorCallback\n#6    Object \"\", at ...20514797, in dai::DeviceBase::collectAndLogCrashDump\n#5    Object \"\", at ...207A13FF, in dai::logCollection::logCrashDump\n#4    Object \"\", at ...204BA36E, in dai::CrashDump::toBytes\n#3    Object \"\", at ...204BA912, in dai::CrashDumpRVC2::toTar\n#2    Object \"\", at ...2078353E, in dai::utility::archiveFilesCompressed\n#1    Object \"\", at ...20F27155, in dai::PointCloudData::setPclDataRGB\n#0    Object \"\", at ...20F27718, in dai::PointCloudData::setPclDataRGB",
+        "stdout": "[2026-09-11 14:43:25.904] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_7__output' (X_LINK_ERROR)'\n[2026-09-11 14:43:25.904] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_0_0' (X_LINK_ERROR)'\n[2026-09-11 14:43:25.904] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_2_0' (X_LINK_ERROR)'\n[2026-09-11 14:43:25.904] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_3_out' (X_LINK_ERROR)'\n[2026-09-11 14:43:25.904] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_1_0' (X_LINK_ERROR)'\n[...1BAC5A00] [3.1] [1789105408.158] [host] [warning] Closed connection\n\n[...1BAC5A00] [3.1] [1789105408.158] [host] [warning] Attempting to reconnect. Timeout is 10000ms\n"
+      },
+      "durationMs": 0.0,
+      "exception": {
+        "message": "child exited with status 3221225477",
+        "type": "ChildProcessError"
+      },
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "health",
+      "usbSpeed": null,
+      "xLink": true
+    },
+    {
+      "attempt": 2,
+      "childLogs": {
+        "stderr": "Stack trace (most recent call last):\n#10   Object \"\", at ...E777CD87, in BaseThreadInitThunk\n#9    Object \"\", at ...E63DCD30, in wcsrchr\n#8    Object \"\", at ...204CE2E3, in std::thread::_Invoke<std::tuple<void (__cdecl dai::DeviceBase::*)(std::chrono::duration<__int64,std::ratio<1,1000> >,dai::DeviceBase::PrevInfo const & __ptr64) __ptr64,dai::DeviceBase * __ptr64,std::chrono::duration<__int64,std::ratio<1,1000> >,dai::Devi\n#7    Object \"\", at ...2052A9C8, in dai::DeviceBase::monitorCallback\n#6    Object \"\", at ...20514797, in dai::DeviceBase::collectAndLogCrashDump\n#5    Object \"\", at ...207A13FF, in dai::logCollection::logCrashDump\n#4    Object \"\", at ...204BA36E, in dai::CrashDump::toBytes\n#3    Object \"\", at ...204BA912, in dai::CrashDumpRVC2::toTar\n#2    Object \"\", at ...2078353E, in dai::utility::archiveFilesCompressed\n#1    Object \"\", at ...20F27155, in dai::PointCloudData::setPclDataRGB\n#0    Object \"\", at ...20F27718, in dai::PointCloudData::setPclDataRGB",
+        "stdout": "[2026-09-11 14:43:42.940] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_1_0' (X_LINK_ERROR)'\n[2026-09-11 14:43:42.940] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_3_out' (X_LINK_ERROR)'\n[2026-09-11 14:43:42.940] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_2_0' (X_LINK_ERROR)'\n[2026-09-11 14:43:42.940] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_0_0' (X_LINK_ERROR)'\n[2026-09-11 14:43:42.940] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_7__output' (X_LINK_ERROR)'\n[...1BAC5A00] [3.1] [1789105425.197] [host] [warning] Closed connection\n\n[...1BAC5A00] [3.1] [1789105425.197] [host] [warning] Attempting to reconnect. Timeout is 10000ms\n"
+      },
+      "durationMs": 0.0,
+      "exception": {
+        "message": "child exited with status 3221225477",
+        "type": "ChildProcessError"
+      },
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "health",
+      "usbSpeed": null,
+      "xLink": true
+    },
+    {
+      "attempt": 3,
+      "childLogs": {
+        "stderr": "Stack trace (most recent call last):\n#10   Object \"\", at ...E777CD87, in BaseThreadInitThunk\n#9    Object \"\", at ...E63DCD30, in wcsrchr\n#8    Object \"\", at ...204CE2E3, in std::thread::_Invoke<std::tuple<void (__cdecl dai::DeviceBase::*)(std::chrono::duration<__int64,std::ratio<1,1000> >,dai::DeviceBase::PrevInfo const & __ptr64) __ptr64,dai::DeviceBase * __ptr64,std::chrono::duration<__int64,std::ratio<1,1000> >,dai::Devi\n#7    Object \"\", at ...2052A9C8, in dai::DeviceBase::monitorCallback\n#6    Object \"\", at ...20514797, in dai::DeviceBase::collectAndLogCrashDump\n#5    Object \"\", at ...207A13FF, in dai::logCollection::logCrashDump\n#4    Object \"\", at ...204BA36E, in dai::CrashDump::toBytes\n#3    Object \"\", at ...204BA912, in dai::CrashDumpRVC2::toTar\n#2    Object \"\", at ...2078353E, in dai::utility::archiveFilesCompressed\n#1    Object \"\", at ...20F27155, in dai::PointCloudData::setPclDataRGB\n#0    Object \"\", at ...20F27718, in dai::PointCloudData::setPclDataRGB",
+        "stdout": "[2026-09-11 14:43:58.587] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_1_0' (X_LINK_ERROR)'\n[2026-09-11 14:43:58.587] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_2_0' (X_LINK_ERROR)'\n[2026-09-11 14:43:58.587] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_7__output' (X_LINK_ERROR)'\n[2026-09-11 14:43:58.587] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_0_0' (X_LINK_ERROR)'\n[2026-09-11 14:43:58.587] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_3_out' (X_LINK_ERROR)'\n[...1BAC5A00] [3.1] [1789105440.836] [host] [warning] Closed connection\n\n[...1BAC5A00] [3.1] [1789105440.836] [host] [warning] Attempting to reconnect. Timeout is 10000ms\n"
+      },
+      "durationMs": 0.0,
+      "exception": {
+        "message": "child exited with status 3221225477",
+        "type": "ChildProcessError"
+      },
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "health",
+      "usbSpeed": null,
+      "xLink": true
+    }
+  ],
+  "time": "2026-09-11T05:44:08.423546+00:00",
+  "verdict": {
+    "classification": "INCONCLUSIVE",
+    "confidence": "LOW",
+    "nextChecks": [
+      "Repeat the same matrix row on a second PC and a different cable or power condition."
+    ],
+    "reasons": [
+      "The recorded failure does not isolate a USB, health-check, or repeatable Stereo restart cause."
+    ]
+  },
+  "viewerObservedFailure": false
+}

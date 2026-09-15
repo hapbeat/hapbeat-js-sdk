@@ -47,6 +47,12 @@ export const TUNING = {
   },
 
   /**
+   * 外部 tracker の値はゲーム判定へは即時に渡す。これは描画専用の連続補間で、
+   * 低 fps の階段状の見た目だけを抑える（固定バッファ遅延は追加しない）。
+   */
+  renderSmoothing: { minHz: 5, maxHz: 12, motionGainHz: 0.65 },
+
+  /**
    * 前方リーチ推定（0=引いている / 1=伸び切り）。3 つの 2D 手がかりを合成する。
    *   angle    肘角度
    *   shorten  前腕の 2D 長さ / 構え時（カメラを向くほど短く映る）
@@ -207,8 +213,10 @@ export const COMBAT = {
      * 外部トラッカー（深度カメラ）使用時の「構え位置」のカメラからの距離 [m]。
      * 実測の胴の z がこれより近ければ前進、遠ければ後退として扱う。
      */
-    trackerBaseDistance: 2.0,
-    elbowFrac: 0.45,
+      trackerBaseDistance: 2.0,
+      elbowFrac: 0.45,
+      /** 肘は深度未計測でも常に胴よりこの距離だけ前へ置く。 */
+      elbowFrontMin: 0.08,
     /**
      * 構え（reach=0）のときに拳が体の前に出ている距離 [m]。
      * 0 にすると拳が体と同じ奥行きに置かれ、ガードしていても 3D では手が体にめり込んで見える。
@@ -285,10 +293,8 @@ export const COMBAT = {
     preferredDist: 0.68,
     /** この幅に入っていれば前後には動かない [m]。 */
     deadZone: 0.10,
-    /** 前後 / 左右の移動速度 [m/s]。 */
-    speed: 0.55, strafeSpeed: 0.35,
-    /** 左右に回る向きを変える間隔 [s]。 */
-    strafeSwitchSec: [2.5, 5.0],
+    /** 正面の間合いを詰める / 離れる速度 [m/s]。 */
+    speed: 0.55,
     /** 立ち位置の可動範囲 [m]（リングから出ないように）。 */
     clampX: [-1.6, 1.6], clampZ: [-1.8, -0.45],
     /** 攻撃を始める間合い: 腕が届く距離 × この係数以内なら打ってくる。 */
@@ -430,8 +436,6 @@ export const AI = {
   aggressiveCloseIn: 0.08,
   defensiveBackOff: 0.12,
   fatigueBackOff: 0.18,
-  defensiveStrafeScale: 1.5,
-  strafeSwitchSec: [2.0, 4.0],
 
   /** 攻撃種の抽選比（フェーズごと）。 */
   attackWeights: {

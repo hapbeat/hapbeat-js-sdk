@@ -56,6 +56,18 @@ export const SKELETON = [
   [LM.shoulderL, LM.hipL], [LM.shoulderR, LM.hipR], [LM.hipL, LM.hipR],
 ];
 
+/** The selected browser camera must be exact; facingMode is only a default when none was chosen. */
+export function cameraVideoConstraints(width, height, deviceId = "") {
+  const base = { width: { ideal: width }, height: { ideal: height }, aspectRatio: { ideal: width / height } };
+  return deviceId ? { ...base, deviceId: { exact: deviceId } } : { ...base, facingMode: "user" };
+}
+
+export async function listVideoInputDevices() {
+  if (!navigator.mediaDevices?.enumerateDevices) return [];
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter((device) => device.kind === "videoinput").map((device) => ({ id: device.deviceId, label: device.label }));
+}
+
 export class PoseTracker {
   constructor() {
     this.video = null;
@@ -66,15 +78,16 @@ export class PoseTracker {
     this.delegate = "";     // "GPU" / "CPU"（HUD 表示用）
     this._lastVideoTime = -1;
     this._last = null;      // 直近の推論結果（同一 videoTime なら再利用）
+    this.lastWasFresh = false;
   }
 
   /**
    * カメラ → モデルの順に初期化する。どちらかが落ちても throw せず `error` に理由を入れて false を返す。
    * @param {HTMLVideoElement} video
    */
-  async start(video, { width = 1280, height = 720 } = {}) {
+  async start(video, { width = 1280, height = 720, deviceId = "", mock = false } = {}) {
     this.video = video;
-    if (!(await this._openCamera(video, width, height))) return false;
+    if (!(await this._openCamera(video, width, height, { deviceId, mock }))) return false;
     if (!(await this._loadModel())) return false;
     this.ready = true;
     this.error = "";
@@ -107,8 +120,8 @@ export class PoseTracker {
     return cv.captureStream(30);
   }
 
-  async _openCamera(video, width, height) {
-    if (new URLSearchParams(location.search).get("fakecam") === "1") {
+  async _openCamera(video, width, height, { deviceId = "", mock = false } = {}) {
+    if (mock || new URLSearchParams(location.search).get("fakecam") === "1") {
       this.fake = true;
       this.stream = await this._fakeCameraStream(width, height);
       video.srcObject = this.stream;
@@ -123,10 +136,7 @@ export class PoseTracker {
     try {
       // 16:9 を要求する。4:3 を要求すると 16:9 センサーでは左右がクロップされ、
       // 「画角が狭い」＝腕を広げるとフレームから出る状態になりやすい。
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: width }, height: { ideal: height }, aspectRatio: { ideal: width / height }, facingMode: "user" },
-        audio: false,
-      });
+      this.stream = await navigator.mediaDevices.getUserMedia({ video: cameraVideoConstraints(width, height, deviceId), audio: false });
     } catch (e) {
       const name = e?.name ?? "";
       this.error =
@@ -217,6 +227,7 @@ export class PoseTracker {
    * @returns {{landmarks:Array, worldLandmarks:Array}|null}
    */
   detect(nowMs) {
+    this.lastWasFresh = false;
     if (!this.ready || !this.video || this.video.readyState < 2) return this._last;
     if (this.video.currentTime === this._lastVideoTime) return this._last;
     this._lastVideoTime = this.video.currentTime;
@@ -225,6 +236,7 @@ export class PoseTracker {
       this._last = res?.landmarks?.length
         ? { landmarks: res.landmarks[0], worldLandmarks: res.worldLandmarks?.[0] ?? null }
         : null;
+      this.lastWasFresh = true;
     } catch (e) {
       this.error = `姿勢推定エラー: ${e?.message ?? e}`;
       this._last = null;

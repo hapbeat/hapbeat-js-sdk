@@ -1,0 +1,3 @@
+# Runtime dependencies for the standalone OAK-D Lite diagnostics application.
+depthai>=3.7,<4
+opencv-python>=4.8

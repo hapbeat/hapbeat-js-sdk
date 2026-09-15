@@ -178,7 +178,7 @@ test("スイングを見たらスリップ → カウンター（確率を通し
   ai.noteEvent({ type: "playerSwingStart", nowMs: 1000, side: "right" });
   const slip = ai.update(baseCtx({ nowMs: 1050 }), 0.05);
   assert.equal(slip.state, "SlipDuck");
-  assert.ok(slip.footworkScale > 1, "横へ素早く外す");
+  assert.equal(slip.footwork, "hold", "敵は正面を保ち、横へ回り込まない");
   assert.equal(slip.slip, -1, "右手が来たら逆（-X）へ");
   const counter = ai.update(baseCtx({ nowMs: 1000 + AI.slipMs + 10 }), 0.05);
   assert.equal(counter.attack?.kind, "counter");
@@ -285,4 +285,12 @@ test("腕が届かない間合いでは打たずに詰める", () => {
   ai._enterPhase("AGGRESSIVE", 0);
   const shots = run(ai, { fromMs: 0, ms: 6000, ctx: { inRange: false, dist: 1.3 } });
   assert.equal(shots.length, 0);
+});
+
+test("敵の足さばきは前後のみで、circle intent を出さない", () => {
+  const ai = new EnemyAI(cfg({ script: false }), constRng(0.5));
+  for (let t = 0; t < 5000; t += 100) {
+    const footwork = ai.update(baseCtx({ nowMs: t }), .1).footwork;
+    assert.notEqual(footwork, "circleL"); assert.notEqual(footwork, "circleR");
+  }
 });

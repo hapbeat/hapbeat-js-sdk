@@ -1,6 +1,9 @@
 # Boxing external tracker (tracker.py).
 # Webcam mode (2D only):
 mediapipe==0.10.21
+# MediaPipe 0.10.21 is not compatible with NumPy 2.x.  DepthAI permits it,
+# so pin the shared environment to the compatible major version explicitly.
+numpy<2
 opencv-python>=4.8
 websockets>=12.0
 

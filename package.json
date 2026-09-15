@@ -61,7 +61,8 @@
     "dev": "npm run build && node scripts/dev-server.mjs",
     "serve": "node scripts/dev-server.mjs --no-watch",
     "prepublishOnly": "npm run build",
-    "fetch:boxing-assets": "node scripts/fetch-boxing-assets.mjs"
+    "fetch:boxing-assets": "node scripts/fetch-boxing-assets.mjs",
+    "test:oak-diagnostics": "python -m unittest discover -s examples/tools/oak-diagnostics/tests -p \"test_*.py\""
   },
   "engines": {
     "node": ">=18"

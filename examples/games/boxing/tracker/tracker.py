@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
-"""boxing demo external tracker (webcam 2D / OAK-D Lite RGB-D)."""
+"""boxing demo OAK-D Lite RGB-D adapter."""
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
 import math
+import signal
 import sys
+import threading
 import time
 from datetime import timedelta
 from http import HTTPStatus
 from urllib.parse import urlparse
 
-JOINTS = {"nose": 0, "shoulderL": 11, "shoulderR": 12, "elbowL": 13, "elbowR": 14,
-          "wristL": 15, "wristR": 16, "hipL": 23, "hipR": 24}
+POINTS = {"head": (0, 2, 5, 7, 8), "torso": (11, 12, 23, 24),
+          "leftHand": (15, 17, 19, 21), "rightHand": (16, 18, 20, 22),
+          "leftShoulder": (11,), "rightShoulder": (12,),
+          "leftElbow": (13,), "rightElbow": (14,)}
+DEPTH_POINTS = frozenset(("head", "torso", "leftHand", "rightHand"))
 DEFAULT_PORT = 8770
 
 
@@ -43,20 +48,33 @@ class FrameHub:
     def __init__(self) -> None:
         self.clients: set = set()
         self.latest: dict | None = None
+        self.mailboxes: dict = {}
 
     async def broadcast(self, frame: dict) -> None:
         self.latest = frame
         if not self.clients:
             return
         message = json.dumps(frame, separators=(",", ":"))
-        dead = []
         for ws in list(self.clients):
+            box = self.mailboxes.setdefault(ws, {"message": None, "task": None})
+            box["message"] = message
+            if box["task"] is None or box["task"].done():
+                box["task"] = asyncio.create_task(self._drain(ws, box))
+
+    async def _drain(self, ws, box) -> None:
+        while box["message"] is not None:
+            message, box["message"] = box["message"], None
             try:
                 await ws.send(message)
             except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.clients.discard(ws)
+                self.remove(ws); return
+
+    def remove(self, ws) -> None:
+        self.clients.discard(ws)
+        box = self.mailboxes.pop(ws, None)
+        task = box.get("task") if box else None
+        if task and not task.done():
+            task.cancel()
 
 
 class FpsCounter:
@@ -104,40 +122,43 @@ def median_depth(depth_frame, cx: int, cy: int, k: int = 2):
     return median_depth_stats(depth_frame, cx, cy, k)[0]
 
 
-def intrinsics_from_transform(transform, width: int, height: int) -> dict:
-    """Use ImgFrame transformation intrinsics, which include Camera crop/resize."""
-    matrix = transform.getIntrinsicMatrix()
-    return {"fx": float(matrix[0][0]), "fy": float(matrix[1][1]), "cx": float(matrix[0][2]),
-            "cy": float(matrix[1][2]), "width": int(width), "height": int(height)}
+def semantic_center(landmarks, indexes):
+    def in_frame(point) -> bool:
+        try:
+            return math.isfinite(point.x) and math.isfinite(point.y) and 0 <= point.x <= 1 and 0 <= point.y <= 1
+        except (AttributeError, TypeError):
+            return False
+    def visibility(point) -> float:
+        try:
+            value = point.visibility
+            return value if math.isfinite(value) else 1.0
+        except (AttributeError, TypeError):
+            return 1.0
+    values = [landmarks[i] for i in indexes if landmarks is not None and i < len(landmarks) and in_frame(landmarks[i])]
+    if not values:
+        return None
+    confidence = sum(visibility(p) for p in values) / len(values)
+    return {"x": 1 - sum(p.x for p in values) / len(values), "y": sum(p.y for p in values) / len(values),
+            "confidence": max(0.0, min(1.0, confidence))}
 
 
-def deproject(nx: float, ny: float, depth_mm: float, intr: dict):
-    z_m = depth_mm / 1000.0
-    x = (nx * intr["width"] - intr["cx"]) * z_m / intr["fx"]
-    y = (ny * intr["height"] - intr["cy"]) * z_m / intr["fy"]
-    return (x, -y, -z_m)
-
-
-def finite_xyz(xyz) -> bool:
-    return xyz is not None and all(math.isfinite(v) for v in xyz)
-
-
-def build_frame(pose_landmarks, hand_results=None, depth_fn=None) -> dict:
-    joints: dict = {}
-    for name, index in JOINTS.items():
-        if pose_landmarks is None or index >= len(pose_landmarks):
-            continue
-        landmark = pose_landmarks[index]
-        entry = {"px": px_of(landmark)}
-        if depth_fn is not None:
-            xyz, depth_info = depth_fn(landmark.x, landmark.y)
-            if finite_xyz(xyz):
-                entry["xyz"] = {"x": xyz[0], "y": xyz[1], "z": xyz[2]}
-            entry["depth"] = depth_info
-        joints[name] = entry
-    frame = {"t": int(time.time() * 1000), "joints": joints}
-    if hand_results:
-        frame["hands"] = hand_results
+def build_frame(pose_landmarks, depth_fn=None, seq: int = 0, preview=None, diagnostics=None, captured_at_ms=None) -> dict:
+    points = {}
+    for name, indexes in POINTS.items():
+        value = semantic_center(pose_landmarks, indexes)
+        if value is not None and name in DEPTH_POINTS and depth_fn is not None:
+            # PoseInput x is mirrored for the browser; aligned RGB/depth pixels are not.
+            value["depthM"] = depth_fn(1 - value["x"], value["y"])
+        elif value is not None and name in DEPTH_POINTS:
+            value["depthM"] = None
+        points[name] = value
+    frame = {"v": 3, "seq": seq,
+             "capturedAtMs": int(time.time() * 1000) if captured_at_ms is None else int(captured_at_ms),
+             "points": points}
+    if preview:
+        frame["preview"] = preview
+    if diagnostics:
+        frame["diagnostics"] = diagnostics
     return frame
 
 
@@ -145,27 +166,104 @@ def device_timestamp_ms(frame) -> float:
     return frame.getTimestampDevice().total_seconds() * 1000.0
 
 
-def colorize_depth(cv2, depth):
-    import numpy as np
-    valid = depth[depth > 0]
-    if not len(valid):
-        return cv2.cvtColor((depth > 0).astype("uint8"), cv2.COLOR_GRAY2BGR)
-    lo, hi = float(np.percentile(valid, 3)), float(np.percentile(valid, 95))
-    scaled = np.clip((depth.astype("float32") - lo) * 255 / max(1, hi - lo), 0, 255).astype("uint8")
-    return cv2.applyColorMap(255 - scaled, cv2.COLORMAP_TURBO)
+def depth_m_at_normalized(depth_frame, nx: float, ny: float, k: int) -> float | None:
+    """Sample an aligned-depth ROI with the same validity rule used by game points."""
+    height, width = depth_frame.shape[:2]
+    cx, cy = int(nx * width), int(ny * height)
+    if not (0 <= cx < width and 0 <= cy < height):
+        return None
+    value, _valid, _samples = median_depth_stats(depth_frame, cx, cy, k)
+    return value / 1000.0 if value else None
 
 
-def debug_preview(cv2, rgb, depth, landmarks, width: int, quality: int):
-    """RGB + depth overlay + pose points, for localhost-only diagnostic PIP."""
-    view = cv2.addWeighted(rgb, 0.58, colorize_depth(cv2, depth), 0.42, 0)
-    if landmarks:
-        h, w = view.shape[:2]
-        for landmark in landmarks:
-            x, y = int(landmark.x * w), int(landmark.y * h)
-            if 0 <= x < w and 0 <= y < h:
-                cv2.circle(view, (x, y), 3, (255, 220, 0), -1)
+def landmark_depths_m(landmarks, depth_frame, k: int) -> list[float | None]:
+    """Return one depth value for every Pose landmark from this RGB-D frame."""
+    if landmarks is None:
+        return []
+    result = []
+    for landmark in landmarks:
+        try:
+            valid = math.isfinite(landmark.x) and math.isfinite(landmark.y)
+        except (AttributeError, TypeError):
+            valid = False
+        result.append(depth_m_at_normalized(depth_frame, landmark.x, landmark.y, k) if valid else None)
+    return result
+
+
+def preview_pixel(nx: float, ny: float, width: int, height: int, mirrored: bool = True):
+    """Convert a normalized landmark to the browser-facing preview pixel."""
+    if not (math.isfinite(nx) and math.isfinite(ny) and 0 <= nx <= 1 and 0 <= ny <= 1):
+        return None
+    x = (1 - nx) if mirrored else nx
+    return round(x * (width - 1)), round(ny * (height - 1))
+
+
+def depth_color_bgr(depth_m: float | None) -> tuple[int, int, int]:
+    """Near is warm and far is cool; missing depth stays neutral gray."""
+    if depth_m is None or not math.isfinite(depth_m) or depth_m <= 0:
+        return (140, 140, 140)
+    t = max(0.0, min(1.0, (depth_m - 0.25) / 3.75))
+    return round(255 * t), round(255 * (1 - abs(2 * t - 1))), round(255 * (1 - t))
+
+
+def depth_text(depth_m: float | None) -> str:
+    return f"{depth_m:.1f}m" if depth_m is not None and math.isfinite(depth_m) and depth_m > 0 else "--"
+
+
+def pose_overlay_annotations(landmarks, landmark_depths, semantic_points, connections, width: int, height: int) -> dict:
+    """Build drawable pose/depth annotations without OpenCV for self-test coverage."""
+    pose_points = []
+    for index, landmark in enumerate(landmarks or []):
+        pixel = preview_pixel(landmark.x, landmark.y, width, height)
+        if pixel is None:
+            continue
+        depth_m = landmark_depths[index] if index < len(landmark_depths) else None
+        pose_points.append({"index": index, "pixel": pixel, "depthM": depth_m,
+                            "label": f"{index}:{depth_text(depth_m)}", "color": depth_color_bgr(depth_m)})
+    by_index = {point["index"]: point for point in pose_points}
+    lines = [(by_index[a]["pixel"], by_index[b]["pixel"])
+             for a, b in connections if a in by_index and b in by_index]
+    semantic = []
+    for name, point in semantic_points.items():
+        if point is None:
+            continue
+        pixel = preview_pixel(point["x"], point["y"], width, height, mirrored=False)
+        if pixel is not None:
+            depth_m = point.get("depthM") if name in DEPTH_POINTS else None
+            semantic.append({"name": name, "pixel": pixel, "depthM": depth_m,
+                             "label": f"{name} {depth_text(depth_m)}" if name in DEPTH_POINTS else name})
+    return {"lines": lines, "landmarks": pose_points, "semantic": semantic}
+
+
+def pose_depth_preview(cv2, rgb, landmarks, landmark_depths, semantic_points, connections, width: int, quality: int):
+    """Encode a mirrored RGB preview with Pose skeleton and aligned-depth annotations."""
+    view = cv2.flip(rgb, 1)
     if width > 0 and view.shape[1] > width:
         view = cv2.resize(view, (width, round(view.shape[0] * width / view.shape[1])))
+    height, preview_width = view.shape[:2]
+    annotations = pose_overlay_annotations(landmarks, landmark_depths, semantic_points, connections, preview_width, height)
+    for start, end in annotations["lines"]:
+        cv2.line(view, start, end, (210, 210, 210), 1, cv2.LINE_AA)
+    offsets = ((4, -4), (4, 9), (-30, -4), (-30, 9))
+    for point in annotations["landmarks"]:
+        x, y = point["pixel"]
+        color = point["color"]
+        cv2.circle(view, (x, y), 3, (20, 20, 20), -1, cv2.LINE_AA)
+        cv2.circle(view, (x, y), 2, color, -1, cv2.LINE_AA)
+        dx, dy = offsets[point["index"] % len(offsets)]
+        cv2.putText(view, point["label"], (max(0, x + dx), max(8, y + dy)), cv2.FONT_HERSHEY_SIMPLEX, 0.27, color, 1, cv2.LINE_AA)
+    major_colors = {"head": (0, 255, 255), "torso": (255, 0, 255), "leftHand": (0, 255, 0), "rightHand": (255, 255, 0),
+                    "leftShoulder": (0, 180, 0), "rightShoulder": (0, 180, 180), "leftElbow": (0, 120, 0), "rightElbow": (0, 120, 120)}
+    for point in annotations["semantic"]:
+        x, y = point["pixel"]
+        color = major_colors[point["name"]]
+        cv2.circle(view, (x, y), 6, (20, 20, 20), -1, cv2.LINE_AA)
+        cv2.circle(view, (x, y), 4, color, -1, cv2.LINE_AA)
+        label = point["label"]
+        (label_width, label_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.43, 1)
+        tx, ty = min(max(0, x + 8), max(0, preview_width - label_width - 2)), max(label_height + 2, y - 8)
+        cv2.rectangle(view, (tx - 1, ty - label_height - 1), (tx + label_width + 1, ty + baseline + 1), (20, 20, 20), -1)
+        cv2.putText(view, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.43, color, 1, cv2.LINE_AA)
     ok, encoded = cv2.imencode(".jpg", view, [cv2.IMWRITE_JPEG_QUALITY, quality])
     if not ok:
         return None
@@ -173,155 +271,177 @@ def debug_preview(cv2, rgb, depth, landmarks, width: int, quality: int):
     return "data:image/jpeg;base64," + base64.b64encode(encoded).decode("ascii")
 
 
-async def run_webcam(hub: FrameHub, args) -> None:
-    try:
-        import cv2
-        import mediapipe as mp
-    except ImportError:
-        _missing("opencv-python / mediapipe")
-    cap = cv2.VideoCapture(args.camera)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
-    if not cap.isOpened():
-        print(f"[tracker] カメラ {args.camera} を開けません", file=sys.stderr)
-        raise SystemExit(1)
-    pose = mp.solutions.pose.Pose(model_complexity=1, smooth_landmarks=True)
-    hands = mp.solutions.hands.Hands(max_num_hands=2) if args.hands else None
-    fps = FpsCounter(); sequence = 0
-    print(f"[tracker] webcam モードで待受: ws://localhost:{args.port}")
-    try:
-        while True:
-            ok, bgr = cap.read()
-            if not ok:
-                await asyncio.sleep(0.01); continue
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            pose_result = pose.process(rgb)
-            hand_out = None
-            if hands:
-                hand_result = hands.process(rgb)
-                if hand_result.multi_hand_landmarks:
-                    hand_out = [{"handedness": hand_result.multi_handedness[i].classification[0].label,
-                                 "landmarks": [px_of(p, False) for p in hand.landmark]}
-                                for i, hand in enumerate(hand_result.multi_hand_landmarks)]
-            frame = build_frame(pose_result.pose_landmarks.landmark if pose_result.pose_landmarks else None, hand_out)
-            frame["seq"] = sequence; sequence += 1
-            frame["telemetry"] = {"source": "webcam", "sentAtMs": int(time.time() * 1000), "trackerFps": fps.tick(),
-                                  "rgb": {"width": rgb.shape[1], "height": rgb.shape[0], "seq": frame["seq"], "deviceTimestampMs": None},
-                                  "dropCounts": {"sync": 0, "size": 0, "sequence": 0, "timestamp": 0, "error": 0}}
-            await hub.broadcast(frame)
-            await asyncio.sleep(0)
-    finally:
-        cap.release()
+class ShutdownController:
+    """Converts the first Ctrl+C into a frame-boundary shutdown request."""
+    def __init__(self) -> None:
+        self._requested = threading.Event()
+        self.reason: str | None = None
+
+    @property
+    def requested(self) -> bool:
+        return self._requested.is_set()
+
+    def request(self, reason: str) -> bool:
+        if self._requested.is_set():
+            return False
+        self.reason = reason
+        self._requested.set()
+        return True
 
 
-async def run_oak(hub: FrameHub, args) -> None:
-    """DepthAI v3 depth-align pipeline; no v2 XLinkOut/tryGet pairing."""
+async def next_message_group(queue, shutdown: ShutdownController, poll_interval_s: float = 0.004):
+    """Get the newest synchronized frame without blocking graceful shutdown."""
+    while True:
+        if shutdown.requested:
+            return None
+        group = queue.tryGet()
+        if group is not None:
+            return group
+        await asyncio.sleep(poll_interval_s)
+
+
+def _close_oak_resource(resource, label: str) -> None:
+    if resource is None:
+        return
+    close = getattr(resource, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception as exc:
+        # A device that has already dropped off USB must not prevent the rest of
+        # the shutdown sequence from running.
+        print(f"[tracker] shutdown: {label}.close() failed: {exc}", file=sys.stderr)
+
+
+def close_oak_resources(pose, pipeline) -> bool:
+    """Match DepthAI's context-manager shutdown sequence: stop, then wait."""
+    clean = True
+    started = time.monotonic()
+    print("[tracker] shutdown: pipeline.stop")
+    if pipeline is not None:
+        try:
+            pipeline.stop()
+        except Exception as exc:
+            clean = False
+            print(f"[tracker] shutdown: DepthAI pipeline.stop() failed: {exc}", file=sys.stderr)
+        print("[tracker] shutdown: pipeline.wait")
+        try:
+            pipeline.wait()
+        except Exception as exc:
+            clean = False
+            print(f"[tracker] shutdown: DepthAI pipeline.wait() failed: {exc}", file=sys.stderr)
+    try:
+        _close_oak_resource(pose, "MediaPipe Pose")
+    except Exception as exc:
+        clean = False
+        print(f"[tracker] shutdown: MediaPipe Pose close failed: {exc}", file=sys.stderr)
+    elapsed_ms = round((time.monotonic() - started) * 1000)
+    print(f"[tracker] shutdown: host cleanup {'complete' if clean else 'incomplete'} ({elapsed_ms}ms)")
+    return clean
+
+
+async def run_oak(hub: FrameHub, args, shutdown: ShutdownController) -> None:
+    """Run the DepthAI v3 pipeline and stop only at a safe frame boundary."""
     try:
         import cv2
         import depthai as dai
         import mediapipe as mp
     except ImportError:
         _missing("depthai>=3.7 / opencv-python / mediapipe")
-    pipeline = dai.Pipeline()
-    platform = pipeline.getDefaultDevice().getPlatform()
-    rgb_camera = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
-    left_camera = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_B)
-    right_camera = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_C)
-    stereo = pipeline.create(dai.node.StereoDepth)
-    stereo.setExtendedDisparity(True)
-    sync = pipeline.create(dai.node.Sync)
-    align = pipeline.create(dai.node.ImageAlign) if platform == dai.Platform.RVC4 else None
-    sync_threshold_ms = 1000.0 / (2.0 * args.fps)
-    sync.setSyncThreshold(timedelta(milliseconds=sync_threshold_ms))
-    rgb_out = rgb_camera.requestOutput(size=(args.width, args.height), fps=args.fps, enableUndistortion=True)
-    left_camera.requestOutput(size=(640, 400), fps=args.fps).link(stereo.left)
-    right_camera.requestOutput(size=(640, 400), fps=args.fps).link(stereo.right)
-    rgb_out.link(sync.inputs["rgb"])
-    if align:
-        stereo.depth.link(align.input)
-        rgb_out.link(align.inputAlignTo)
-        align.outputAligned.link(sync.inputs["depth_aligned"])
-    else:
-        stereo.depth.link(sync.inputs["depth_aligned"])
-        rgb_out.link(stereo.inputAlignTo)
-    # MediaPipe is slower than the camera on many PCs. Keep only the newest
-    # synchronized pair so the browser doesn't receive a 16-frame-old pose.
-    queue = sync.out.createOutputQueue(maxSize=1, blocking=False)
-    pose = mp.solutions.pose.Pose(model_complexity=1, smooth_landmarks=True)
-    hands = mp.solutions.hands.Hands(max_num_hands=2) if args.hands else None
-    drops = {"sync": 0, "size": 0, "sequence": 0, "timestamp": 0, "hostQueue": 0, "error": 0}
-    fps = FpsCounter(); last_preview = 0.0
-    print(f"[tracker] oak DepthAI v3 ({platform}) で待受: ws://localhost:{args.port}")
-    pipeline.start()
-    device = pipeline.getDefaultDevice()
-    device_info = {"deviceId": device.getDeviceId(), "usbSpeed": str(device.getUsbSpeed())}
-    last_rgb_seq = None
+    pipeline = queue = pose = None
     try:
-        while pipeline.isRunning():
-            group = queue.get()  # One Sync MessageGroup is the only RGB/depth host boundary.
+        pipeline = dai.Pipeline()
+        device = pipeline.getDefaultDevice()
+        # A tracker restart is preferable to DepthAI's background reconnect loop:
+        # the latter has been observed to block the next explicit pipeline start.
+        device.setMaxReconnectionAttempts(args.reconnect_attempts)
+        platform = device.getPlatform()
+        rgb_camera = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
+        left_camera = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_B)
+        right_camera = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_C)
+        stereo = pipeline.create(dai.node.StereoDepth)
+        stereo.setExtendedDisparity(True)
+        sync = pipeline.create(dai.node.Sync)
+        align = pipeline.create(dai.node.ImageAlign) if platform == dai.Platform.RVC4 else None
+        sync_threshold_ms = 1000.0 / (2.0 * args.fps)
+        sync.setSyncThreshold(timedelta(milliseconds=sync_threshold_ms))
+        rgb_out = rgb_camera.requestOutput(size=(args.width, args.height), fps=args.fps, enableUndistortion=True)
+        left_camera.requestOutput(size=(640, 400), fps=args.fps).link(stereo.left)
+        right_camera.requestOutput(size=(640, 400), fps=args.fps).link(stereo.right)
+        rgb_out.link(sync.inputs["rgb"])
+        if align:
+            stereo.depth.link(align.input)
+            rgb_out.link(align.inputAlignTo)
+            align.outputAligned.link(sync.inputs["depth_aligned"])
+        else:
+            stereo.depth.link(sync.inputs["depth_aligned"])
+            rgb_out.link(stereo.inputAlignTo)
+        # Keep only the newest synchronized pair so the browser cannot accrue lag.
+        queue = sync.out.createOutputQueue(maxSize=1, blocking=False)
+        pose = mp.solutions.pose.Pose(model_complexity=args.pose_model_complexity,
+                                      smooth_landmarks=args.smooth_landmarks)
+        drops = {"sync": 0, "size": 0, "timestamp": 0, "hostQueue": 0, "error": 0}
+        fps = FpsCounter(); last_preview = 0.0; pending_preview = None
+        stop_at = time.monotonic() + args.run_for if args.run_for > 0 else None
+        print(f"[tracker] oak DepthAI v3 ({platform}) で待受: ws://localhost:{args.port} "
+              f"(pose model={args.pose_model_complexity}, smooth={args.smooth_landmarks}, "
+              f"reconnect attempts={args.reconnect_attempts})")
+        pipeline.start()
+        last_rgb_seq = None
+        while pipeline.isRunning() and not shutdown.requested:
+            if stop_at is not None and time.monotonic() >= stop_at:
+                shutdown.request("timer")
+                break
+            group = await next_message_group(queue, shutdown)
+            if group is None:
+                break
+            captured_at_ms = int(time.time() * 1000)
+            processing_started = time.perf_counter()
             rgb_frame = group["rgb"]
             depth_frame = group["depth_aligned"]
             if rgb_frame is None or depth_frame is None:
                 drops["sync"] += 1; continue
             rgb = rgb_frame.getCvFrame()
             depth = depth_frame.getFrame()
-            rgb_seq, depth_seq = int(rgb_frame.getSequenceNum()), int(depth_frame.getSequenceNum())
+            rgb_seq = int(rgb_frame.getSequenceNum())
             if last_rgb_seq is not None and rgb_seq > last_rgb_seq + 1:
                 drops["hostQueue"] += rgb_seq - last_rgb_seq - 1
             last_rgb_seq = rgb_seq
             rgb_device_ms, depth_device_ms = device_timestamp_ms(rgb_frame), device_timestamp_ms(depth_frame)
-            sequence_delta, sync_delta_ms = abs(rgb_seq - depth_seq), abs(rgb_device_ms - depth_device_ms)
+            sync_delta_ms = abs(rgb_device_ms - depth_device_ms)
             if rgb.shape[:2] != depth.shape[:2]:
                 drops["size"] += 1; continue
-            if sequence_delta > args.max_seq_delta:
-                drops["sequence"] += 1; continue
             if sync_delta_ms > sync_threshold_ms:
                 drops["timestamp"] += 1; continue
-            started = time.perf_counter()
-            rgb_for_mediapipe = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
+            pose_bgr = rgb
+            if args.pose_width > 0 and rgb.shape[1] > args.pose_width:
+                pose_bgr = cv2.resize(rgb, (args.pose_width, round(rgb.shape[0] * args.pose_width / rgb.shape[1])), interpolation=cv2.INTER_AREA)
+            rgb_for_mediapipe = cv2.cvtColor(pose_bgr, cv2.COLOR_BGR2RGB)
             pose_result = pose.process(rgb_for_mediapipe)
-            hand_out = None
-            if hands:
-                hand_result = hands.process(rgb_for_mediapipe)
-                if hand_result.multi_hand_landmarks:
-                    hand_out = [{"handedness": hand_result.multi_handedness[i].classification[0].label,
-                                 "landmarks": [px_of(p, False) for p in hand.landmark]}
-                                for i, hand in enumerate(hand_result.multi_hand_landmarks)]
-            intr = intrinsics_from_transform(rgb_frame.getTransformation(), rgb.shape[1], rgb.shape[0])
-            depth_counts: dict[str, dict] = {}
             def depth_fn(nx, ny):
-                cx, cy = int(nx * depth.shape[1]), int(ny * depth.shape[0])
-                if not (0 <= cx < depth.shape[1] and 0 <= cy < depth.shape[0]):
-                    return None, {"valid": 0, "samples": 0, "validRatio": 0.0}
-                value, valid, samples = median_depth_stats(depth, cx, cy, args.depth_roi)
-                info = {"valid": valid, "samples": samples, "validRatio": valid / samples if samples else 0.0}
-                return (deproject(nx, ny, value, intr) if value else None), info
+                return depth_m_at_normalized(depth, nx, ny, args.depth_roi)
             landmarks = pose_result.pose_landmarks.landmark if pose_result.pose_landmarks else None
-            frame = build_frame(landmarks, hand_out, depth_fn)
-            for name, entry in frame["joints"].items():
-                depth_counts[name] = entry.get("depth", {"valid": 0, "samples": 0, "validRatio": 0.0})
-            valid = sum(v["valid"] for v in depth_counts.values())
-            samples = sum(v["samples"] for v in depth_counts.values())
-            frame["seq"] = rgb_seq
-            frame["telemetry"] = {"source": "oak", "sentAtMs": int(time.time() * 1000), "trackerFps": fps.tick(),
-                "device": device_info,
-                "rgb": {"width": rgb.shape[1], "height": rgb.shape[0], "seq": rgb_seq, "deviceTimestampMs": rgb_device_ms},
-                "depth": {"width": depth.shape[1], "height": depth.shape[0], "seq": depth_seq, "deviceTimestampMs": depth_device_ms},
-                "syncDeltaMs": sync_delta_ms, "sequenceDelta": sequence_delta, "validDepthRatio": valid / samples if samples else 0.0,
-                "jointDepth": depth_counts, "joint3dCount": sum(1 for entry in frame["joints"].values() if "xyz" in entry),
-                "intrinsics": intr, "processingLatencyMs": (time.perf_counter() - started) * 1000.0, "dropCounts": dict(drops)}
-            if args.debug_preview and time.monotonic() - last_preview >= 1.0 / args.preview_fps:
-                preview = debug_preview(cv2, rgb, depth, landmarks, args.preview_width, args.preview_quality)
-                if preview:
-                    frame["debug"] = {"previewDataUrl": preview}
-                last_preview = time.monotonic()
+            processing_ms = round((time.perf_counter() - processing_started) * 1000, 1)
+            frame = build_frame(landmarks, depth_fn, rgb_seq, diagnostics={"fps": fps.tick(), "processingMs": processing_ms},
+                                captured_at_ms=captured_at_ms)
+            if pending_preview:
+                frame["preview"] = pending_preview
+                pending_preview = None
             await hub.broadcast(frame)
+            if not args.no_preview and time.monotonic() - last_preview >= 1.0 / args.preview_fps:
+                landmark_depths = landmark_depths_m(landmarks, depth, args.depth_roi)
+                pending_preview = pose_depth_preview(cv2, rgb, landmarks, landmark_depths, frame["points"],
+                                                     mp.solutions.pose.POSE_CONNECTIONS, args.preview_width, args.preview_quality)
+                last_preview = time.monotonic()
             await asyncio.sleep(0)
     finally:
-        pipeline.stop()
+        if shutdown.requested:
+            print(f"[tracker] shutdown requested: {shutdown.reason}")
+        close_oak_resources(pose, pipeline)
 
 
-async def serve(hub: FrameHub, args) -> None:
+async def serve(hub: FrameHub, args, shutdown: ShutdownController) -> None:
     try:
         import websockets
     except ImportError:
@@ -329,47 +449,125 @@ async def serve(hub: FrameHub, args) -> None:
     async def handler(ws):
         hub.clients.add(ws)
         try: await ws.wait_closed()
-        finally: hub.clients.discard(ws)
+        finally: hub.remove(ws)
     async with websockets.serve(handler, "localhost", args.port, process_request=reject_external_origin):
-        await (run_oak(hub, args) if args.source == "oak" else run_webcam(hub, args))
+        await run_oak(hub, args, shutdown)
 
 
 def selftest() -> int:
     class LM:
         def __init__(self, x, y, z=0.0, visibility=1.0): self.x, self.y, self.z, self.visibility = x, y, z, visibility
     lms = [LM(0.5, 0.3)] * 33
-    frame = build_frame(lms)
-    assert set(frame["joints"]) == set(JOINTS) and "xyz" not in frame["joints"]["nose"]
-    intr = {"fx": 800.0, "fy": 800.0, "cx": 640.0, "cy": 360.0, "width": 1280, "height": 720}
-    xyz = deproject(0.5, 0.3, 2000, intr)
-    assert math.isclose(xyz[0], 0.0) and math.isclose(xyz[1], 0.36) and math.isclose(xyz[2], -2.0) and finite_xyz(xyz)
+    frame = build_frame(lms, seq=1)
+    assert frame["v"] == 3 and set(frame["points"]) == set(POINTS) and frame["points"]["head"]["depthM"] is None
+    assert "depthM" not in frame["points"]["leftShoulder"] and "depthM" not in frame["points"]["leftElbow"]
+    for index in POINTS["head"]: lms[index] = LM(0.2, 0.3)
+    seen = []
+    mirrored = build_frame(lms, lambda x, y: seen.append((x, y)) or 1.0, seq=2)
+    assert abs(mirrored["points"]["head"]["x"] - 0.8) < 1e-9
+    assert abs(seen[0][0] - 0.2) < 1e-9 and abs(seen[0][1] - 0.3) < 1e-9
+    for index, x, y in ((11, 0.4, 0.4), (12, 0.6, 0.4), (23, 0.4, 1.2), (24, 0.6, 1.2)):
+        lms[index] = LM(x, y)
+    partial = semantic_center(lms, POINTS["torso"])
+    assert partial == {"x": 0.5, "y": 0.4, "confidence": 1.0}
+    for index in POINTS["torso"]: lms[index] = LM(-0.1, 1.2)
+    depth_calls = []
+    absent = build_frame(lms, lambda x, y: depth_calls.append((x, y)) or 1.0, seq=3)
+    assert absent["points"]["torso"] is None and len(depth_calls) == len(DEPTH_POINTS) - 1
     class DepthRows(list):
         shape = (3, 3)
-    value, valid, samples = median_depth_stats(DepthRows([[0, 0, 0], [0, 1500, 1600], [0, 1400, 0]]), 1, 1, 1)
+    depth_rows = DepthRows([[0, 0, 0], [0, 1500, 1600], [0, 1400, 0]])
+    value, valid, samples = median_depth_stats(depth_rows, 1, 1, 1)
     assert (value, valid, samples) == (1500, 3, 9)
-    class Transform:
-        def getIntrinsicMatrix(self): return [[800, 0, 640], [0, 801, 360], [0, 0, 1]]
-    assert intrinsics_from_transform(Transform(), 1280, 720)["fy"] == 801.0
+    assert depth_m_at_normalized(depth_rows, 0.5, 0.5, 1) == 1.5
+    assert depth_m_at_normalized(depth_rows, 1.0, 0.5, 1) is None
+    landmark_depths = landmark_depths_m([LM(0.5, 0.5), LM(1.0, 0.5)], depth_rows, 1)
+    assert landmark_depths == [1.5, None]
+    annotations = pose_overlay_annotations([LM(0.25, 0.5), LM(0.75, 0.5)], [1.0, None],
+                                            {"head": {"x": 0.75, "y": 0.5, "depthM": 1.0}, "torso": None},
+                                            {(0, 1)}, 100, 50)
+    assert annotations["lines"] == [((74, 24), (25, 24))]
+    assert annotations["landmarks"][0]["label"] == "0:1.0m" and annotations["landmarks"][1]["label"] == "1:--"
+    assert annotations["semantic"] == [{"name": "head", "pixel": (74, 24), "depthM": 1.0, "label": "head 1.0m"}]
     assert abs(1000 / (2 * 25) - 20) < 1e-9
     assert is_allowed_origin(None) and is_allowed_origin("http://localhost:8170") and is_allowed_origin("https://127.0.0.1:9443")
     assert not is_allowed_origin("https://example.com") and not is_allowed_origin("file://")
+    class SlowClient:
+        def __init__(self):
+            self.sent, self.started, self.release = [], asyncio.Event(), asyncio.Event()
+        async def send(self, message):
+            self.sent.append(json.loads(message)["seq"]); self.started.set(); await self.release.wait()
+    async def coalesce_test():
+        hub, client = FrameHub(), SlowClient(); hub.clients.add(client)
+        await hub.broadcast({"seq": 1}); await client.started.wait()
+        await hub.broadcast({"seq": 2}); await hub.broadcast({"seq": 3})
+        client.release.set(); await asyncio.sleep(0); await asyncio.sleep(0)
+        assert client.sent == [1, 3] and len(hub.mailboxes) == 1
+        hub.remove(client); assert not hub.clients and not hub.mailboxes
+    asyncio.run(coalesce_test())
+    class PollingQueue:
+        def __init__(self): self.values, self.calls = [None, None, "frame"], 0
+        def tryGet(self):
+            self.calls += 1
+            return self.values.pop(0)
+        def get(self): raise AssertionError("blocking get() must not be used")
+    async def polling_test():
+        queue = PollingQueue()
+        shutdown = ShutdownController()
+        assert await next_message_group(queue, shutdown, poll_interval_s=0) == "frame"
+        assert queue.calls == 3
+        assert shutdown.request("timer") and not shutdown.request("ctrl-c") and shutdown.reason == "timer"
+        assert await next_message_group(queue, shutdown, poll_interval_s=0) is None
+    asyncio.run(polling_test())
+    closed = []
+    class Closable:
+        def __init__(self, name): self.name = name
+        def close(self): closed.append(f"{self.name}.close")
+    class Stoppable:
+        def stop(self): closed.append("pipeline.stop")
+        def wait(self): closed.append("pipeline.wait")
+    assert close_oak_resources(Closable("pose"), Stoppable())
+    assert closed == ["pipeline.stop", "pipeline.wait", "pose.close"]
     print("[tracker] selftest OK")
     return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="boxing デモ用の外部姿勢トラッカー")
-    ap.add_argument("--source", choices=["webcam", "oak"], default="webcam")
-    ap.add_argument("--port", type=int, default=DEFAULT_PORT); ap.add_argument("--camera", type=int, default=0)
+    ap.add_argument("--source", choices=["oak"], default="oak", help=argparse.SUPPRESS)
+    ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--width", type=int, default=1280); ap.add_argument("--height", type=int, default=720); ap.add_argument("--fps", type=float, default=25.0)
-    ap.add_argument("--hands", action="store_true"); ap.add_argument("--depth-roi", type=int, default=2)
-    ap.add_argument("--max-seq-delta", type=int, default=1); ap.add_argument("--debug-preview", action="store_true")
-    ap.add_argument("--preview-fps", type=float, default=10.0); ap.add_argument("--preview-width", type=int, default=480); ap.add_argument("--preview-quality", type=int, default=70)
+    ap.add_argument("--depth-roi", type=int, default=2)
+    ap.add_argument("--pose-model-complexity", type=int, choices=[0, 1, 2], default=1,
+                    help="MediaPipe Pose model (0=fast, 1=balanced, 2=accurate)")
+    ap.add_argument("--pose-width", type=int, default=960,
+                    help="MediaPipe inference width only (0 keeps camera RGB resolution; default: 960)")
+    ap.add_argument("--smooth-landmarks", action=argparse.BooleanOptionalAction, default=True,
+                    help="MediaPipe temporal landmark smoothing (default: enabled)")
+    ap.add_argument("--no-preview", action="store_true")
+    ap.add_argument("--preview-fps", type=float, default=5.0); ap.add_argument("--preview-width", type=int, default=480); ap.add_argument("--preview-quality", type=int, default=55)
+    ap.add_argument("--reconnect-attempts", type=int, default=0,
+                    help="DepthAI reconnection attempts after an XLink loss (default: 0)")
+    ap.add_argument("--run-for", type=float, default=0.0,
+                    help="Gracefully stop after this many seconds; use for restart diagnostics (default: disabled)")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest: return selftest()
-    try: asyncio.run(serve(FrameHub(), args))
-    except KeyboardInterrupt: print("\n[tracker] 終了")
+    shutdown = ShutdownController()
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    def on_sigint(_signum, _frame):
+        if shutdown.request("ctrl-c"):
+            print("\n[tracker] Ctrl+C: current frame boundaryで停止します", flush=True)
+        else:
+            raise KeyboardInterrupt
+    signal.signal(signal.SIGINT, on_sigint)
+    try:
+        asyncio.run(serve(FrameHub(), args, shutdown))
+    except KeyboardInterrupt:
+        print("\n[tracker] 強制終了")
+        return 130
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
     return 0
 
 

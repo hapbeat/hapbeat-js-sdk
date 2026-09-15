@@ -1,0 +1,71 @@
+{
+  "depthai": "3.10.0",
+  "device": {
+    "id": "1BAC5A00",
+    "platform": null,
+    "usbSpeed": "SUPER"
+  },
+  "os": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.7",
+  "runId": "977c675a-aa28-47b5-8c83-5700e85962a0",
+  "schemaVersion": 1,
+  "setup": {
+    "cable": null,
+    "host": null,
+    "label": "DepthAI 3.10.0 / OAK Viewer 3.9.8 download",
+    "power": null
+  },
+  "stages": [
+    {
+      "attempt": 1,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.10.0",
+      "deviceId": "1BAC5A00",
+      "durationMs": 547.0,
+      "exception": null,
+      "firstFrameMs": 0.0,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "discover",
+      "usbSpeed": "SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 1,
+      "childLogs": {
+        "stderr": "Stack trace (most recent call last):\n#31   Object \"\", at ...51DE9EA8, in PyType_CalculateMetaclass\n#30   Object \"\", at ...51DBFD9B, in PyEval_EvalFrameDefault\n#29   Object \"\", at ...51DBE8E5, in PyObject_Vectorcall\n#28   Object \"\", at ...51DBEF32, in PyObject_Vectorcall\n\u7121\u52b9\u306a\u30a2\u30c9\u30ec\u30b9\u306b\u30a2\u30af\u30bb\u30b9\u3057\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002\n\n#27   Object \"\", at ...23466714, in  ?? \n#26   Object \"\", at ...51D9D432, in PyNumber_Negative\n#25   Object \"\", at ...51D9DE8B, in PyNumber_Long\n#24   Object \"\", at ...51E09183, in PyObject_Call\n#23   Object \"\", at ...51E242E5, in PyObject_Call\n#22   Object \"\", at ...51F37399, in PyThread_tss_is_created\n#21   Object \"\", at ...51E24BF6, in PyObject_MakeTpCall\n#20   Object \"\", at ...51DFDE88, in PyUnicode_DecodeUTF7Stateful\n\u7121\u52b9\u306a\u30a2\u30c9\u30ec\u30b9\u306b\u30a2\u30af\u30bb\u30b9\u3057\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002\n\n#19   Object \"\", at ...2346ABFB, in  ?? \n#18   Object \"\", at ...234DC86A, in PyInit_depthai\n#17   Object \"\", at ...234E1F19, in PyInit_depthai\n#16   Object \"\", at ...1FC86B14, in dai::DeviceBase::DeviceBase\n#15   Object \"\", at ...1FC87390, in dai::DeviceBase::DeviceBase\n#14   Object \"\", at ...1FCA8E10, in dai::DeviceBase::init\n#13   Object \"\", at ...1FCA845A, in dai::DeviceBase::init2\n#12   Object \"\", at ...E8B641B6, in RtlCaptureContext2\n\u7121\u52b9\u306a\u30a2\u30c9\u30ec\u30b9\u306b\u30a2\u30af\u30bb\u30b9\u3057\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002\n\n#11   Object \"\", at ...8B2C2552, in  ?? \n#10   Object \"\", at ...8B2C4560, in _CxxFrameHandler4\n#9    Object \"\", at ...210C7CD9, in dai::PointCloudData::setPclDataRGB\n#8    Object \"\", at ...1FC938E7, in dai::DeviceBase::close\n#7    Object \"\", at ...1FC93B09, in dai::DeviceBase::closeImpl\n#6    Object \"\", at ...1FC949E7, in dai::DeviceBase::collectAndLogCrashDump\n#5    Object \"\", at ...1FF3167F, in dai::logCollection::logCrashDump\n#4    Object \"\", at ...1FC3A42E, in dai::CrashDump::toBytes\n#3    Object \"\", at ...1FC3A9D2, in dai::CrashDumpRVC2::toTar\n#2    Object \"\", at ...1FF136EE, in dai::utility::archiveFilesCompressed\n#1    Object \"\", at ...20718C55, in dai::PointCloudData::setPclDataRGB\n#0    Object \"\", at ...20719218, in dai::PointCloudData::setPclDataRGB",
+        "stdout": ""
+      },
+      "durationMs": 0.0,
+      "exception": {
+        "message": "child exited with status 3221225477",
+        "type": "ChildProcessError"
+      },
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "rgb",
+      "usbSpeed": null,
+      "xLink": false
+    }
+  ],
+  "time": "2026-09-11T05:58:43.072401+00:00",
+  "verdict": {
+    "classification": "INCONCLUSIVE",
+    "confidence": "LOW",
+    "nextChecks": [
+      "Repeat the same matrix row on a second PC and a different cable or power condition."
+    ],
+    "reasons": [
+      "The recorded failure does not isolate a USB, health-check, or repeatable Stereo restart cause."
+    ]
+  },
+  "viewerObservedFailure": false
+}

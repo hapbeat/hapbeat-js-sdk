@@ -1,206 +1,271 @@
-// 外部トラッカー（深度カメラ）の入力層。tracker-source.js の純関数部分を node で検証する。
-//
-// 守りたいこと:
-//   ・プロトコル（PROTOCOL.md）の 1 行 JSON を壊れた入力込みで安全にパースできる
-//   ・カメラ座標 → ゲーム座標の変換が鏡像にならない（左右・奥行きの向きが正しい）
-//   ・xyz が来たら奥行き推定を使わず、実測の手首位置がそのまま IK の目標になる
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseTrackerMessage, xyzToRig, frameToPlayerInput, XYZ_JOINTS, ExternalFrameGate, TrackerSourceController, WebSocketTrackerSource } from "../examples/games/boxing/tracker-source.js";
-import { buildPlayerPose, dist } from "../examples/games/boxing/combat.js";
+import { createPoseInputFrame, parsePoseInputFrame, poseInputFromMediaPipe, PlayerInputSmoother, PoseInputCalibration, poseInputToPlayerInput } from "../examples/games/boxing/pose-input.js";
+import { ExternalFrameGate, getStartFightState, LocalMediaPipeSource, TrackerFrameBuffer, TrackerSourceController, WebSocketTrackerSource } from "../examples/games/boxing/tracker-source.js";
 import { COMBAT } from "../examples/games/boxing/tuning.js";
+import { buildPlayerPose } from "../examples/games/boxing/combat.js";
 
-/** PROTOCOL.md の例に沿ったフレーム（2m 先に立ち、右手を 0.5m 前に突き出した状態）。 */
-function sampleMessage({ wristRz = -1.4 } = {}) {
-  const j = (px, xyz) => ({ px, xyz });
-  return JSON.stringify({
-    t: 123456, seq: 12, telemetry: { source: "oak", sentAtMs: 123456, trackerFps: 25, rgb: { width: 1280, height: 720, seq: 12 },
-      depth: { width: 1280, height: 720, seq: 12 }, syncDeltaMs: 1, validDepthRatio: 0.9, joint3dCount: 9,
-      processingLatencyMs: 20, dropCounts: {} },
-    joints: {
-      nose: j({ x: 0.51, y: 0.28, visibility: 0.99 }, { x: 0.02, y: 0.35, z: -1.9 }),
-      shoulderL: j({ x: 0.57, y: 0.4, visibility: 0.98 }, { x: 0.19, y: 0.15, z: -1.92 }),
-      shoulderR: j({ x: 0.44, y: 0.4, visibility: 0.98 }, { x: -0.19, y: 0.15, z: -1.88 }),
-      elbowL: j({ x: 0.61, y: 0.52, visibility: 0.95 }, { x: 0.28, y: -0.05, z: -1.8 }),
-      elbowR: j({ x: 0.4, y: 0.52, visibility: 0.95 }, { x: -0.28, y: -0.05, z: -1.7 }),
-      wristL: j({ x: 0.58, y: 0.44, visibility: 0.93 }, { x: 0.16, y: 0.1, z: -1.75 }),
-      wristR: j({ x: 0.46, y: 0.44, visibility: 0.93 }, { x: -0.15, y: 0.1, z: wristRz }),
-      hipL: j({ x: 0.55, y: 0.66, visibility: 0.9 }, { x: 0.12, y: -0.28, z: -1.93 }),
-      hipR: j({ x: 0.46, y: 0.66, visibility: 0.9 }, { x: -0.12, y: -0.28, z: -1.9 }),
-    },
-    hands: [{ handedness: "Right", landmarks: new Array(21).fill({ x: 0.46, y: 0.44, z: 0 }) }],
+const points = (over = {}) => ({
+  head: { x: .5, y: .25, depthM: null, confidence: 1 }, torso: { x: .5, y: .5, depthM: null, confidence: 1 },
+  leftHand: { x: .35, y: .5, depthM: null, confidence: 1 }, rightHand: { x: .65, y: .5, depthM: null, confidence: 1 },
+  leftShoulder: { x: .4, y: .4, confidence: 1 }, rightShoulder: { x: .6, y: .4, confidence: 1 },
+  leftElbow: { x: .32, y: .5, confidence: 1 }, rightElbow: { x: .68, y: .5, confidence: 1 }, ...over,
+});
+const frame = (seq, capturedAtMs, over = {}) => createPoseInputFrame({ seq, capturedAtMs, points: points(over) });
+const calibrated = (seed = points()) => { const calibration = new PoseInputCalibration(); calibration.observe(frame(1, 0, seed), { calibrating: true }); calibration.observe(frame(2, 1500, seed), { calibrating: true }); return calibration; };
+
+test("v3 parses eight semantic points and rejects the old landmarks schema", () => {
+  const valid = frame(1, 1000);
+  assert.deepEqual(parsePoseInputFrame(JSON.stringify(valid)), valid);
+  assert.equal(parsePoseInputFrame({ seq: 1, t: 1, joints: {} }), null);
+  assert.equal(parsePoseInputFrame({ ...valid, v: 1 }), null);
+});
+
+test("MediaPipe adapter derives semantic centers without exposing landmark indexes", () => {
+  const landmarks = Array.from({ length: 33 }, () => ({ x: .5, y: .5, visibility: 1 }));
+  landmarks[0] = { x: .5, y: .2, visibility: 1 }; landmarks[11] = { x: .4, y: .4, visibility: 1 }; landmarks[12] = { x: .6, y: .4, visibility: 1 };
+  landmarks[23] = { x: .4, y: .6, visibility: 1 }; landmarks[24] = { x: .6, y: .6, visibility: 1 }; landmarks[15] = { x: .3, y: .5, visibility: 1 }; landmarks[16] = { x: .7, y: .5, visibility: 1 };
+  const output = poseInputFromMediaPipe(landmarks, { seq: 1, capturedAtMs: 1 });
+  assert.deepEqual(Object.keys(output.points), ["head", "torso", "leftHand", "rightHand", "leftShoulder", "rightShoulder", "leftElbow", "rightElbow"]);
+  assert.equal(output.points.torso.x, .5);
+  assert.deepEqual(output.points.leftShoulder, { x: .6, y: .4, confidence: 1 });
+  assert.deepEqual(output.points.rightElbow, { x: .5, y: .5, confidence: 1 });
+});
+
+test("MediaPipe semantic centers exclude out-of-frame landmarks", () => {
+  const landmarks = Array.from({ length: 33 }, () => ({ x: .5, y: .5, visibility: 1 }));
+  landmarks[11] = { x: .4, y: .4, visibility: 1 }; landmarks[12] = { x: .6, y: .4, visibility: 1 };
+  landmarks[23] = { x: .4, y: 1.2, visibility: 1 }; landmarks[24] = { x: .6, y: 1.2, visibility: 1 };
+  const partial = poseInputFromMediaPipe(landmarks, { seq: 2, capturedAtMs: 2 });
+  assert.deepEqual(partial.points.torso, { x: .5, y: .4, depthM: null, confidence: 1 });
+  for (const index of [11, 12, 23, 24]) landmarks[index] = { x: -.1, y: 1.2, visibility: 1 };
+  const absent = poseInputFromMediaPipe(landmarks, { seq: 3, capturedAtMs: 3 });
+  assert.equal(absent.points.torso, null);
+});
+
+test("invalid optional hands do not discard a valid head and torso", () => {
+  const output = frame(1, 1, { rightHand: { ...points().rightHand, x: 1.1 } });
+  assert.ok(output); assert.ok(output.points.head); assert.equal(output.points.rightHand, null);
+});
+
+test("shoulder and elbow points have no depth field and all eight names are required", () => {
+  const valid = frame(1, 1);
+  assert.equal(Object.hasOwn(valid.points.leftShoulder, "depthM"), false);
+  const normalized = createPoseInputFrame({ ...valid, points: { ...valid.points, leftElbow: { ...valid.points.leftElbow, depthM: 1 } } });
+  assert.equal(normalized.points.leftElbow.depthM, undefined);
+  const { rightElbow, ...oldFourPointSchema } = valid.points;
+  assert.equal(createPoseInputFrame({ ...valid, points: oldFourPointSchema }), null);
+});
+
+test("calibration waits for all eight semantic points then releases its samples", () => {
+  const calibration = new PoseInputCalibration();
+  calibration.observe(frame(1, 0, { rightHand: null }), { calibrating: true });
+  calibration.observe(frame(2, 1500, { rightHand: null }), { calibrating: true });
+  assert.equal(calibration.ready, false); assert.equal(calibration.samples.length, 0);
+  calibration.observe(frame(3, 1600), { calibrating: true });
+  assert.equal(calibration.ready, false, "8点が初めて同時に揃った時点から計測する");
+  calibration.observe(frame(4, 3100), { calibrating: true });
+  assert.equal(calibration.ready, true); assert.deepEqual(calibration.samples, []);
+});
+
+test("local gesture filtering uses the measured capture interval", () => {
+  const landmarks = Array.from({ length: 33 }, () => ({ x: .5, y: .5, z: 0, visibility: 1 }));
+  const pose = { lastWasFresh: true, video: { videoWidth: 1280, videoHeight: 720 }, detect: () => ({ landmarks }), detectHands: () => null };
+  const source = new LocalMediaPipeSource(pose); const dts = [];
+  source.gestures.update = (_result, _nowMs, dt) => { dts.push(dt); return { frame: null }; };
+  source.poll(1000); source.poll(1066);
+  assert.ok(Math.abs(dts[0] - 1 / 30) < 1e-9); assert.ok(Math.abs(dts[1] - .066) < 1e-9);
+});
+
+test("local and OAK semantic x/y map to the same 2D player input", () => {
+  const calibration = calibrated();
+  const local = frame(3, 1600);
+  const oak = frame(2, 2, Object.fromEntries(Object.entries(points()).map(([name, value]) => [name, { ...value, depthM: 1.05 }])));
+  const a = poseInputToPlayerInput(local, calibration, COMBAT.rig);
+  const b = poseInputToPlayerInput(oak, calibration, COMBAT.rig);
+  assert.equal(a.head.x, b.head.x); assert.equal(a.arms.right.wrist.x, b.arms.right.wrist.x);
+});
+
+test("torso depth changes only global forward and hand depth changes only reach", () => {
+  const basePoints = Object.fromEntries(Object.entries(points()).map(([name, value]) => [name, { ...value, depthM: 1 }])); const calibration = calibrated(basePoints);
+  const forward = poseInputToPlayerInput(frame(2, 2, { torso: { ...points().torso, depthM: .8 }, leftHand: { ...points().leftHand, depthM: 1 }, rightHand: { ...points().rightHand, depthM: 1 } }), calibration, COMBAT.rig);
+  const punch = poseInputToPlayerInput(frame(3, 3, { torso: { ...points().torso, depthM: 1 }, leftHand: { ...points().leftHand, depthM: 1 }, rightHand: { ...points().rightHand, depthM: .7 } }), calibration, COMBAT.rig);
+  assert.ok(forward.stepMeters > 0); assert.equal(forward.arms.right.reach, 0);
+  assert.equal(punch.stepMeters, 0); assert.ok(punch.arms.right.reach > 0);
+});
+
+test("partial depth loss holds only the missing arm and retains 2D input", () => {
+  const calibration = calibrated(); const first = frame(3, 1600); calibration.observe(first); const previous = poseInputToPlayerInput(first, calibration, COMBAT.rig); const second = frame(4, 1602, { rightHand: null });
+  const output = poseInputToPlayerInput(second, calibration, COMBAT.rig, previous);
+  assert.ok(output.head); assert.deepEqual(output.arms.right.wrist, previous.arms.right.wrist);
+});
+
+test("missing current depth keeps current x/y and briefly uses the last finite depth", () => {
+  const calibration = calibrated();
+  const withDepth = frame(3, 1600, { torso: { ...points().torso, depthM: 1 }, rightHand: { ...points().rightHand, depthM: .7 } });
+  calibration.observe(withDepth);
+  const before = poseInputToPlayerInput(withDepth, calibration, COMBAT.rig);
+  const lostDepth = frame(4, 1650, { torso: { ...points().torso, depthM: null }, rightHand: { ...points().rightHand, x: .75, depthM: null } });
+  const after = poseInputToPlayerInput(lostDepth, calibration, COMBAT.rig);
+  assert.equal(after.arms.right.reach, before.arms.right.reach); assert.ok(after.arms.right.wrist.x > before.arms.right.wrist.x);
+});
+
+test("mirrored image coordinates give normalized lateral motion and down-positive body deltas", () => {
+  const calibration = calibrated();
+  const output = poseInputToPlayerInput(frame(3, 1600, { torso: { ...points().torso, x: .75 }, head: { ...points().head, x: .75, y: .35 }, rightHand: { ...points().rightHand, x: .85, y: .6 } }), calibration, COMBAT.rig);
+  assert.equal(output.root.x, 1); assert.ok(output.head.y > 0); assert.ok(output.arms.right.wrist.y > 0);
+  const world = buildPlayerPose(output, COMBAT.rig);
+  assert.ok(world.head.y < 0); assert.ok(world.head.x > COMBAT.rig.shoulderWidthM * .7);
+});
+
+test("calibrated shoulder and elbow x/y update the shared display and hit-test pose without depth", () => {
+  const calibration = calibrated();
+  const base = poseInputToPlayerInput(frame(3, 1600), calibration, COMBAT.rig);
+  const moved = poseInputToPlayerInput(frame(4, 1601, {
+    rightShoulder: { ...points().rightShoulder, x: .72, y: .48 },
+    rightElbow: { ...points().rightElbow, x: .82, y: .62 },
+  }), calibration, COMBAT.rig);
+  assert.ok(moved.arms.right.shoulder.x > 0 && moved.arms.right.shoulder.y > 0);
+  assert.ok(moved.arms.right.elbow.x > 0 && moved.arms.right.elbow.y > 0);
+  const baseWorld = buildPlayerPose(base, COMBAT.rig);
+  const movedWorld = buildPlayerPose(moved, COMBAT.rig);
+  assert.ok(movedWorld.shoulders.right.x > baseWorld.shoulders.right.x);
+  assert.ok(movedWorld.shoulders.right.y < baseWorld.shoulders.right.y);
+  const scale = COMBAT.rig.shoulderWidthM * COMBAT.rig.lateralGain;
+  const expectedElbow = {
+    x: movedWorld.shoulders.right.x + (moved.arms.right.elbow.x - moved.arms.right.shoulder.x) * scale,
+    y: movedWorld.shoulders.right.y - (moved.arms.right.elbow.y - moved.arms.right.shoulder.y) * scale,
+  };
+  assert.ok(Math.abs(movedWorld.right.elbow.x - expectedElbow.x) < 1e-9, "肘の横位置は取得点を直接反映する");
+  assert.ok(Math.abs(movedWorld.right.elbow.y - expectedElbow.y) < 1e-9, "肘の高さは取得点を直接反映する");
+  assert.ok(movedWorld.right.elbow.z < movedWorld.shoulders.right.z, "肘は常に体の前側に置く");
+});
+
+test("render smoothing turns a stepped external pose into continuous visual motion without delaying raw input", () => {
+  const smoother = new PlayerInputSmoother({ minHz: 5, maxHz: 5, motionGainHz: 0 });
+  const still = { head: { x: 0, y: 0 }, root: { x: 0 }, stepMeters: 0, yaw: 0,
+    arms: { left: { shoulder: { x: 0, y: 0 }, elbow: { x: -.2, y: .2 }, wrist: { x: -.3, y: .1 }, reach: 0 },
+      right: { shoulder: { x: 0, y: 0 }, elbow: { x: .2, y: .2 }, wrist: { x: .3, y: .1 }, reach: 0 } } };
+  const jumped = structuredClone(still);
+  jumped.head.x = 1; jumped.root.x = 1; jumped.stepMeters = .5; jumped.arms.right.elbow.y = .8; jumped.arms.right.wrist.x = .9; jumped.arms.right.reach = 1;
+  assert.deepEqual(smoother.sample(still, 0).head, still.head);
+  const firstVisual = smoother.sample(jumped, 16);
+  assert.ok(firstVisual.head.x > 0 && firstVisual.head.x < jumped.head.x, "描画は受信点へ一気に飛ばない");
+  assert.ok(firstVisual.arms.right.elbow.y > still.arms.right.elbow.y && firstVisual.arms.right.elbow.y < jumped.arms.right.elbow.y);
+  assert.equal(jumped.head.x, 1, "生のゲーム入力はスムーザが書き換えない");
+  let settled = firstVisual;
+  for (let nowMs = 32; nowMs <= 400; nowMs += 16) settled = smoother.sample(jumped, nowMs);
+  assert.ok(settled.head.x > .99 && settled.arms.right.reach > .99, "追従遅延は残し続けない");
+});
+
+test("異なる静止肘高さを校正しても、体幹基準の腕形状はモデル肘に残る", () => {
+  const highPoints = points({ rightElbow: { ...points().rightElbow, y: .44 } });
+  const lowPoints = points({ rightElbow: { ...points().rightElbow, y: .62 } });
+  const high = poseInputToPlayerInput(frame(3, 1600, highPoints), calibrated(highPoints), COMBAT.rig);
+  const low = poseInputToPlayerInput(frame(3, 1600, lowPoints), calibrated(lowPoints), COMBAT.rig);
+  const highModel = buildPlayerPose(high, COMBAT.rig);
+  const lowModel = buildPlayerPose(low, COMBAT.rig);
+  assert.ok(highModel.right.elbow.y > lowModel.right.elbow.y,
+    `静止肘高さが消えている (${highModel.right.elbow.y} <= ${lowModel.right.elbow.y})`);
+});
+
+test("visual interpolation keeps the newest raw integer sequence", () => {
+  const buffer = new TrackerFrameBuffer(); buffer.push(frame(1, 0, { rightHand: { ...points().rightHand, forward: .2 } }), 0); buffer.push(frame(2, 100, { head: { ...points().head, x: .7 }, rightHand: { ...points().rightHand, forward: .8 } }), 100);
+  const visual = buffer.sample(100); assert.equal(visual.seq, 2); assert.equal(visual.freshness, "interpolated"); assert.equal(visual.points.head.x, .6); assert.equal(visual.points.rightHand.forward, .5);
+});
+
+test("OAK rendering uses the latest received frame without the local 50 ms interpolation delay", () => {
+  const source = new WebSocketTrackerSource("ws://test", { clock: () => 100 });
+  assert.equal(source.buffer.delayMs, 0);
+  source.buffer.push(frame(1, 0), 0); source.buffer.push(frame(2, 100, { head: { ...points().head, x: .7 } }), 100);
+  const visual = source.poll(100);
+  assert.equal(visual.seq, 2); assert.equal(visual.points.head.x, .7);
+});
+
+test("external gate accepts increasing v3 capture frames only", () => {
+  const gate = new ExternalFrameGate(); assert.equal(gate.accept(frame(1, 1000), 1001), true); assert.equal(gate.accept(frame(1, 1001), 1002), false);
+});
+
+test("start reports the source-specific input wait state and becomes available after recovery", () => {
+  assert.deepEqual(getStartFightState({ trackerActive: false, poseReady: false, sourceMode: "oak" }), {
+    canStart: false, reason: "OAK-D Lite入力待機中/接続エラー",
   });
+  assert.deepEqual(getStartFightState({ trackerActive: false, poseReady: false, sourceMode: "webcam" }), {
+    canStart: false, reason: "Web camera入力待機中/接続エラー",
+  });
+  assert.deepEqual(getStartFightState({ trackerActive: false, poseReady: false, sourceMode: "auto" }), {
+    canStart: false, reason: "カメラ入力待機中/接続エラー",
+  });
+  assert.deepEqual(getStartFightState({ trackerActive: false, poseReady: false, sourceMode: "mock" }), {
+    canStart: false, reason: "Mock入力待機中/接続エラー",
+  });
+  assert.deepEqual(getStartFightState({ trackerActive: true, poseReady: false, sourceMode: "oak" }), { canStart: true, reason: "" });
+});
+
+const deferred = () => { let resolve; return { promise: new Promise((done) => { resolve = done; }), resolve }; };
+class FakeSource {
+  constructor(kind, start) { this.kind = kind; this.label = kind; this.start = start; this.stopped = false; this.callbacks = new Set(); }
+  onFrame(fn) { this.callbacks.add(fn); return () => this.callbacks.delete(fn); }
+  stop() { this.stopped = true; }
+  poll() { return { freshness: "lost", ageMs: Infinity, points: null }; }
+  consumeFresh() { return null; }
 }
 
-test("パース: プロトコルの 1 行 JSON → MediaPipe 互換の配列 + xyz", () => {
-  const f = parseTrackerMessage(sampleMessage());
-  assert.equal(f.source, "depth");
-  assert.equal(f.t, 123456);
-  assert.equal(f.seq, 12);
-  // 2D 経路がそのまま動くよう 33 点の配列になっている
-  assert.equal(f.landmarks.length, 33);
-  assert.equal(f.landmarks[XYZ_JOINTS.nose].x, 0.51);
-  assert.equal(f.landmarks[XYZ_JOINTS.wristR].visibility, 0.93);
-  assert.equal(f.landmarks[1].visibility, 0, "送られていない点は visibility 0 になる");
-  assert.equal(f.xyz.wristR.z, -1.4);
-  assert.equal(f.hands.length, 1);
+test("auto fallback waits for deferred local startup before retry and an OAK recovery wins", async () => {
+  const firstLocal = deferred(), secondLocal = deferred(); let externalStarts = 0, localStarts = 0;
+  const externalFactory = (onLost) => new FakeSource("oak", async () => {
+    externalStarts++;
+    if (externalStarts === 1) return false;
+    return true;
+  });
+  const localFactory = () => new FakeSource("local", () => (++localStarts === 1 ? firstLocal.promise : secondLocal.promise));
+  const controller = new TrackerSourceController({ sourceMode: "auto", externalFactory, localFactory, retryDelayMs: 0 });
+  const started = controller.start(); await new Promise((done) => setImmediate(done));
+  assert.equal(externalStarts, 1); assert.equal(localStarts, 1);
+  firstLocal.resolve(true); await started; assert.equal(controller.kind, "local");
+  await new Promise((done) => setTimeout(done, 0)); assert.equal(externalStarts, 2); assert.equal(controller.kind, "oak");
+  const slowLocal = controller._local(controller.generation); await Promise.resolve();
+  const recovered = controller._external(controller.generation, true); await recovered;
+  secondLocal.resolve(true); await slowLocal;
+  assert.equal(controller.kind, "oak"); controller.stop();
 });
 
-test("パース: 壊れた入力では null を返す（接続は切らない）", () => {
-  for (const bad of ["", "{", "null", JSON.stringify({ t: 1 }), 42, undefined]) {
-    assert.equal(parseTrackerMessage(bad), null, `${JSON.stringify(bad)} で null にならない`);
-  }
-  // xyz が無い（Web カメラだけのトラッカー）なら source は local で xyz は null
-  const only2d = parseTrackerMessage(JSON.stringify({ t: 2, seq: 2, telemetry: { source: "webcam", sentAtMs: 2, trackerFps: 1, rgb: { width: 1, height: 1, seq: 2 } }, joints: {
-    nose: { px: { x: 0.5, y: 0.3 } }, shoulderL: { px: { x: 0.4, y: 0.4 } }, shoulderR: { px: { x: 0.6, y: 0.4 } } } }));
-  assert.equal(only2d.source, "local");
-  assert.equal(only2d.xyz, null);
-});
-
-test("パース: optional joint/handは局所的に捨て、telemetryは描画安全な値だけ受ける", () => {
-  const optionalBad = JSON.parse(sampleMessage());
-  optionalBad.joints.wristR.px.x = 2;
-  optionalBad.joints.wristR.xyz.z = Number.NaN;
-  optionalBad.hands[0].landmarks[2].x = -0.1;
-  const frame = parseTrackerMessage(JSON.stringify(optionalBad));
-  assert.ok(frame, "必須点以外は全frameを捨てない");
-  assert.equal(frame.xyz.wristR, undefined);
-  assert.equal(frame.hands.length, 0, "壊れた手だけを捨てる");
-  const invalidTelemetry = JSON.parse(sampleMessage()); invalidTelemetry.telemetry.rgb.width = "1280";
-  assert.equal(parseTrackerMessage(JSON.stringify(invalidTelemetry)), null);
-});
-
-test("外部フレーム gate: schema、単調seq/timestamp、stale TTLを強制する", () => {
-  const gate = new ExternalFrameGate({ staleTtlMs: 100 });
-  const frame = parseTrackerMessage(sampleMessage());
-  frame.t = 1_000; frame.telemetry.sentAtMs = 1_000;
-  assert.equal(gate.accept(frame, 1_050), true);
-  assert.equal(gate.accept(frame, 1_051), false, "同じseqを再採用しない");
-  const next = { ...frame, seq: 13, telemetry: { ...frame.telemetry, sentAtMs: 1_101 } };
-  assert.equal(gate.accept(next, 1_201), true);
-  assert.equal(gate.stale(1_202), true, "TTLを越えればcontrollerがfallbackする");
-  const nonFinite = JSON.parse(sampleMessage()); nonFinite.joints.nose.xyz.x = null;
-  assert.equal(parseTrackerMessage(JSON.stringify(nonFinite)), null, "xyzの全軸finiteが必須");
-});
-
-test("接続断は実カメラfallbackを開始し、再接続でexternalへ戻る", async () => {
-  const saved = globalThis.WebSocket;
-  class FakeSocket {
-    static instances = [];
-    constructor() { FakeSocket.instances.push(this); queueMicrotask(() => {
-      this.onopen?.();
-      const message = JSON.parse(sampleMessage()); message.t = Date.now(); message.telemetry.sentAtMs = message.t;
-      this.onmessage?.({ data: JSON.stringify(message) });
-    }); }
-    close() { this.onclose?.(); }
-  }
-  globalThis.WebSocket = FakeSocket;
-  const pose = { starts: 0, stops: 0, async start() { this.starts++; return true; }, stop() { this.stops++; }, detect() { return null; }, detectHands() { return null; } };
-  const controller = new TrackerSourceController({ pose, video: {}, url: "ws://test", reconnectMs: 5 });
+test("WebSocket loss is notified once and stop prevents a deferred source activation", async () => {
+  const oldWebSocket = globalThis.WebSocket; const sockets = [];
+  class FakeWebSocket { constructor() { sockets.push(this); } close() { this.onclose?.(); } }
+  globalThis.WebSocket = FakeWebSocket;
   try {
-    assert.equal(await controller.start(), true);
-    assert.ok(controller.active instanceof WebSocketTrackerSource);
-    FakeSocket.instances[0].onclose();
-    await new Promise((resolve) => setTimeout(resolve, 1));
-    assert.equal(pose.starts, 1, "外部停止後にLocalMediaPipeを実際に開始する");
-    await new Promise((resolve) => setTimeout(resolve, 12));
-    assert.ok(controller.active instanceof WebSocketTrackerSource, "復帰したexternalを再選択する");
-    assert.ok(pose.stops >= 1, "external復帰時にlocal cameraを停止する");
-  } finally {
-    controller.stop();
-    globalThis.WebSocket = saved;
-  }
+    let losses = 0; const source = new WebSocketTrackerSource("ws://test", { onLost: () => { losses++; } });
+    const opening = source.start(); const socket = sockets[0]; socket.onmessage({ data: JSON.stringify(frame(1, Date.now())) }); await opening;
+    socket.onerror(); socket.onclose(); assert.equal(losses, 1);
+    const local = deferred(); const controller = new TrackerSourceController({ sourceMode: "webcam", localFactory: () => new FakeSource("local", () => local.promise) });
+    const starting = controller.start(); controller.stop(); local.resolve(true); assert.equal(await starting, false); assert.equal(controller.active, null);
+  } finally { globalThis.WebSocket = oldWebSocket; }
 });
 
-test("ローカルカメラ開始失敗後もexternal再接続を継続する", async () => {
-  const saved = globalThis.WebSocket;
-  class FakeSocket {
-    static instances = [];
-    constructor() { FakeSocket.instances.push(this); queueMicrotask(() => {
-      this.onopen?.();
-      const message = JSON.parse(sampleMessage()); message.t = Date.now(); message.telemetry.sentAtMs = message.t;
-      this.onmessage?.({ data: JSON.stringify(message) });
-    }); }
-    close() { this.onclose?.(); }
-  }
-  globalThis.WebSocket = FakeSocket;
-  const pose = { async start() { return false; }, stop() {}, detect() { return null; }, detectHands() { return null; } };
-  const controller = new TrackerSourceController({ pose, video: {}, url: "ws://test", reconnectMs: 5 });
-  try {
-    assert.equal(await controller.start(), true);
-    FakeSocket.instances[0].onclose();
-    await new Promise((resolve) => setTimeout(resolve, 12));
-    assert.ok(FakeSocket.instances.length >= 2, "Webカメラ無しでもexternal再接続を試みる");
-    assert.ok(controller.active instanceof WebSocketTrackerSource, "復帰したexternalを再選択する");
-  } finally {
-    controller.stop();
-    globalThis.WebSocket = saved;
-  }
+test("explicit OAK retries after an active source is lost", async () => {
+  let starts = 0, notifyLost = null; const statuses = [];
+  const externalFactory = (onLost) => {
+    notifyLost = onLost;
+    return new FakeSource("oak", async () => { starts++; return true; });
+  };
+  const controller = new TrackerSourceController({
+    sourceMode: "oak", externalFactory, retryDelayMs: 0,
+    onStatus: (status) => statuses.push(status),
+  });
+  await controller.start(); const first = controller.active;
+  notifyLost("接続が切れました");
+  await new Promise((done) => setTimeout(done, 0));
+  assert.equal(starts, 2); assert.equal(controller.kind, "oak"); assert.notEqual(controller.active, first);
+  assert.deepEqual(statuses.find((status) => status.lost), { mode: "external", lost: true, reason: "接続が切れました" });
+  controller.stop();
 });
 
-test("WS openのみではexternalを採用せず、初回valid frame前のcloseは失敗としてcleanupする", async () => {
-  const saved = globalThis.WebSocket;
-  class OpenOnlySocket { constructor() { queueMicrotask(() => this.onopen?.()); } close() { this.onclose?.(); } }
-  globalThis.WebSocket = OpenOnlySocket;
-  const source = new WebSocketTrackerSource("ws://test");
-  try {
-    const pending = source.start({}, { timeoutMs: 1000 });
-    await new Promise((resolve) => setTimeout(resolve, 1));
-    assert.equal(source.last, null);
-    source.ws.onclose();
-    assert.equal(await pending, false);
-    assert.equal(source.ws, null);
-  } finally { source.stop(); globalThis.WebSocket = saved; }
-});
-
-test("stop中の初回frame待機は解決し、遅いsocket callbackで再activateしない", async () => {
-  const saved = globalThis.WebSocket;
-  class DelayedSocket { close() {} }
-  globalThis.WebSocket = DelayedSocket;
-  const source = new WebSocketTrackerSource("ws://test");
-  try {
-    const pending = source.start({}, { timeoutMs: 1000 });
-    source.stop();
-    assert.equal(await pending, false);
-    assert.equal(source.ws, null);
-  } finally { globalThis.WebSocket = saved; }
-});
-
-test("座標変換: 左右反転・奥行き反転で、鏡像にはならない", () => {
-  const o = { x: 0, y: 0, z: -2 };
-  // 被写体の右手はカメラ画像では左（x 負）→ ゲームでは画面右（+X）
-  assert.ok(xyzToRig({ x: -0.3, y: 0, z: -2 }, o).x > 0);
-  assert.ok(xyzToRig({ x: 0.3, y: 0, z: -2 }, o).x < 0);
-  // カメラに近づく（z が大きい＝ -1.5）→ 敵の方向（-Z）へ進む
-  assert.ok(xyzToRig({ x: 0, y: 0, z: -1.5 }, o).z < 0);
-  assert.ok(xyzToRig({ x: 0, y: 0, z: -2.5 }, o).z > 0);
-  // 上下はそのまま
-  assert.ok(xyzToRig({ x: 0, y: 0.4, z: -2 }, o).y > 0);
-  // diag(-1,+1,-1) は行列式 +1（回転）＝鏡像化しない
-  const det = -1 * 1 * -1;
-  assert.equal(det, 1);
-});
-
-test("深度フレーム → プレイヤー入力: 実測の手首がそのまま IK の目標になる", () => {
-  const near = frameToPlayerInput(parseTrackerMessage(sampleMessage({ wristRz: -1.4 })), COMBAT.rig);
-  const far = frameToPlayerInput(parseTrackerMessage(sampleMessage({ wristRz: -1.85 })), COMBAT.rig);
-  assert.ok(near.arms.right.target, "3D の目標が作られていない");
-  // 前に突き出しているほど target.z は小さい（敵の方向）
-  assert.ok(near.arms.right.target.z < far.arms.right.target.z);
-  assert.ok(near.arms.right.reach > far.arms.right.reach, "reach が前後を反映していない");
-  // 前後の立ち位置は実測（基準 2.0m に対し 1.9m なら 0.1m 前）
-  assert.ok(Math.abs(near.stepMeters - 0.1) < 0.02, `stepMeters=${near.stepMeters.toFixed(3)}`);
-
-  // buildPlayerPose に通しても骨は伸びない
-  const pose = buildPlayerPose(near, COMBAT.rig);
-  const maxArm = COMBAT.rig.bones.upperArm + COMBAT.rig.bones.foreArm;
-  assert.ok(dist(pose.shoulders.right, pose.right.wrist) <= maxArm + 1e-6);
-  assert.ok(pose.right.wrist.x > 0, "被写体の右手が画面右に来ていない");
-  assert.ok(pose.head.z < 0, "前に出ているのに前進していない");
-});
-
-test("深度フレーム: 必要な関節が無ければ null（2D 経路へフォールバックさせる）", () => {
-  assert.equal(frameToPlayerInput({ xyz: { nose: { x: 0, y: 0, z: -2 } } }, COMBAT.rig), null);
-  assert.equal(frameToPlayerInput({ xyz: null }, COMBAT.rig), null);
-  assert.equal(frameToPlayerInput(null, COMBAT.rig), null);
+test("menu, DOM PIP, and throttled semantic diagnostics are present", async () => {
+  const src = await (await import("node:fs/promises")).readFile(new URL("../examples/games/boxing/boxing.js", import.meta.url), "utf8");
+  assert.match(src, /id="trackerPip"/); assert.match(src, /position: fixed/); assert.match(src, /nowMs - frame\.lastDiagnosticAt >= 250/); assert.match(src, /深度 valid/); assert.match(src, /処理 \$\{processing\}/);
+  assert.match(src, /tracker\?\.kind === "oak"/); assert.match(src, /external && srcFrame\?\.preview/);
+  assert.match(src, /function startFight\(\) \{[\s\S]*getStartFightState/);
+  assert.match(src, /#recalBtn"\)\.onclick = \(\) => \{[\s\S]*getStartFightState/);
+  assert.match(src, /function setPaused\(next\)/); assert.match(src, /e\.code === "Escape" && state === "FIGHT"/); assert.match(src, /gamePaused = state === "FIGHT" && paused/);
 });

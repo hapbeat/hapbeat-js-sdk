@@ -8,10 +8,7 @@
  * 座標系は scene3d.js と同じ Three.js 空間（+X=画面右 / +Y=上 / -Z=前方＝敵の方向）。
  * 単位はメートル。プレイヤーの頭がだいたい原点、敵は z = -ENEMY_DIST に立つ。
  *
- * ── なぜ z を worldLandmarks から取らないか ────────────────────────────────────
- * 単眼の姿勢推定に本物の奥行きは無く、worldLandmarks の z はカメラへ拳を突き出しても
- * ほとんど動かない（＝一人称の腕が前に伸びない）。そこで奥行きは捨てて、
- * **2D から前方リーチを推定する**（gestures.js）。ここはその推定値を受け取って腕を組む。
+ * 前方成分は PoseInput の semantic forward / OAK hand depth から得る reach だけを使う。
  */
 
 // ── ベクタ（プレーンオブジェクト。THREE.Vector3 でも同じ形なので相互運用できる） ──
@@ -45,7 +42,7 @@ export const bezier2 = (p0, p1, p2, t) => lerpV(lerpV(p0, p1, t), lerpV(p1, p2, 
 /**
  * 一人称のプレイヤー上半身を組む。
  *
- * 入力は gestures.js が出す「体基準の 2D オフセット（肩幅＝1）」と「前方リーチ 0..1」。
+ * 入力は PoseInput が出す「体基準の 2D オフセット（肩幅＝1）」と「前方リーチ 0..1」。
  * 左右・上下は実際に映っている 2D の動きをそのまま使い、奥行きだけを reach で作る。
  * 腕の長さは一定にせず z 方向にだけ伸ばす（解剖学的には腕は 1.2m 届かないが、
  * 敵に手が届かないと殴った感が出ないため。誇張はここ 1 か所に閉じている）。
@@ -82,22 +79,18 @@ export function buildPlayerPose(frame, cfg) {
      * 前後成分だけ forwardGain 倍して誇張している（実寸だと 30° で 0.1m 弱にしかならず見えない）。
      */
     const halfX = sign * cfg.shoulderHalf;
-    const shoulder = v3(
+    const rigShoulder = v3(
       rootX + (head.x - rootX) * cfg.shoulderFollow + halfX * cosYaw,
       head.y * cfg.shoulderFollow - cfg.shoulderDrop,
       cfg.shoulderBack - step - halfX * sinYaw * twistGain,
     );
+    const shoulder = v3(rigShoulder.x, rigShoulder.y, rigShoulder.z);
+    // PoseInput の肩はキャリブ基準からの2D差分。z は既存の体幹/リーチモデルのままにする。
+    shoulder.x += (arm?.shoulder?.x ?? 0) * SW * cfg.lateralGain;
+    shoulder.y -= (arm?.shoulder?.y ?? 0) * SW * cfg.lateralGain;
     out.shoulders[side] = shoulder;
     if (!arm) { out[side] = { elbow: shoulder, wrist: shoulder, reach: 0 }; continue; }
     const reach = clamp(arm.reach ?? 0, 0, 1);
-    /**
-     * 伸ばすほど狙点（正面＝敵の頭の高さ）へ寄せる。
-     * 肩は体の中心から 0.19m 横にあるので、肩からまっすぐ前に突くと拳は敵の頭の
-     * 横 0.27m を素通りしてしまい、まともに構えて突いても当たらない。実際の
-     * ボクシングでも拳は的へ向かって内側へ入るので、その分をここで作る。
-     * 描画も判定もこの同じ位置を使うので「見えている通りに当たる」は保たれる。
-     */
-    const conv = cfg.convergence * reach;
     /**
      * 奥行き: 構え（reach=0）でも拳は体の前 guardForward [m] に出ている。
      * ここを 0 にすると、胸の前でガードしていても 3D では手が体にめり込んで見える。
@@ -106,22 +99,31 @@ export function buildPlayerPose(frame, cfg) {
     const gf = cfg.guardForward ?? 0;
     const wristFwd = gf + reach * Math.max(0, cfg.forwardMeters - gf);
     const elbowFwd = gf * 0.5 + reach * Math.max(0, cfg.forwardMeters - gf) * cfg.elbowFrac;
-    // 構えでは拳を少し持ち上げる（顎の前）。伸ばすほど 0 に戻る。
-    const lift = (cfg.guardHeight ?? 0) * (1 - reach);
-    // 手首の「目標」。深度トラッカーがあれば実測の 3D 位置（肩中点基準）をそのまま使う。
-    const aimX = cfg.aim.x + rootX;
-    const target = arm.target
-      ? v3(shoulder.x + arm.target.x - sign * cfg.shoulderHalf, head.y + arm.target.y, head.z + arm.target.z)
-      : v3(
-      lerp(shoulder.x + arm.wrist.x * SW * cfg.lateralGain, aimX, conv),
-      lerp(shoulder.y - arm.wrist.y * SW * cfg.lateralGain + lift, cfg.aim.y, conv),
+    // OAK は奥行きだけを補う。横・縦は常に MediaPipe の手首座標を使うので、
+    // 前へパンチしても画面上の拳が固定の狙点へ吸い寄せられない。
+    const rawTarget = v3(
+      rigShoulder.x + arm.wrist.x * SW * cfg.lateralGain,
+      rigShoulder.y - arm.wrist.y * SW * cfg.lateralGain,
       shoulder.z - wristFwd,
     );
+    // 手首の画像面 X/Y は動かさない。通常の可動域では、必要なら前方 Z だけを
+    // 短くして上腕＋前腕の最大長を超えないようにする。
+    const maxArm = cfg.bones.upperArm + cfg.bones.foreArm;
+    const lateralSq = (rawTarget.x - shoulder.x) ** 2 + (rawTarget.y - shoulder.y) ** 2;
+    const maxForward = lateralSq < maxArm ** 2 ? Math.sqrt(maxArm ** 2 - lateralSq) : 0;
+    const target = lateralSq < maxArm ** 2
+      ? v3(rawTarget.x, rawTarget.y, Math.max(rawTarget.z, shoulder.z - maxForward))
+      : rawTarget;
 
-    // 肘は「外・下」へ張り出す（実測の 2D 肘位置を向きのヒントに使う）
-    const hint = v3(sign * 1, -1 + arm.elbow.y * 0.5, 0.35);
-    const ik = solveIK(shoulder, target, cfg.bones.upperArm, cfg.bones.foreArm, hint);
-    out[side] = { elbow: ik.elbow, wrist: ik.wrist, reach, reached: ik.reached };
+    // 肘は曲がる向きのヒントではなく、取得した X/Y を直接使う。深度は取らない
+    // 方針なので、腕が胴の裏へ回らないよう Z だけを常に前方へ補う。
+    const elbow = v3(
+      rigShoulder.x + arm.elbow.x * SW * cfg.lateralGain,
+      rigShoulder.y - arm.elbow.y * SW * cfg.lateralGain,
+      shoulder.z - Math.max(cfg.elbowFrontMin ?? .08, elbowFwd),
+    );
+    const reached = lateralSq <= maxArm ** 2;
+    out[side] = { elbow, wrist: target, reach, reached };
   }
   // 胴の当たり判定カプセル（上端＝肩の中点 / 下端＝そこから torsoLength 下）。
   // 敵が胴を狙ってくるので、腕で止めるか上体ごとどけるかの的になる。
@@ -265,4 +267,18 @@ export function resolveEnemyGlove(glove, gloveR, pose, cfg) {
  */
 export function resolvePlayerGlove(glove, gloveR, enemy, cfg) {
   return resolveHit(glove, gloveR, enemy, cfg.enemy);
+}
+
+/**
+ * Resolve a measured glove segment against the enemy. Callers must limit capture gaps;
+ * this is deliberately interpolation of two authoritative samples, never prediction.
+ */
+export function resolvePlayerGloveSweep(from, to, gloveR, enemy, cfg) {
+  const stepM = Math.max(0.02, gloveR * 0.5);
+  const steps = Math.max(1, Math.ceil(dist(from, to) / stepM));
+  for (let i = 0; i <= steps; i++) {
+    const hit = resolvePlayerGlove(lerpV(from, to, i / steps), gloveR, enemy, cfg);
+    if (hit) return hit;
+  }
+  return null;
 }

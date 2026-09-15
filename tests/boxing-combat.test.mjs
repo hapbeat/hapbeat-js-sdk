@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   buildPlayerPose, buildEnemyPose, attackPathT, enemyGlovePos, resolveEnemyGlove, resolvePlayerGlove,
-  sphereHitsCapsule, closestPointOnSegment, dist, v3, lerpV, solveIK, resolveHit,
+  sphereHitsCapsule, closestPointOnSegment, dist, v3, lerpV, solveIK, resolveHit, resolvePlayerGloveSweep,
 } from "../examples/games/boxing/combat.js";
 import { COMBAT } from "../examples/games/boxing/tuning.js";
 
@@ -18,8 +18,8 @@ import { COMBAT } from "../examples/games/boxing/tuning.js";
 const frame = (reachL = 0, reachR = 0, head = { x: 0, y: 0 }) => ({
   head,
   arms: {
-    left: { elbow: { x: -0.35, y: 0.35 }, wrist: { x: -0.2, y: 0.1 }, reach: reachL },
-    right: { elbow: { x: 0.35, y: 0.35 }, wrist: { x: 0.2, y: 0.1 }, reach: reachR },
+    left: { shoulder: { x: 0, y: 0 }, elbow: { x: -0.35, y: 0.35 }, wrist: { x: -0.2, y: 0.1 }, reach: reachL },
+    right: { shoulder: { x: 0, y: 0 }, elbow: { x: 0.35, y: 0.35 }, wrist: { x: 0.2, y: 0.1 }, reach: reachR },
   },
 });
 const enemyHead = () => v3(0, COMBAT.enemy.headY, -COMBAT.enemyDist);
@@ -55,7 +55,9 @@ test("奥行き: reach で前へ伸びるが、骨の長さは超えない（間
     return resolvePlayerGlove(full.right.wrist, COMBAT.player.gloveRadius, enemy, COMBAT);
   };
   assert.equal(atDist(COMBAT.enemyDist, "open"), null, "開始距離で届いてしまう（間合いが無意味）");
-  assert.equal(atDist(COMBAT.footwork.preferredDist, "open"), "head", "間合いまで詰めても頭に届かない");
+  // 深度は Z のみ、X/Y は実測値を優先する。横に外れた拳は自動照準で頭へ
+  // 吸い寄せず、開いた相手の腕に当たる（中央へ狙えば別の sweep test で head を検証）。
+  assert.equal(atDist(COMBAT.footwork.preferredDist, "open"), "guard", "実測の横位置を固定狙点へ寄せている");
   assert.equal(atDist(COMBAT.footwork.preferredDist, "guard"), "guard", "ガード中の相手に素通しで入る");
 });
 
@@ -161,6 +163,79 @@ test("幾何ヘルパ: 線分上の最近点とカプセル判定", () => {
   assert.deepEqual(closestPointOnSegment(v3(-5, 0, 0), a, b), a, "線分の外は端点に丸める");
   assert.ok(sphereHitsCapsule(v3(0, 0.3, 0), 0.2, a, b, 0.15));
   assert.ok(!sphereHitsCapsule(v3(0, 0.6, 0), 0.2, a, b, 0.15));
+});
+
+test("肩と肘の2D差分は、描画と判定が共有するplayer poseへ反映される", () => {
+  const still = buildPlayerPose(frame(), COMBAT.rig);
+  const input = frame();
+  input.arms.right.shoulder = { x: .25, y: .2 };
+  input.arms.right.elbow = { x: .4, y: .3 };
+  const moved = buildPlayerPose(input, COMBAT.rig);
+  assert.ok(moved.shoulders.right.x > still.shoulders.right.x);
+  assert.ok(moved.shoulders.right.y < still.shoulders.right.y);
+  assert.notDeepEqual(moved.right.elbow, still.right.elbow);
+  assert.ok(Number.isFinite(moved.right.elbow.z), "肘のzは既存リーチモデルだけで決まる");
+  assert.equal(resolveEnemyGlove(moved.right.elbow, COMBAT.enemy.gloveRadius, moved, COMBAT), "block");
+});
+
+test("片腕の肩・肘・手を同じだけ動かすと、各関節は2D差分を一度だけ反映する", () => {
+  const still = buildPlayerPose(frame(), COMBAT.rig);
+  const input = frame();
+  const delta = { x: .2, y: .15 };
+  for (const joint of ["shoulder", "elbow", "wrist"]) {
+    input.arms.right[joint] = {
+      x: input.arms.right[joint].x + delta.x,
+      y: input.arms.right[joint].y + delta.y,
+    };
+  }
+  const moved = buildPlayerPose(input, COMBAT.rig);
+  const dx = delta.x * COMBAT.rig.shoulderWidthM * COMBAT.rig.lateralGain;
+  const dy = delta.y * COMBAT.rig.shoulderWidthM * COMBAT.rig.lateralGain;
+  for (const joint of [moved.shoulders.right, moved.right.elbow, moved.right.wrist]) {
+    const base = joint === moved.shoulders.right ? still.shoulders.right : joint === moved.right.elbow ? still.right.elbow : still.right.wrist;
+    assert.ok(Math.abs(joint.x - base.x - dx) < 1e-9, `x が二重移動している (${joint.x - base.x})`);
+    assert.ok(Math.abs(joint.y - base.y + dy) < 1e-9, `y が二重移動している (${joint.y - base.y})`);
+  }
+});
+
+test("測定肘の2D差分は、拘束IKではなく取得した画面上の位置を直接動かす", () => {
+  const still = buildPlayerPose(frame(), COMBAT.rig);
+  const input = frame();
+  input.arms.right.elbow = { x: input.arms.right.elbow.x + .2, y: input.arms.right.elbow.y + .15 };
+  const moved = buildPlayerPose(input, COMBAT.rig);
+  assert.deepEqual(moved.shoulders.right, still.shoulders.right);
+  assert.deepEqual(moved.right.wrist, still.right.wrist);
+  assert.notEqual(moved.right.elbow.x, still.right.elbow.x);
+  assert.ok(moved.right.elbow.y < still.right.elbow.y);
+  const scale = COMBAT.rig.shoulderWidthM * COMBAT.rig.lateralGain;
+  const expectedX = moved.shoulders.right.x + (input.arms.right.elbow.x - input.arms.right.shoulder.x) * scale;
+  const expectedY = moved.shoulders.right.y - (input.arms.right.elbow.y - input.arms.right.shoulder.y) * scale;
+  assert.ok(Math.abs(moved.right.elbow.x - expectedX) < 1e-9);
+  assert.ok(Math.abs(moved.right.elbow.y - expectedY) < 1e-9);
+  assert.ok(moved.right.elbow.z < moved.shoulders.right.z, "肘は体の裏側へ回らない");
+});
+
+test("短いfresh sample間のグローブ軌跡は、端点が外れても敵の頭への横切りを命中にする", () => {
+  const d = COMBAT.footwork.preferredDist;
+  const head = v3(0, COMBAT.enemy.headY, -d);
+  const enemy = buildEnemyPose({ x: 0, z: -d }, {
+    left: v3(-0.8, -0.6, -d), right: v3(0.8, -0.6, -d),
+  }, COMBAT);
+  const from = v3(-0.45, head.y, head.z), to = v3(0.45, head.y, head.z);
+  assert.equal(resolvePlayerGlove(from, COMBAT.player.gloveRadius, enemy, COMBAT), null);
+  assert.equal(resolvePlayerGlove(to, COMBAT.player.gloveRadius, enemy, COMBAT), null);
+  assert.equal(resolvePlayerGloveSweep(from, to, COMBAT.player.gloveRadius, enemy, COMBAT), "head");
+});
+
+test("swept hit は終点の頭より先に横切ったガードを優先し、始点も判定する", () => {
+  const body = { gloveRadius: 0.085, forearmRadius: 0.065, upperArmRadius: 0.065, headRadius: 0.1, torsoRadius: 0.17 };
+  const enemy = {
+    head: v3(0, 0, 0),
+    left: { elbow: v3(-0.2, 0, -0.2), wrist: v3(0.2, 0, -0.2) }, right: null,
+  };
+  const cfg = { enemy: body };
+  assert.equal(resolvePlayerGloveSweep(v3(0, 0, -0.5), v3(0, 0, 0), 0.085, enemy, cfg), "guard");
+  assert.equal(resolvePlayerGloveSweep(v3(0.35, 0, -0.2), v3(0.7, 0, -0.2), 0.085, enemy, cfg), "guard");
 });
 
 // boxing.js のフレームループがやっていること（攻撃を進める → 毎フレーム判定 → 最初に触れた

@@ -9,6 +9,8 @@ dist/
 
 # Logs / misc
 *.log
+__pycache__/
+*.py[cod]
 .DS_Store
 Thumbs.db
 
@@ -26,6 +28,8 @@ instructions/
 examples/games/demo-kit/**/.studio-cache.json
 examples/games/boxing/tracker/.venv/
 examples/games/boxing/tracker/.codex-tmp/
+examples/tools/oak-diagnostics/.venv/
+examples/tools/oak-diagnostics/captures/
 
 # boxing デモの外部アセット（CC0）はコミットしない。scripts/fetch-boxing-assets.mjs で取得する。
 examples/games/boxing/assets/

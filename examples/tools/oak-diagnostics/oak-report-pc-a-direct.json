@@ -1,0 +1,332 @@
+{
+  "depthai": "3.9.0",
+  "device": {
+    "id": "1BAC5A00",
+    "platform": "Platform.RVC2",
+    "usbSpeed": "UsbGeneration.USB_3_0"
+  },
+  "os": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.7",
+  "runId": "f446a033-85b5-4ce4-8ec2-7af73540670f",
+  "schemaVersion": 1,
+  "setup": {
+    "cable": "known-good-usb3",
+    "host": "pc-a",
+    "label": "current",
+    "power": "direct"
+  },
+  "stages": [
+    {
+      "attempt": 1,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "deviceId": "1BAC5A00",
+      "durationMs": 3156.0,
+      "exception": null,
+      "firstFrameMs": 0.0,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "discover",
+      "usbSpeed": "SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 2,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "deviceId": "1BAC5A00",
+      "durationMs": 3172.0,
+      "exception": null,
+      "firstFrameMs": 0.0,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "discover",
+      "usbSpeed": "SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 3,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "deviceId": "1BAC5A00",
+      "durationMs": 3156.0,
+      "exception": null,
+      "firstFrameMs": 0.0,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "discover",
+      "usbSpeed": "SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 1,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "durationMs": 23922.0,
+      "exception": null,
+      "firstFrameMs": 14766.0,
+      "frames": 60,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "platform": "Platform.RVC2",
+      "stage": "rgb",
+      "usbSpeed": "UsbSpeed.SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 2,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "durationMs": 23110.0,
+      "exception": null,
+      "firstFrameMs": 14813.0,
+      "frames": 60,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "platform": "Platform.RVC2",
+      "stage": "rgb",
+      "usbSpeed": "UsbSpeed.SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 3,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "durationMs": 23125.0,
+      "exception": null,
+      "firstFrameMs": 14813.0,
+      "frames": 60,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "platform": "Platform.RVC2",
+      "stage": "rgb",
+      "usbSpeed": "UsbSpeed.SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 1,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "durationMs": 24172.0,
+      "exception": null,
+      "firstFrameMs": 15016.0,
+      "frames": 60,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "platform": "Platform.RVC2",
+      "stage": "stereo",
+      "usbSpeed": "UsbSpeed.SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 2,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "durationMs": 23266.0,
+      "exception": null,
+      "firstFrameMs": 14954.0,
+      "frames": 60,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "platform": "Platform.RVC2",
+      "stage": "stereo",
+      "usbSpeed": "UsbSpeed.SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 3,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "durationMs": 23281.0,
+      "exception": null,
+      "firstFrameMs": 14969.0,
+      "frames": 60,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "platform": "Platform.RVC2",
+      "stage": "stereo",
+      "usbSpeed": "UsbSpeed.SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 1,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "durationMs": 24312.0,
+      "exception": null,
+      "firstFrameMs": 15156.0,
+      "frames": 60,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "platform": "Platform.RVC2",
+      "stage": "rgbd",
+      "usbSpeed": "UsbSpeed.SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 2,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "durationMs": 23422.0,
+      "exception": null,
+      "firstFrameMs": 15141.0,
+      "frames": 60,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "platform": "Platform.RVC2",
+      "stage": "rgbd",
+      "usbSpeed": "UsbSpeed.SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 3,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "durationMs": 23703.0,
+      "exception": null,
+      "firstFrameMs": 15344.0,
+      "frames": 60,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "platform": "Platform.RVC2",
+      "stage": "rgbd",
+      "usbSpeed": "UsbSpeed.SUPER",
+      "xLink": false
+    },
+    {
+      "attempt": 1,
+      "childLogs": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "depthaiVersion": "3.9.0",
+      "durationMs": 63312.0,
+      "exception": null,
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": {
+        "bandwidthMbps": 2059.373291015625,
+        "cameraCalibration": "HealthCheckResult.PASS",
+        "cameraFunctionality": "HealthCheckResult.PASS",
+        "deviceInSetupMode": "False",
+        "deviceInUse": "False",
+        "imuCalibration": "HealthCheckResult.PASS",
+        "imuFunctionality": "HealthCheckResult.PASS",
+        "issues": [
+          "<depthai.HealthCheckIssue object at 0x...763DEF30>"
+        ],
+        "missingUdevRules": "False",
+        "powerSupplyFunctionality": "HealthCheckResult.PASS",
+        "usbGeneration": "UsbGeneration.USB_3_0"
+      },
+      "stage": "health",
+      "usbSpeed": "UsbGeneration.USB_3_0",
+      "xLink": false
+    },
+    {
+      "attempt": 2,
+      "childLogs": {
+        "stderr": "Stack trace (most recent call last):\n#31   Object \"\", at ...B14AE339, in Py_RunMain\n#30   Object \"\", at ...B14AE587, in Py_RunMain\n#29   Object \"\", at ...B1576593, in PyLong_Sign\n#28   Object \"\", at ...B15766B6, in PyLong_Sign\n#27   Object \"\", at ...B1576871, in PyRun_AnyFileObject\n#26   Object \"\", at ...B15774FE, in PyRun_SimpleFileObject\n#25   Object \"\", at ...B15782F4, in Py_Exit\n#24   Object \"\", at ...B14BBF34, in PyDict_DelItemIf\n#23   Object \"\", at ...B14BBE70, in PyDict_DelItemIf\n#22   Object \"\", at ...B14BA385, in PyEval_EvalCode\n#21   Object \"\", at ...B14B9EA8, in PyType_CalculateMetaclass\n#20   Object \"\", at ...B148FD9B, in PyEval_EvalFrameDefault\n#19   Object \"\", at ...B148E8E5, in PyObject_Vectorcall\n#18   Object \"\", at ...B148EF32, in PyObject_Vectorcall\n#17   Object \"\", at ...B14CDE88, in PyUnicode_DecodeUTF7Stateful\n\u7121\u52b9\u306a\u30a2\u30c9\u30ec\u30b9\u306b\u30a2\u30af\u30bb\u30b9\u3057\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002\n\n#16   Object \"\", at ...7EBCABFB, in  ?? \n#15   Object \"\", at ...7EC1B7C4, in PyInit_depthai\n#14   Object \"\", at ...7EC1B6AA, in PyInit_depthai\n#13   Object \"\", at ...5F0FF15E, in dai::DeviceBase::performHealthCheck\n#12   Object \"\", at ...5F133BF2, in dai::DeviceHealthCheck::run\n#11   Object \"\", at ...5F135374, in dai::runDiagnosticPipeline\n#10   Object \"\", at ...5F167231, in dai::PipelineImpl::stop\n#9    Object \"\", at ...5F0E3697, in dai::DeviceBase::close\n#8    Object \"\", at ...5F0E3ED6, in dai::DeviceBase::closeImpl\n#7    Object \"\", at ...5F10FF9D, in dai::DeviceBase::waitForRebootAndCollectCrashDump\n#6    Object \"\", at ...5F0E4797, in dai::DeviceBase::collectAndLogCrashDump\n#5    Object \"\", at ...5F3713FF, in dai::logCollection::logCrashDump\n#4    Object \"\", at ...5F08A36E, in dai::CrashDump::toBytes\n#3    Object \"\", at ...5F08A912, in dai::CrashDumpRVC2::toTar\n#2    Object \"\", at ...5F35353E, in dai::utility::archiveFilesCompressed\n#1    Object \"\", at ...5FAF7155, in dai::PointCloudData::setPclDataRGB\n#0    Object \"\", at ...5FAF7718, in dai::PointCloudData::setPclDataRGB",
+        "stdout": "[2026-08-27 09:52:49.440] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_7__output' (X_LINK_ERROR)'\n[2026-08-27 09:52:49.440] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_1_0' (X_LINK_ERROR)'\n[2026-08-27 09:52:49.440] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_3_out' (X_LINK_ERROR)'\n[2026-08-27 09:52:49.440] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_2_0' (X_LINK_ERROR)'\n[2026-08-27 09:52:49.440] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_0_0' (X_LINK_ERROR)'\n[...1BAC5A00] [3.1] [1787791971.694] [host] [warning] Closed connection\n\n[...1BAC5A00] [3.1] [1787791971.696] [host] [warning] Attempting to reconnect. Timeout is 10000ms\n\n[2026-08-27 09:53:18.310] [ThreadedNode] [error] Node threw exception, stopping the node. Exception message: Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_1_0' (X_LINK_ERROR)'\n[2026-08-27 09:53:18.310] [ThreadedNode] [error] Node threw exception, stopping the node. Exception message: Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_7__output' (X_LINK_ERROR)'\n[2026-08-27 09:53:18.310] [ThreadedNode] [error] Node threw exception, stopping the node. Exception message: Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_0_0' (X_LINK_ERROR)'\n[2026-08-27 09:53:18.310] [ThreadedNode] [error] Node threw exception, stopping the node. Exception message: Communication exception - possible device error/misconfiguration. Original message 'Couldn't write data to stream: '__x_7__inputControl' (X_LINK_ERROR)'\n[2026-08-27 09:53:18.310] [ThreadedNode] [error] Node threw exception, stopping the node. Exception message: Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_3_out' (X_LINK_ERROR)'\n[2026-08-27 09:53:18.310] [ThreadedNode] [error] Node threw exception, stopping the node. Exception message: Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_2_0' (X_LINK_ERROR)'\n[...1BAC5A00] [3.1] [1787792020.188] [host] [warning] Monitor thread (device: ...1BAC5A00 [3.1]) - ping was missed, closing the device connection"
+      },
+      "durationMs": 0.0,
+      "exception": {
+        "message": "child exited with status 3221225477",
+        "type": "ChildProcessError"
+      },
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "health",
+      "usbSpeed": null,
+      "xLink": true
+    },
+    {
+      "attempt": 3,
+      "childLogs": {
+        "stderr": "Stack trace (most recent call last):\n#31   Object \"\", at ...B14AE339, in Py_RunMain\n#30   Object \"\", at ...B14AE587, in Py_RunMain\n#29   Object \"\", at ...B1576593, in PyLong_Sign\n#28   Object \"\", at ...B15766B6, in PyLong_Sign\n#27   Object \"\", at ...B1576871, in PyRun_AnyFileObject\n#26   Object \"\", at ...B15774FE, in PyRun_SimpleFileObject\n#25   Object \"\", at ...B15782F4, in Py_Exit\n#24   Object \"\", at ...B14BBF34, in PyDict_DelItemIf\n#23   Object \"\", at ...B14BBE70, in PyDict_DelItemIf\n#22   Object \"\", at ...B14BA385, in PyEval_EvalCode\n#21   Object \"\", at ...B14B9EA8, in PyType_CalculateMetaclass\n#20   Object \"\", at ...B148FD9B, in PyEval_EvalFrameDefault\n#19   Object \"\", at ...B148E8E5, in PyObject_Vectorcall\n#18   Object \"\", at ...B148EF32, in PyObject_Vectorcall\n#17   Object \"\", at ...B14CDE88, in PyUnicode_DecodeUTF7Stateful\n\u7121\u52b9\u306a\u30a2\u30c9\u30ec\u30b9\u306b\u30a2\u30af\u30bb\u30b9\u3057\u3088\u3046\u3068\u3057\u3066\u3044\u307e\u3059\u3002\n\n#16   Object \"\", at ...7EBCABFB, in  ?? \n#15   Object \"\", at ...7EC1B7C4, in PyInit_depthai\n#14   Object \"\", at ...7EC1B6AA, in PyInit_depthai\n#13   Object \"\", at ...5F0FF15E, in dai::DeviceBase::performHealthCheck\n#12   Object \"\", at ...5F133BF2, in dai::DeviceHealthCheck::run\n#11   Object \"\", at ...5F135374, in dai::runDiagnosticPipeline\n#10   Object \"\", at ...5F167231, in dai::PipelineImpl::stop\n#9    Object \"\", at ...5F0E3697, in dai::DeviceBase::close\n#8    Object \"\", at ...5F0E3ED6, in dai::DeviceBase::closeImpl\n#7    Object \"\", at ...5F10FF9D, in dai::DeviceBase::waitForRebootAndCollectCrashDump\n#6    Object \"\", at ...5F0E4797, in dai::DeviceBase::collectAndLogCrashDump\n#5    Object \"\", at ...5F3713FF, in dai::logCollection::logCrashDump\n#4    Object \"\", at ...5F08A36E, in dai::CrashDump::toBytes\n#3    Object \"\", at ...5F08A912, in dai::CrashDumpRVC2::toTar\n#2    Object \"\", at ...5F35353E, in dai::utility::archiveFilesCompressed\n#1    Object \"\", at ...5FAF7155, in dai::PointCloudData::setPclDataRGB\n#0    Object \"\", at ...5FAF7718, in dai::PointCloudData::setPclDataRGB",
+        "stdout": "[2026-08-27 09:54:01.045] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_0_0' (X_LINK_ERROR)'\n[2026-08-27 09:54:01.045] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_7__output' (X_LINK_ERROR)'\n[2026-08-27 09:54:01.045] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_3_out' (X_LINK_ERROR)'\n[2026-08-27 09:54:01.045] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_2_0' (X_LINK_ERROR)'\n[2026-08-27 09:54:01.045] [depthai] [error] Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_1_0' (X_LINK_ERROR)'\n[...1BAC5A00] [3.1] [1787792043.298] [host] [warning] Closed connection\n\n[...1BAC5A00] [3.1] [1787792043.298] [host] [warning] Attempting to reconnect. Timeout is 10000ms\n\n[2026-08-27 09:54:21.854] [ThreadedNode] [error] Node threw exception, stopping the node. Exception message: Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_1_0' (X_LINK_ERROR)'\n[2026-08-27 09:54:21.854] [ThreadedNode] [error] Node threw exception, stopping the node. Exception message: Communication exception - possible device error/misconfiguration. Original message 'Couldn't write data to stream: '__x_7__inputControl' (X_LINK_ERROR)'\n[2026-08-27 09:54:21.854] [ThreadedNode] [error] Node threw exception, stopping the node. Exception message: Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_3_out' (X_LINK_ERROR)'\n[2026-08-27 09:54:21.854] [ThreadedNode] [error] Node threw exception, stopping the node. Exception message: Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_2_0' (X_LINK_ERROR)'\n[2026-08-27 09:54:21.854] [ThreadedNode] [error] Node threw exception, stopping the node. Exception message: Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_7__output' (X_LINK_ERROR)'\n[2026-08-27 09:54:21.854] [ThreadedNode] [error] Node threw exception, stopping the node. Exception message: Communication exception - possible device error/misconfiguration. Original message 'Couldn't read data from stream: '__x_0_0' (X_LINK_ERROR)'\n[...1BAC5A00] [3.1] [1787792088.336] [host] [warning] Monitor thread (device: ...1BAC5A00 [3.1]) - ping was missed, closing the device connection"
+      },
+      "durationMs": 0.0,
+      "exception": {
+        "message": "child exited with status 3221225477",
+        "type": "ChildProcessError"
+      },
+      "firstFrameMs": null,
+      "frames": 0,
+      "hasCrashDump": false,
+      "hasCrashed": false,
+      "health": null,
+      "stage": "health",
+      "usbSpeed": null,
+      "xLink": true
+    }
+  ],
+  "time": "2026-08-27T00:54:48.646012+00:00",
+  "verdict": {
+    "classification": "INCONCLUSIVE",
+    "confidence": "LOW",
+    "nextChecks": [
+      "Repeat the same matrix row on a second PC and a different cable or power condition."
+    ],
+    "reasons": [
+      "The recorded failure does not isolate a USB, health-check, or repeatable Stereo restart cause."
+    ]
+  },
+  "viewerObservedFailure": true
+}
