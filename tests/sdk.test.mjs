@@ -508,6 +508,20 @@ class RoutingProbe extends NodeUdpTransport {
   saw(ip, address = "player_1/pos_neck") {
     this.handleMessage(makePong({ address }), ip);
   }
+  // A matched direct reply without an HBS2 tail to our latest PING: what
+  // pre-v2 firmware sends, so the device is classified legacy.
+  answerLegacy(ip, address = "player_1/pos_neck") {
+    const before = this.sends.length;
+    this.ping();
+    const [pkt] = this.sends[before];
+    this.sends.length = before;
+    const ping = protocol.parsePacket(pkt);
+    const strs = new TextEncoder().encode(`dev\0${address}\x000.3.1\0`);
+    const payload = new Uint8Array(16 + strs.length + 2);
+    payload.set(ping.payload.subarray(0, 8), 0); // echoed timestamp
+    payload.set(strs, 16);
+    this.handleMessage(protocol.buildPacket(protocol.CMD_PONG, ping.seq, payload), ip);
+  }
   dests() { return this.sends.map(([, ip]) => ip); }
 }
 
@@ -595,25 +609,29 @@ test("UDP transport: PING stays broadcast (discovery)", async () => {
 test("UDP transport: streaming exposes exact PONG endpoints and unicasts every packet", async () => {
   const t = new RoutingProbe();
   await t.connect();
-  t.saw("192.168.1.10", "player_1/pos_neck");
+  t.answerLegacy("192.168.1.10", "player_1/pos_neck");
   t.sends.length = 0;
   const [endpoint] = t.streamEndpoints();
   assert.deepEqual(endpoint, {
     ip: "192.168.1.10", address: "player_1/pos_neck", port: 7700,
+    legacy: true, wireEpoch: "legacy",
   });
-  t.streamBeginEndpoint(endpoint);
-  t.streamDataEndpoint(endpoint, 0, new Uint8Array([0, 0, 0, 0]));
-  t.streamEndEndpoint(endpoint);
+  const wire = t.streamBeginEndpoint(endpoint);
+  t.streamDataEndpoint(endpoint, 0, new Uint8Array([0, 0, 0, 0]), wire);
+  t.streamEndEndpoint(endpoint, wire);
   assert.deepEqual(t.dests(), ["192.168.1.10", "192.168.1.10", "192.168.1.10"]);
 });
 
 test("UDP transport: a new IP for the same PONG identity atomically replaces the old endpoint", async () => {
   const t = new RoutingProbe();
   await t.connect();
-  t.saw("192.168.1.10", "player_1/pos_neck");
+  t.answerLegacy("192.168.1.10", "player_1/pos_neck");
   t.saw("192.168.1.20", "player_1/pos_neck");
+  // The class belongs to the device, so the unsolicited PONG from the new IP
+  // keeps it.
   assert.deepEqual(t.streamEndpoints(), [{
     ip: "192.168.1.20", address: "player_1/pos_neck", port: 7700,
+    legacy: true, wireEpoch: "legacy",
   }]);
 });
 

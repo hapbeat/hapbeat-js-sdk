@@ -32,6 +32,19 @@
 - source ごとの gain / pan、target 指定 stop、300 ms 以上の空 session linger、
   route-only endpoint 変更時の session / offset 継続に対応しました。
 - 旧 single-session 実装の `ClipStreamer` / `LiveStream` は削除しました。
+- Node / React Native の直接 UDP は stream session v2 に対応しました（DEC-074 /
+  075 / 081）。PING に client incarnation を付け、照合済みの直接 PONG の HBS2
+  tail で機器ごとに v2 / 旧ファームを判定します。v2 機器には lease と generation
+  の envelope を付けて END 直後でも待たずに次の session を始め、旧ファームの機器
+  だけ v1 stream と 300 ms の END→BEGIN 待ちを維持します。再起動・lease 更新・
+  判定変更では旧形式で END してから新形式で BEGIN し、superseded lease は
+  `reacquireStreamOwnership()` を呼ぶまで送信を保留します。Browser 経路では
+  helper が同じ判定と待ちを機器ごとに行うため、SDK 側の待ちは掛けません。
+- mixer は再生中の gain / pan 変更を block 内でサンプルごとに補間し、和が full
+  scale を超えた block だけ limiter（目標 0.9·FS、soft knee 0.95·FS）を掛けます。
+  hard clamp だけで過大な和を処理しません（sdk-multi-stream.md §5.7–5.8）。
+- PONG の `volumeSteps` 解析を削除しました（ファームは PONG に載せておらず、
+  HBS2 tail の先頭を誤読するため）。
 
 ### 検証（Validation）
 

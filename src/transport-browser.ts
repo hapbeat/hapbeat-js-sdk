@@ -183,6 +183,13 @@ export class BrowserWsTransport implements Transport {
     this.send("ping");
   }
 
+  /**
+   * The helper owns the wire format per device (stream session v2 with its
+   * lease and generation, or the v1 stream for pre-v2 firmware) and applies
+   * the 300 ms legacy END -> BEGIN guard itself; device_list does not report
+   * the class. These endpoints therefore carry no `legacy` flag, so StreamHub
+   * adds no cooldown of its own on this path.
+   */
   streamEndpoints(): StreamEndpoint[] {
     const cutoff = Date.now() - this.deviceTtlMs;
     return [...this.devices.values()]

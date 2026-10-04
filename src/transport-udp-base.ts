@@ -110,6 +110,128 @@ export function computeBroadcastRoutes(subnets: readonly LocalSubnet[]): Broadca
  */
 const DEFAULT_DEVICE_TTL_MS = KEEPALIVE_MS * 3;
 
+// --- Stream session v2 + legacy fallback (contracts stream-session-v2.md) ---
+
+/**
+ * A broadcast PING is answered by every device, so a pending request is not
+ * consumed by its first reply; it ages out instead.
+ */
+const PENDING_PING_TTL_MS = 15_000;
+const MAX_GENERATION = 0xffffffff;
+
+/**
+ * Per-device stream receiver class, decided ONLY from matched direct replies
+ * to this transport's own extended PING ("Legacy receiver fallback (SDK)").
+ * unknown: no matched reply yet, streams defer. v2: valid HBS2 tail, lease
+ * rules apply. legacy: no HBS2 marker, v1 stream + 300 ms END -> BEGIN guard.
+ */
+type StreamClass = "unknown" | "v2" | "legacy";
+
+interface EndpointStreamState {
+  cls: StreamClass;
+  /** v2 only: the lease the device issued for clientIncarnation. */
+  bootId: bigint;
+  ticket: number;
+  leaseValid: boolean;
+  leaseSuperseded: boolean;
+  /** Incarnation of the PING whose matched reply produced this state. */
+  clientIncarnation: bigint;
+  /**
+   * Echoed timestamp of the last accepted matched reply, across both classes.
+   * A reply to an older-or-equal request never changes the class or lease
+   * again, so a late PONG cannot roll the device back to an older boot.
+   */
+  lastAcceptedTimestampUs: bigint;
+}
+
+interface PendingPing {
+  /** Timestamp written on the wire; a matched PONG echoes it exactly. */
+  timestampUs: bigint;
+  clientIncarnation: bigint;
+  sentAt: number;
+}
+
+/** Wire state of one endpoint session, fixed when it begins. */
+export type StreamWire =
+  | { format: "legacy" }
+  | { format: "v2"; identity: protocol.StreamSessionIdentity };
+
+/** wireEpoch of an alive endpoint whose streams must defer (see streamEndpoints). */
+const DEFERRED_EPOCH = "deferred";
+
+/**
+ * What a PONG may do to its device's stream state: `null` = nothing (ordinary
+ * discovery; unsolicited, unmatched, late and malformed-HBS2 replies),
+ * `"discard"` = drop the whole PONG (a structurally valid HBS2 reply for a
+ * retired request or a previous incarnation must not refresh the device
+ * either), otherwise the device's new state.
+ *
+ * Correlation: the seq maps to a pending request whose timestamp equals the
+ * echoed one, issued by the current incarnation, newer than the last accepted
+ * reply for this device. Mirrors the Unity / Unreal SDKs.
+ */
+function evaluatePongLease(
+  pong: protocol.Pong,
+  pending: PendingPing | undefined,
+  currentIncarnation: bigint,
+  existing: EndpointStreamState | undefined,
+): EndpointStreamState | "discard" | null {
+  if (pong.leaseTail === "malformed") return null; // neither a lease nor proof of old firmware
+
+  if (pong.leaseTail === "valid") {
+    if (currentIncarnation === 0n || pong.echoedClientIncarnation !== currentIncarnation) return "discard";
+    if (
+      pong.timestamp === 0n || !pending
+      || pending.timestampUs !== pong.timestamp
+      || pending.clientIncarnation !== pong.echoedClientIncarnation
+    ) return "discard";
+    if (existing && pong.timestamp <= existing.lastAcceptedTimestampUs) return "discard";
+    // A superseded writer must not turn a later periodic reply into an
+    // implicit takeover; only a fresh incarnation clears the latch.
+    const keepSuperseded = existing?.cls === "v2"
+      && existing.leaseSuperseded
+      && existing.clientIncarnation === pending.clientIncarnation;
+    return {
+      cls: "v2",
+      bootId: keepSuperseded ? existing.bootId : pong.bootId ?? 0n,
+      ticket: keepSuperseded ? existing.ticket : pong.leaseTicket ?? 0,
+      leaseValid: keepSuperseded ? false : Boolean(pong.leaseValid),
+      leaseSuperseded: keepSuperseded ? true : Boolean(pong.leaseSuperseded),
+      clientIncarnation: pending.clientIncarnation,
+      lastAcceptedTimestampUs: pong.timestamp,
+    };
+  }
+
+  // No HBS2 marker. Pre-v2 firmware cannot echo the incarnation, so the
+  // request itself must belong to the current incarnation.
+  if (pong.timestamp === 0n) return null; // unsolicited identity PONG
+  if (
+    currentIncarnation === 0n || !pending
+    || pending.timestampUs !== pong.timestamp
+    || pending.clientIncarnation !== currentIncarnation
+  ) return null; // a reply to some other request
+  if (existing && pong.timestamp <= existing.lastAcceptedTimestampUs) return null; // late reply
+  return {
+    cls: "legacy",
+    bootId: 0n,
+    ticket: 0,
+    leaseValid: false,
+    leaseSuperseded: false,
+    clientIncarnation: pending.clientIncarnation,
+    lastAcceptedTimestampUs: pong.timestamp,
+  };
+}
+
+/** A fresh nonzero u64 client incarnation. */
+function newClientIncarnation(): bigint {
+  const words = new Uint32Array(2);
+  const crypto = (globalThis as { crypto?: { getRandomValues?(a: Uint32Array): Uint32Array } }).crypto;
+  if (crypto?.getRandomValues) crypto.getRandomValues(words);
+  else for (let i = 0; i < words.length; i++) words[i] = Math.floor(Math.random() * 0x1_0000_0000);
+  const value = (BigInt(words[0]) << 32n) | BigInt(words[1]);
+  return value === 0n ? 1n : value;
+}
+
 export abstract class UdpTransportBase implements Transport {
   protected readonly port: number;
   /** Local receive-bind port. 0 = ephemeral (DEC-036 default). */
@@ -142,6 +264,16 @@ export abstract class UdpTransportBase implements Transport {
   private readonly autoRoutes: boolean;
   /** Destinations currently in a failed state, so each outage is logged once. */
   private readonly failedDestinations = new Set<string>();
+
+  /** Sent in every PING; renewed on connect() and reacquireStreamOwnership(). */
+  private clientIncarnation = 0n;
+  /** PING timestamps are strictly increasing, across incarnations too. */
+  private lastPingTimestampUs = 0n;
+  private readonly pendingPings = new Map<number, PendingPing>();
+  /** Stream class / lease per device ip (the device's, not the route's). */
+  private readonly streamStates = new Map<string, EndpointStreamState>();
+  /** Last generation used per lease ("boot:ticket"); never reused. */
+  private readonly lastGenerations = new Map<string, number>();
 
   constructor(options: HapbeatOptions = {}) {
     this.port = options.port ?? DEFAULT_UDP_PORT;
@@ -273,28 +405,58 @@ export abstract class UdpTransportBase implements Transport {
   protected handleMessage(msg: Uint8Array, ip: string): void {
     const pong = protocol.parsePong(msg);
     if (!pong) return;
-    // A reply proves which subnet the device is really on. Until this happens a
-    // broadcast still goes out limited, which on a multi-homed host may be
-    // leaving through an interface with no Hapbeat behind it.
-    this.lockRouteFor(ip);
     // A device can obtain a new DHCP address while the previous PONG entry is
     // still inside the TTL. Treat the stable PONG name+address pair as one
     // identity so StreamHub sees an atomic route replacement instead of two
     // endpoints (which would otherwise start a second session at cursor zero).
+    const previousIps: string[] = [];
     if (pong.deviceName && pong.address) {
       for (const [knownIp, known] of this.devices) {
         if (knownIp === ip) continue;
-        if (known.name === pong.deviceName && known.address === pong.address) {
-          this.devices.delete(knownIp);
-        }
+        if (known.name === pong.deviceName && known.address === pong.address) previousIps.push(knownIp);
       }
     }
+    // The stream class / lease belongs to the device, not to the route it
+    // answered from, so a moved device keeps it. Classified BEFORE anything is
+    // updated: a discarded reply must not refresh the device either.
+    const existing = this.streamStates.get(ip)
+      ?? previousIps.map((knownIp) => this.streamStates.get(knownIp)).find((state) => state !== undefined);
+    const decision = evaluatePongLease(pong, this.pendingPings.get(pong.seq), this.clientIncarnation, existing);
+    if (decision === "discard") return;
+
+    // A reply proves which subnet the device is really on. Until this happens a
+    // broadcast still goes out limited, which on a multi-homed host may be
+    // leaving through an interface with no Hapbeat behind it.
+    this.lockRouteFor(ip);
+    for (const knownIp of previousIps) {
+      this.devices.delete(knownIp);
+      this.streamStates.delete(knownIp);
+    }
+    if (decision !== null) this.noteStreamClass(ip, existing, decision);
+    const state = decision ?? existing;
+    if (state) this.streamStates.set(ip, state);
     const dev: Device = this.devices.get(ip) ?? { ip, lastSeen: 0 };
     dev.name = pong.deviceName ?? dev.name;
     dev.address = pong.address ?? dev.address;
     dev.firmwareVersion = pong.firmwareVersion ?? dev.firmwareVersion;
     dev.lastSeen = Date.now();
     this.devices.set(ip, dev);
+  }
+
+  /** Log a class change, and a lease newly superseded by another writer, once. */
+  private noteStreamClass(ip: string, previous: EndpointStreamState | undefined, next: EndpointStreamState): void {
+    if (previous?.cls !== next.cls) {
+      console.info(
+        `[hapbeat] stream receiver ${ip} classified as ` +
+        `${next.cls === "v2" ? "stream session v2" : "legacy (pre-v2 firmware)"}.`,
+      );
+    }
+    if (next.leaseSuperseded && !previous?.leaseSuperseded) {
+      console.warn(
+        `[hapbeat] stream lease at ${ip} was superseded by another writer; streams to it are deferred. ` +
+        "Call reacquireStreamOwnership() (or reconnect) after the other writer has stopped.",
+      );
+    }
   }
 
   // --- Send routing (unicast vs broadcast) ---
@@ -345,6 +507,7 @@ export abstract class UdpTransportBase implements Transport {
     this.routes = this.autoRoutes ? computeBroadcastRoutes(this.localSubnets()) : [];
     this.lockedRoute = null;
     this.failedDestinations.clear();
+    this.renewIncarnation();
     await this.openSocket();
     if (this.keepalive) this.startKeepalive();
   }
@@ -372,7 +535,66 @@ export abstract class UdpTransportBase implements Transport {
    * the limited broadcast cannot reach on a multi-homed host.
    */
   ping(): void {
-    this.sendDiscovery(protocol.buildPing(this.nextSeq(), Date.now() * 1000));
+    if (this.clientIncarnation === 0n) this.clientIncarnation = newClientIncarnation();
+    const seq = this.nextSeq();
+    // Strictly increasing: class / lease adoption is ordered by the echoed
+    // timestamp, and two immediate PINGs may read the same clock value.
+    let timestampUs = BigInt(Date.now()) * 1000n;
+    if (timestampUs <= this.lastPingTimestampUs) timestampUs = this.lastPingTimestampUs + 1n;
+    this.lastPingTimestampUs = timestampUs;
+    const now = Date.now();
+    for (const [pendingSeq, pending] of this.pendingPings) {
+      if (now - pending.sentAt > PENDING_PING_TTL_MS) this.pendingPings.delete(pendingSeq);
+    }
+    this.pendingPings.set(seq, { timestampUs, clientIncarnation: this.clientIncarnation, sentAt: now });
+    // Extended (16-byte) PING: v2 receivers answer with an HBS2 lease tail,
+    // pre-v2 firmware ignores the extra bytes and answers an ordinary PONG.
+    this.sendDiscovery(protocol.buildPing(seq, Number(timestampUs), this.clientIncarnation));
+  }
+
+  /**
+   * Take stream ownership back after another writer superseded this one
+   * (stream-session-v2.md): a fresh client incarnation, so every v2 device
+   * issues a new lease on the next matched reply. A superseded lease is never
+   * taken over automatically, to avoid two applications fighting over a
+   * device; call this once the other writer has stopped. Running v2 sessions
+   * end under the identity just relinquished; legacy devices are unaffected.
+   */
+  reacquireStreamOwnership(): void {
+    this.renewIncarnation();
+    this.ping();
+  }
+
+  /**
+   * A new incarnation, no outstanding requests of the old one, and no v2 lease
+   * of the old one. Legacy devices keep their class (pre-v2 firmware has no
+   * lease). lastAcceptedTimestampUs is kept: PING timestamps keep increasing,
+   * so a late reply to an old request still cannot roll anything back.
+   */
+  private renewIncarnation(): void {
+    this.clientIncarnation = newClientIncarnation();
+    this.pendingPings.clear();
+    for (const [ip, state] of this.streamStates) {
+      if (state.cls === "legacy") continue;
+      this.streamStates.set(ip, {
+        cls: "unknown", bootId: 0n, ticket: 0, leaseValid: false, leaseSuperseded: false,
+        clientIncarnation: 0n, lastAcceptedTimestampUs: state.lastAcceptedTimestampUs,
+      });
+    }
+  }
+
+  /** The device may carry a session now: legacy, or a usable v2 lease. */
+  private isStreamable(state: EndpointStreamState | undefined): state is EndpointStreamState {
+    if (!state) return false;
+    if (state.cls === "legacy") return true;
+    return state.cls === "v2" && state.leaseValid && !state.leaseSuperseded
+      && state.clientIncarnation === this.clientIncarnation
+      && state.bootId !== 0n && state.ticket !== 0;
+  }
+
+  private wireEpoch(state: EndpointStreamState | undefined): string {
+    if (!this.isStreamable(state)) return DEFERRED_EPOCH;
+    return state.cls === "legacy" ? "legacy" : `v2:${state.bootId}:${state.ticket}`;
   }
 
   /** Exact PONG-reported endpoints available for WifiUdp streaming.
@@ -380,34 +602,77 @@ export abstract class UdpTransportBase implements Transport {
    * There is intentionally no broadcast fallback. STREAM_DATA and STREAM_END
    * contain no target, so one independent wire session is required per device
    * endpoint to keep concurrent targets isolated.
+   *
+   * An alive device whose class is still unknown, or whose v2 lease is invalid
+   * or superseded, is listed with the "deferred" wire epoch: StreamHub then
+   * ends a running session there in its old format, and streamBeginEndpoint
+   * refuses to start a new one, so its sources defer.
    */
   streamEndpoints(): StreamEndpoint[] {
     const cutoff = Date.now() - this.deviceTtlMs;
     return [...this.devices.values()]
       .filter((device) => device.lastSeen >= cutoff && Boolean(device.address))
-      .map((device) => ({ ip: device.ip, address: device.address!, port: this.port }));
+      .map((device) => {
+        const state = this.streamStates.get(device.ip);
+        return {
+          ip: device.ip,
+          address: device.address!,
+          port: this.port,
+          legacy: state?.cls === "legacy",
+          wireEpoch: this.wireEpoch(state),
+        };
+      });
   }
 
-  streamBeginEndpoint(endpoint: StreamEndpoint): void {
-    this.sendBytesTo(
-      protocol.buildStreamBegin(this.nextSeq(), {
-        sampleRate: 16000,
-        channels: 2,
-        format: protocol.STREAM_FORMAT_PCM16,
-        totalSamples: 0,
-        gain: 1,
-        target: endpoint.address,
-      }),
-      endpoint.ip,
-    );
+  /**
+   * Begin a session in the device's current format. v2: a fresh generation
+   * under its lease, never reused; exhaustion fails closed until the lease is
+   * renewed. Returns false (sources defer) when the device cannot stream now
+   * or its state moved on since `endpoint` was listed.
+   */
+  streamBeginEndpoint(endpoint: StreamEndpoint): StreamWire | false {
+    const state = this.streamStates.get(endpoint.ip);
+    if (!this.isStreamable(state) || this.wireEpoch(state) !== endpoint.wireEpoch) return false;
+    const begin: protocol.StreamBeginOptions = {
+      sampleRate: 16000,
+      channels: 2,
+      format: protocol.STREAM_FORMAT_PCM16,
+      totalSamples: 0,
+      gain: 1,
+      target: endpoint.address,
+    };
+    if (state.cls === "legacy") {
+      this.sendBytesTo(protocol.buildStreamBegin(this.nextSeq(), begin), endpoint.ip);
+      return { format: "legacy" };
+    }
+    const leaseKey = `${state.bootId}:${state.ticket}`;
+    const last = this.lastGenerations.get(leaseKey) ?? 0;
+    if (last >= MAX_GENERATION) {
+      console.warn(`[hapbeat] stream generation exhausted for ${endpoint.ip}; waiting for a new lease.`);
+      return false;
+    }
+    const identity = { bootId: state.bootId, ticket: state.ticket, generation: last + 1 };
+    this.lastGenerations.set(leaseKey, identity.generation);
+    this.sendBytesTo(protocol.buildStreamBeginV2(this.nextSeq(), identity, begin), endpoint.ip);
+    return { format: "v2", identity };
   }
 
-  streamDataEndpoint(endpoint: StreamEndpoint, offset: number, data: Uint8Array): void {
-    this.sendBytesTo(protocol.buildStreamData(this.nextSeq(), offset, data), endpoint.ip);
+  /** DATA in the format and identity its session began with. */
+  streamDataEndpoint(endpoint: StreamEndpoint, offset: number, data: Uint8Array, wire?: unknown): void {
+    const session = wire as StreamWire | undefined;
+    const packet = session?.format === "v2"
+      ? protocol.buildStreamDataV2(this.nextSeq(), session.identity, offset, data)
+      : protocol.buildStreamData(this.nextSeq(), offset, data);
+    this.sendBytesTo(packet, endpoint.ip);
   }
 
-  streamEndEndpoint(endpoint: StreamEndpoint): void {
-    this.sendBytesTo(protocol.buildStreamEnd(this.nextSeq()), endpoint.ip);
+  /** END in the format and identity its session began with. */
+  streamEndEndpoint(endpoint: StreamEndpoint, wire?: unknown): void {
+    const session = wire as StreamWire | undefined;
+    const packet = session?.format === "v2"
+      ? protocol.buildStreamEndV2(this.nextSeq(), session.identity)
+      : protocol.buildStreamEnd(this.nextSeq());
+    this.sendBytesTo(packet, endpoint.ip);
   }
 
   private connectStatus(connected: boolean): void {

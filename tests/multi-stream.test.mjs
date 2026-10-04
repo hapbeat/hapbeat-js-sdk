@@ -17,11 +17,14 @@ class StreamSink {
   }
 
   streamEndpoints() { return this.endpoints; }
-  streamBeginEndpoint(endpoint) { this.calls.push(["begin", { ...endpoint }]); }
-  streamDataEndpoint(endpoint, offset, data) {
-    this.calls.push(["data", { ...endpoint }, offset, new Uint8Array(data)]);
+  streamBeginEndpoint(endpoint) {
+    this.calls.push(["begin", { ...endpoint }]);
+    return { epoch: endpoint.wireEpoch };
   }
-  streamEndEndpoint(endpoint) { this.calls.push(["end", { ...endpoint }]); }
+  streamDataEndpoint(endpoint, offset, data, wire) {
+    this.calls.push(["data", { ...endpoint }, offset, new Uint8Array(data), wire]);
+  }
+  streamEndEndpoint(endpoint, wire) { this.calls.push(["end", { ...endpoint }, wire]); }
 }
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -121,8 +124,8 @@ test("live input queue is bounded and reports backpressure", () => {
   hub.close();
 });
 
-test("after END, a replacement BEGIN waits for the 300 ms cooldown", async () => {
-  const sink = new StreamSink([{ ip: "10.0.0.1", address: "p1" }]);
+test("legacy endpoint: after END, a replacement BEGIN waits for the 300 ms guard", async () => {
+  const sink = new StreamSink([{ ip: "10.0.0.1", address: "p1", legacy: true, wireEpoch: "legacy" }]);
   const hub = new StreamHub(sink, { sendAheadSec: 0 });
   hub.playPcm(monoPcm(1_000, 16), { target: "p1" });
   await wait(350);

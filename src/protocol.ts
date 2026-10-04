@@ -12,6 +12,12 @@
 
 export const MAGIC = 0x4842; // "HB"
 export const VERSION = 0x01;
+/**
+ * Header protocol_version of STREAM_BEGIN/DATA/END in stream session v2
+ * (contracts stream-session-v2.md). Every other command, and the v1 stream
+ * kept for pre-v2 firmware, stays at VERSION.
+ */
+export const STREAM_V2_VERSION = 0x02;
 export const HEADER_SIZE = 8;
 export const MAX_PACKET_SIZE = 512; // command packets
 export const MAX_STREAM_PACKET_SIZE = 1472; // 1500 MTU - 20 IP - 8 UDP
@@ -56,11 +62,16 @@ function concat(parts: Uint8Array[]): Uint8Array {
 }
 
 /** Build the 8-byte common header (little-endian). */
-export function buildHeader(commandType: number, seq: number, payloadLength: number): Uint8Array {
+export function buildHeader(
+  commandType: number,
+  seq: number,
+  payloadLength: number,
+  version: number = VERSION,
+): Uint8Array {
   const buf = new Uint8Array(HEADER_SIZE);
   const dv = new DataView(buf.buffer);
   dv.setUint16(0, MAGIC, true);
-  dv.setUint8(2, VERSION);
+  dv.setUint8(2, version);
   dv.setUint8(3, commandType);
   dv.setUint16(4, seq & 0xffff, true);
   dv.setUint16(6, payloadLength, true);
@@ -118,10 +129,17 @@ export function buildStopAll(seq: number, target = ""): Uint8Array {
   return buildPacket(CMD_STOP_ALL, seq, cstr(target));
 }
 
-/** PING (0x10). Payload: timestamp(i64, microseconds). */
-export function buildPing(seq: number, timestampUs: number): Uint8Array {
-  const p = new Uint8Array(8);
-  new DataView(p.buffer).setBigInt64(0, BigInt(Math.round(timestampUs)), true);
+/**
+ * PING (0x10). Payload: timestamp(i64, microseconds), optionally followed by a
+ * nonzero client_incarnation(u64). The 16-byte form asks a stream-v2 device
+ * for a stream lease (contracts stream-session-v2.md "Discovery lease");
+ * pre-v2 firmware ignores the extra bytes. The 8-byte form is discovery only.
+ */
+export function buildPing(seq: number, timestampUs: number, clientIncarnation?: bigint): Uint8Array {
+  const p = new Uint8Array(clientIncarnation === undefined ? 8 : 16);
+  const dv = new DataView(p.buffer);
+  dv.setBigInt64(0, BigInt(Math.round(timestampUs)), true);
+  if (clientIncarnation !== undefined) dv.setBigUint64(8, clientIncarnation, true);
   return buildPacket(CMD_PING, seq, p);
 }
 
@@ -130,12 +148,17 @@ export const STREAM_FORMAT_PCM16 = 0;
 export const STREAM_FORMAT_ADPCM = 1;
 
 /** Assemble a streaming packet, enforcing the larger 1472-byte stream cap. */
-function buildStreamPacket(commandType: number, seq: number, payload: Uint8Array): Uint8Array {
+function buildStreamPacket(
+  commandType: number,
+  seq: number,
+  payload: Uint8Array,
+  version: number = VERSION,
+): Uint8Array {
   const total = HEADER_SIZE + payload.length;
   if (total > MAX_STREAM_PACKET_SIZE) {
     throw new Error(`stream packet size ${total} exceeds maximum ${MAX_STREAM_PACKET_SIZE} bytes`);
   }
-  return concat([buildHeader(commandType, seq, payload.length), payload]);
+  return concat([buildHeader(commandType, seq, payload.length, version), payload]);
 }
 
 export interface StreamBeginOptions {
@@ -154,6 +177,11 @@ export interface StreamBeginOptions {
  *   + target(null-term, optional). No event_id — a stream is session-level.
  */
 export function buildStreamBegin(seq: number, opts: StreamBeginOptions = {}): Uint8Array {
+  return buildStreamPacket(CMD_STREAM_BEGIN, seq, streamBeginBody(opts));
+}
+
+/** STREAM_BEGIN body shared by the v1 stream and stream session v2. */
+function streamBeginBody(opts: StreamBeginOptions): Uint8Array {
   const {
     sampleRate = 16000,
     channels = 1,
@@ -169,8 +197,7 @@ export function buildStreamBegin(seq: number, opts: StreamBeginOptions = {}): Ui
   dv.setUint8(3, format & 0xff);
   dv.setUint32(4, totalSamples >>> 0, true);
   dv.setFloat32(8, gain, true);
-  const payload = target ? concat([head, cstr(target)]) : head;
-  return buildStreamPacket(CMD_STREAM_BEGIN, seq, payload);
+  return target ? concat([head, cstr(target)]) : head;
 }
 
 /** STREAM_DATA (0x31). Payload: offset(u32) + raw audio bytes (PCM16/ADPCM). */
@@ -183,6 +210,67 @@ export function buildStreamData(seq: number, offset: number, data: Uint8Array): 
 /** STREAM_END (0x32). No payload. */
 export function buildStreamEnd(seq: number): Uint8Array {
   return buildStreamPacket(CMD_STREAM_END, seq, new Uint8Array(0));
+}
+
+// --- Stream session v2 (contracts stream-session-v2.md) ---
+
+export const STREAM_ENVELOPE_SIZE = 16;
+
+/**
+ * Who a v2 stream packet belongs to: the device boot and the lease it issued
+ * (from the PONG HBS2 tail), plus the sender's per-session generation.
+ */
+export interface StreamSessionIdentity {
+  /** device_boot_id, nonzero u64. */
+  bootId: bigint;
+  /** lease_ticket, nonzero u32. */
+  ticket: number;
+  /** generation, nonzero u32, increased per session within a lease. */
+  generation: number;
+}
+
+/** The 16-byte envelope every v2 stream payload begins with. */
+export function buildStreamEnvelope(identity: StreamSessionIdentity): Uint8Array {
+  const out = new Uint8Array(STREAM_ENVELOPE_SIZE);
+  const dv = new DataView(out.buffer);
+  dv.setBigUint64(0, identity.bootId, true);
+  dv.setUint32(8, identity.ticket >>> 0, true);
+  dv.setUint32(12, identity.generation >>> 0, true);
+  return out;
+}
+
+/** STREAM_BEGIN v2: envelope + the v1 BEGIN body, header protocol_version=2. */
+export function buildStreamBeginV2(
+  seq: number,
+  identity: StreamSessionIdentity,
+  opts: StreamBeginOptions = {},
+): Uint8Array {
+  return buildStreamPacket(
+    CMD_STREAM_BEGIN, seq,
+    concat([buildStreamEnvelope(identity), streamBeginBody(opts)]),
+    STREAM_V2_VERSION,
+  );
+}
+
+/** STREAM_DATA v2: envelope + offset(u32) + audio bytes. */
+export function buildStreamDataV2(
+  seq: number,
+  identity: StreamSessionIdentity,
+  offset: number,
+  data: Uint8Array,
+): Uint8Array {
+  const head = new Uint8Array(4);
+  new DataView(head.buffer).setUint32(0, offset >>> 0, true);
+  return buildStreamPacket(
+    CMD_STREAM_DATA, seq,
+    concat([buildStreamEnvelope(identity), head, data]),
+    STREAM_V2_VERSION,
+  );
+}
+
+/** STREAM_END v2: exactly the envelope, no body. */
+export function buildStreamEndV2(seq: number, identity: StreamSessionIdentity): Uint8Array {
+  return buildStreamPacket(CMD_STREAM_END, seq, buildStreamEnvelope(identity), STREAM_V2_VERSION);
 }
 
 export interface ConnectStatusOptions {
@@ -229,6 +317,20 @@ function readCString(buf: Uint8Array, start: number): [string, number] {
   return [decoder.decode(buf.subarray(start, end)), end + 1];
 }
 
+/** HBS2 stream lease tail of a PONG (contracts stream-session-v2.md). */
+export const STREAM_LEASE_TAIL_SIZE = 32;
+const STREAM_LEASE_MARKER = [0x48, 0x42, 0x53, 0x32]; // "HBS2"
+
+/**
+ * What follows volume_wiper:
+ * - `absent`: no HBS2 marker (the PONG ends there, or other bytes follow);
+ *   on a matched reply this identifies pre-v2 firmware;
+ * - `malformed`: an HBS2 marker (or a cut prefix of one) with a wrong length,
+ *   version, reserved field or unknown flag; it never classifies a device;
+ * - `valid`: a 32-byte lease tail.
+ */
+export type PongLeaseTail = "absent" | "malformed" | "valid";
+
 export interface Pong {
   seq: number;
   timestamp: bigint;
@@ -238,10 +340,52 @@ export interface Pong {
   firmwareVersion?: string;
   volumeLevel?: number;
   volumeWiper?: number;
-  volumeSteps?: number;
+  leaseTail: PongLeaseTail;
+  /** The fields below are set only when leaseTail is "valid". */
+  echoedClientIncarnation?: bigint;
+  bootId?: bigint;
+  leaseTicket?: number;
+  highWaterTicket?: number;
+  /** flags bit 0, and only with a nonzero boot id and ticket. */
+  leaseValid?: boolean;
+  /** flags bit 1: another writer holds a newer ticket. */
+  leaseSuperseded?: boolean;
 }
 
-/** Parse a PONG (0x11). Bridge form is 16 bytes; devices append extended fields. */
+function parseLeaseTail(p: Uint8Array, off: number, out: Pong): void {
+  const remaining = p.length - off;
+  out.leaseTail = "absent";
+  if (remaining <= 0) return;
+  const markerBytes = Math.min(remaining, STREAM_LEASE_MARKER.length);
+  for (let i = 0; i < markerBytes; i++) {
+    if (p[off + i] !== STREAM_LEASE_MARKER[i]) return; // other bytes follow: no marker
+  }
+  const dv = new DataView(p.buffer, p.byteOffset + off, remaining);
+  if (
+    remaining !== STREAM_LEASE_TAIL_SIZE
+    || dv.getUint8(4) !== 1
+    || (dv.getUint8(5) & ~0x03) !== 0
+    || dv.getUint16(6, true) !== 0
+  ) {
+    out.leaseTail = "malformed";
+    return;
+  }
+  const flags = dv.getUint8(5);
+  out.leaseTail = "valid";
+  out.echoedClientIncarnation = dv.getBigUint64(8, true);
+  out.bootId = dv.getBigUint64(16, true);
+  out.leaseTicket = dv.getUint32(24, true);
+  out.highWaterTicket = dv.getUint32(28, true);
+  out.leaseValid = (flags & 0x01) !== 0 && out.bootId !== 0n && out.leaseTicket !== 0;
+  out.leaseSuperseded = (flags & 0x02) !== 0;
+}
+
+/**
+ * Parse a PONG (0x11). Bridge form is 16 bytes; devices append extended
+ * fields, and a direct reply to a 16-byte PING appends the HBS2 lease tail
+ * after volume_wiper. Firmware never sends volume_steps in a PONG (it comes
+ * from get_info), so no byte after volume_wiper is read as one.
+ */
 export function parsePong(data: Uint8Array): Pong | null {
   const pkt = parsePacket(data);
   if (!pkt || pkt.commandType !== CMD_PONG) return null;
@@ -252,6 +396,7 @@ export function parsePong(data: Uint8Array): Pong | null {
     seq: pkt.seq,
     timestamp: dv.getBigInt64(0, true),
     serverTime: dv.getBigInt64(8, true),
+    leaseTail: "absent",
   };
   let off = 16;
   if (off < p.length) [out.deviceName, off] = readCString(p, off);
@@ -259,7 +404,7 @@ export function parsePong(data: Uint8Array): Pong | null {
   if (off < p.length) [out.firmwareVersion, off] = readCString(p, off);
   if (off < p.length) out.volumeLevel = p[off++];
   if (off < p.length) out.volumeWiper = p[off++];
-  if (off < p.length) out.volumeSteps = p[off++];
+  parseLeaseTail(p, off, out);
   return out;
 }
 

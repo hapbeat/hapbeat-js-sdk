@@ -7,7 +7,21 @@ export const STREAM_CHANNELS = 2;
 const CHUNK_FRAMES = 256;
 const MAX_LIVE_BUFFER_FRAMES = 4096;
 const DEFAULT_SEND_AHEAD_SEC = 0.15;
+// Keep an empty endpoint session alive for one AP beacon interval, so a new
+// source can join without END -> BEGIN. Linger is not the legacy guard below.
 const SESSION_END_LINGER_MS = 310;
+// Pre-v2 firmware cannot reject a stale END, so after an END there the next
+// BEGIN there waits this long (contracts stream-session-v2.md "Legacy receiver
+// fallback"). v2 receivers order sessions themselves and get no cooldown.
+const LEGACY_END_TO_BEGIN_MS = 300;
+// Mix bus (contracts sdk-multi-stream.md §5.8): a sum within full scale passes
+// unchanged; one past it is scaled down to LIMIT_TARGET (attack within the
+// block, release by LIMIT_RELEASE_PER_CHUNK per block, ramped per sample) and a
+// soft knee above LIMIT_KNEE replaces the hard clamp for what is left over.
+const FULL_SCALE = 32767;
+const LIMIT_TARGET = 0.9 * FULL_SCALE;
+const LIMIT_KNEE = 0.95 * FULL_SCALE;
+const LIMIT_RELEASE_PER_CHUNK = 0.05;
 
 export type PlaybackStatus = "Deferred" | "Active" | "Stopped";
 export type DeferredReason = "NoResolvedEndpoint";
@@ -16,13 +30,32 @@ export interface StreamEndpoint {
   ip: string;
   address: string;
   port?: number;
+  /**
+   * Pre-v2 receiver: after an END there, the next BEGIN there waits 300 ms.
+   * Absent or false means no StreamHub-side guard: a v2 receiver orders
+   * sessions itself, and behind hapbeat-helper the helper applies the legacy
+   * guard per device.
+   */
+  legacy?: boolean;
+  /**
+   * The wire identity a session on this endpoint begins under (stream class
+   * and, for v2, device boot + lease). When it changes (class change, device
+   * reboot, lease renewal) the running session is ended in the format it began
+   * with before the next BEGIN.
+   */
+  wireEpoch?: string;
 }
 
 export interface EndpointStreamSink {
   streamEndpoints(): StreamEndpoint[];
-  streamBeginEndpoint(endpoint: StreamEndpoint): void;
-  streamDataEndpoint(endpoint: StreamEndpoint, offset: number, data: Uint8Array): void;
-  streamEndEndpoint(endpoint: StreamEndpoint): void;
+  /**
+   * Begin one endpoint session. Returns the sink's wire state for it, handed
+   * back on every DATA / END of that session, or `false` when the session
+   * cannot begin now (its sources stay deferred).
+   */
+  streamBeginEndpoint(endpoint: StreamEndpoint): unknown;
+  streamDataEndpoint(endpoint: StreamEndpoint, offset: number, data: Uint8Array, wire?: unknown): void;
+  streamEndEndpoint(endpoint: StreamEndpoint, wire?: unknown): void;
 }
 
 export interface StreamPlayback {
@@ -65,6 +98,8 @@ interface Source {
   key?: string;
   playback: PlaybackHandle;
   completedEndpoints: Set<string>;
+  /** Matching legacy endpoints whose session waits out the END -> BEGIN guard. */
+  guardedEndpoints: Set<string>;
   baseFrame: number;
   nextFrame: number;
   inputSampleRate: number;
@@ -73,7 +108,13 @@ interface Source {
 
 interface EndpointSession {
   endpoint: StreamEndpoint;
+  /** Sink wire state returned by streamBeginEndpoint. */
+  wire: unknown;
   cursors: Map<string, number>;
+  /** Channel gains each source ended the previous mix block at. */
+  gains: Map<string, [number, number]>;
+  /** Limiter gain at the end of the previous mix block. */
+  limit: number;
   offset: number;
   startedAt: number;
   framesSent: number;
@@ -234,11 +275,7 @@ export class StreamHub {
     this.timer = undefined;
     for (const source of this.sources.values()) source.playback.setState("Stopped");
     this.sources.clear();
-    for (const session of this.sessions.values()) {
-      this.sink.streamEndEndpoint(session.endpoint);
-      this.recordEnd(session.endpoint);
-    }
-    this.sessions.clear();
+    for (const [key, session] of [...this.sessions]) this.endSession(key, session);
   }
 
   reconcile(): void {
@@ -289,7 +326,7 @@ export class StreamHub {
     const playback = new PlaybackHandle(this, id, gain, pan, loop);
     return {
       id, kind, samples, target: opts.target ?? "", gain, pan, loop, key: opts.key,
-      playback, completedEndpoints: new Set(), baseFrame: 0,
+      playback, completedEndpoints: new Set(), guardedEndpoints: new Set(), baseFrame: 0,
       nextFrame: samples.length / STREAM_CHANNELS, inputSampleRate: sampleRate,
       inputChannels: channels,
     };
@@ -312,18 +349,21 @@ export class StreamHub {
   private reconcileNow(): void {
     const now = Date.now();
     for (const [key, endedAt] of this.lastEndAt) {
-      if (now - endedAt > SESSION_END_LINGER_MS * 2) this.lastEndAt.delete(key);
+      if (now - endedAt > LEGACY_END_TO_BEGIN_MS * 2) this.lastEndAt.delete(key);
     }
     const endpoints = new Map<string, StreamEndpoint>();
     for (const endpoint of this.sink.streamEndpoints()) {
       if (endpoint.ip && endpoint.address) endpoints.set(endpointKey(endpoint), endpoint);
     }
 
+    // A route-only change keeps the session and its cursor. The wire identity
+    // must be the same: a different one is not the same session.
     const missing = [...this.sessions.entries()].filter(([key]) => !endpoints.has(key));
     const unclaimed = new Map([...endpoints].filter(([key]) => !this.sessions.has(key)));
     for (const [oldKey, session] of missing) {
       const candidates = [...unclaimed.entries()].filter(([, endpoint]) =>
-        endpoint.address === session.endpoint.address || endpoint.ip === session.endpoint.ip,
+        (endpoint.address === session.endpoint.address || endpoint.ip === session.endpoint.ip)
+        && sameWire(endpoint, session.endpoint),
       );
       if (candidates.length !== 1) continue;
       const [newKey, newEndpoint] = candidates[0];
@@ -335,10 +375,18 @@ export class StreamHub {
         if (source.completedEndpoints.delete(oldKey)) source.completedEndpoints.add(newKey);
       }
     }
-    for (const [key] of [...this.sessions]) {
-      if (endpoints.has(key)) continue;
-      this.sessions.delete(key);
-      for (const source of this.sources.values()) source.completedEndpoints.delete(key);
+    for (const [key, session] of [...this.sessions]) {
+      const current = endpoints.get(key);
+      if (!current) {
+        this.sessions.delete(key);
+        for (const source of this.sources.values()) source.completedEndpoints.delete(key);
+        continue;
+      }
+      // Class change, device reboot or lease renewal: end the running session
+      // NOW (no linger) in the format and identity it began with, so no further
+      // DATA goes out under the retired identity. Its sources rejoin the new
+      // session below.
+      if (!sameWire(current, session.endpoint)) this.endSession(key, session);
     }
 
     for (const session of this.sessions.values()) {
@@ -352,15 +400,23 @@ export class StreamHub {
     }
 
     for (const source of this.sources.values()) {
+      source.guardedEndpoints.clear();
       for (const [key, endpoint] of endpoints) {
         if (!protocol.addressMatches(source.target, endpoint.address)) continue;
         if (source.completedEndpoints.has(key)) continue;
         let session = this.sessions.get(key);
         if (!session) {
-          if (this.restartCooldown(endpoint)) continue;
-          session = { endpoint, cursors: new Map(), offset: 0, startedAt: now, framesSent: 0 };
+          if (this.restartCooldown(endpoint)) {
+            source.guardedEndpoints.add(key);
+            continue;
+          }
+          const wire = this.sink.streamBeginEndpoint(endpoint);
+          if (wire === false) continue;
+          session = {
+            endpoint, wire, cursors: new Map(), gains: new Map(), limit: 1,
+            offset: 0, startedAt: now, framesSent: 0,
+          };
           this.sessions.set(key, session);
-          this.sink.streamBeginEndpoint(endpoint);
         }
         if (!session.cursors.has(source.id)) {
           if (session.emptySince !== undefined) {
@@ -388,7 +444,7 @@ export class StreamHub {
         const frames = this.chunkFrames(session);
         if (frames <= 0) break;
         const { data, finished } = this.mix(session, frames);
-        this.sink.streamDataEndpoint(session.endpoint, session.offset, data);
+        this.sink.streamDataEndpoint(session.endpoint, session.offset, data, session.wire);
         session.offset += data.length;
         session.framesSent += frames;
         for (const sourceId of finished) {
@@ -400,11 +456,7 @@ export class StreamHub {
       }
       if (session.cursors.size === 0) {
         session.emptySince ??= now;
-        if (now - session.emptySince >= SESSION_END_LINGER_MS) {
-          this.sink.streamEndEndpoint(session.endpoint);
-          this.recordEnd(session.endpoint);
-          this.sessions.delete(key);
-        }
+        if (now - session.emptySince >= SESSION_END_LINGER_MS) this.endSession(key, session);
       }
     }
   }
@@ -428,6 +480,13 @@ export class StreamHub {
       const source = this.sources.get(sourceId);
       if (!source) { finished.add(sourceId); continue; }
       const [leftGain, rightGain] = channelGains(source.gain, source.pan);
+      // A new source starts at its own gains (its PCM carries the onset); a
+      // changed gain / pan ramps linearly over this block (no zipper, §5.7).
+      const [left0, right0] = session.gains.get(sourceId) ?? [leftGain, rightGain];
+      session.gains.set(sourceId, [leftGain, rightGain]);
+      const stepLeft = (leftGain - left0) / frames;
+      const stepRight = (rightGain - right0) / frames;
+      const ramp = stepLeft !== 0 || stepRight !== 0;
       let cursor = initialCursor;
       for (let frame = 0; frame < frames; frame++) {
         if (cursor >= source.nextFrame) {
@@ -439,13 +498,19 @@ export class StreamHub {
         }
         const sampleFrame = source.kind === "live" ? cursor - source.baseFrame : cursor;
         if (sampleFrame < 0 || sampleFrame * 2 + 1 >= source.samples.length) break;
-        mixed[frame * 2] += source.samples[sampleFrame * 2] * leftGain;
-        mixed[frame * 2 + 1] += source.samples[sampleFrame * 2 + 1] * rightGain;
+        const gainLeft = ramp ? left0 + stepLeft * (frame + 1) : leftGain;
+        const gainRight = ramp ? right0 + stepRight * (frame + 1) : rightGain;
+        mixed[frame * 2] += source.samples[sampleFrame * 2] * gainLeft;
+        mixed[frame * 2 + 1] += source.samples[sampleFrame * 2 + 1] * gainRight;
         cursor++;
       }
       session.cursors.set(sourceId, cursor);
       if (source.kind === "finite" && !source.loop && cursor >= source.nextFrame) finished.add(sourceId);
     }
+    for (const sourceId of [...session.gains.keys()]) {
+      if (finished.has(sourceId) || !session.cursors.has(sourceId)) session.gains.delete(sourceId);
+    }
+    limit(session, mixed, frames);
     const data = new Uint8Array(frames * 4);
     const view = new DataView(data.buffer);
     for (let i = 0; i < mixed.length; i++) view.setInt16(i * 2, saturatePcm16(mixed[i]), true);
@@ -455,6 +520,9 @@ export class StreamHub {
   private completeIfUnreferenced(id: string): void {
     if ([...this.sessions.values()].some((session) => session.cursors.has(id))) return;
     const source = this.sources.get(id);
+    // Still owed to a legacy endpoint that is waiting out its END -> BEGIN
+    // guard: finishing elsewhere must not drop the cue there.
+    if (source?.guardedEndpoints.size) return;
     if (source?.kind === "finite") {
       this.sources.delete(id);
       source.playback.setState("Stopped");
@@ -474,23 +542,65 @@ export class StreamHub {
     }
   }
 
-  private recordEnd(endpoint: StreamEndpoint): void {
+  /** Send END in the session's own format and forget the session. */
+  private endSession(key: string, session: EndpointSession): void {
+    this.sink.streamEndEndpoint(session.endpoint, session.wire);
+    // Only a legacy END arms the guard: a v2 END is identity-stamped, so the
+    // next v2 BEGIN is immediate.
+    if (session.endpoint.legacy) this.recordLegacyEnd(session.endpoint);
+    this.sessions.delete(key);
+  }
+
+  private recordLegacyEnd(endpoint: StreamEndpoint): void {
     const now = Date.now();
     this.lastEndAt.set(`ip:${endpoint.ip}`, now);
     this.lastEndAt.set(`address:${endpoint.address}`, now);
   }
 
+  /** The legacy END -> BEGIN guard, for legacy endpoints only. */
   private restartCooldown(endpoint: StreamEndpoint): boolean {
+    if (!endpoint.legacy) return false;
     const latest = Math.max(
       this.lastEndAt.get(`ip:${endpoint.ip}`) ?? 0,
       this.lastEndAt.get(`address:${endpoint.address}`) ?? 0,
     );
-    return Date.now() - latest < SESSION_END_LINGER_MS;
+    return Date.now() - latest < LEGACY_END_TO_BEGIN_MS;
   }
 }
 
 function endpointKey(endpoint: StreamEndpoint): string {
   return `${endpoint.ip}\0${endpoint.address}\0${endpoint.port ?? 7700}`;
+}
+
+function sameWire(a: StreamEndpoint, b: StreamEndpoint): boolean {
+  return Boolean(a.legacy) === Boolean(b.legacy) && a.wireEpoch === b.wireEpoch;
+}
+
+/**
+ * Keep the summed sources in range without a hard clamp (§5.8): a block whose
+ * peak is within full scale passes bit-identical; past it, a gain reduction to
+ * LIMIT_TARGET / peak (attack within the block, release by
+ * LIMIT_RELEASE_PER_CHUNK per block), ramped per sample, then a soft knee.
+ */
+function limit(session: EndpointSession, mixed: Float64Array, frames: number): void {
+  let peak = 0;
+  for (let i = 0; i < mixed.length; i++) peak = Math.max(peak, Math.abs(mixed[i]));
+  const want = peak > FULL_SCALE ? LIMIT_TARGET / peak : 1;
+  const start = session.limit;
+  const end = want < start ? want : Math.min(want, start + LIMIT_RELEASE_PER_CHUNK);
+  session.limit = end;
+  if (start === 1 && end === 1) return;
+  const step = (end - start) / frames;
+  const span = FULL_SCALE - LIMIT_KNEE;
+  for (let frame = 0; frame < frames; frame++) {
+    const g = start + step * (frame + 1);
+    for (let channel = 0; channel < STREAM_CHANNELS; channel++) {
+      const i = frame * STREAM_CHANNELS + channel;
+      const v = mixed[i] * g;
+      const a = Math.abs(v);
+      mixed[i] = a > LIMIT_KNEE ? Math.sign(v) * (LIMIT_KNEE + span * Math.tanh((a - LIMIT_KNEE) / span)) : v;
+    }
+  }
 }
 
 function normalizePcm16(pcm: Uint8Array, sampleRate: number, channels: number): number[] {
