@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as protocol from "../dist/protocol.js";
-import { NodeUdpTransport } from "../dist/node.js";
+import { Hapbeat, NodeUdpTransport } from "../dist/node.js";
+import { BrowserWsTransport } from "../dist/transport-browser.js";
 import { StreamHub } from "../dist/stream.js";
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -97,9 +98,13 @@ test("parsePong: HBS2 tail valid / absent / malformed", () => {
 
   assert.equal(protocol.parsePong(makePong()).leaseTail, "absent");
   assert.equal(protocol.parsePong(makePong({ tail: new Uint8Array([1, 2, 3]) })).leaseTail, "absent");
+  // Only the full HBS2 marker is a marker: a cut prefix is "no marker" (legacy).
+  for (const length of [1, 2, 3]) {
+    assert.equal(protocol.parsePong(makePong({ tail: leaseTail({ incarnation: 1n, length }) })).leaseTail, "absent");
+  }
   const malformed = [
     leaseTail({ incarnation: 1n, length: 31 }),
-    leaseTail({ incarnation: 1n, length: 3 }), // a cut prefix of the marker
+    leaseTail({ incarnation: 1n, length: 4 }), // the bare marker
     leaseTail({ incarnation: 1n, version: 2 }),
     leaseTail({ incarnation: 1n, flags: 4 }),
     leaseTail({ incarnation: 1n, reserved: 1 }),
@@ -358,6 +363,36 @@ test("superseded lease: DATA stops at once and the source defers", async () => {
   hub.close();
 });
 
+test("Hapbeat.reacquireStreamOwnership(): a new incarnation retakes a superseded lease", async () => {
+  const t = await connected();
+  const hb = new Hapbeat(t);
+  const first = t.pingNow();
+  t.replyV2("10.0.0.1", first, { flags: 1 | 2 });
+  assert.equal(t.epoch("10.0.0.1"), "deferred");
+  assert.equal(hb.reacquireStreamOwnership(), true);
+  const sent = t.sends.map(([pkt]) => protocol.parsePacket(pkt)).filter((p) => p?.commandType === protocol.CMD_PING);
+  assert.equal(sent.length, 1, "re-PINGs at once");
+  const ping = t.pingNow();
+  assert.notEqual(ping.incarnation, first.incarnation);
+  t.replyV2("10.0.0.1", ping, { flags: 1, ticket: 5 });
+  assert.equal(t.epoch("10.0.0.1"), "v2:45063:5");
+  await hb.close();
+});
+
+test("Hapbeat.reacquireStreamOwnership() is a reported no-op on the helper transport", () => {
+  const hb = new Hapbeat(new BrowserWsTransport({}));
+  const warn = console.warn;
+  const warnings = [];
+  console.warn = (message) => warnings.push(message);
+  try {
+    assert.equal(hb.reacquireStreamOwnership(), false);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /hapbeat-helper/);
+});
+
 test("no stream packet is ever broadcast", async () => {
   const t = await connected();
   const ping = t.pingNow();
@@ -478,6 +513,26 @@ test("limiter: an in-range block passes bit-identical (32000 peak, idle limiter)
   const view = new DataView(input.buffer);
   const left = sink.samples().filter((_, i) => i % 2 === 0).slice(0, 512);
   for (let i = 0; i < 512; i++) assert.equal(left[i], view.getInt16(i * 2, true), `frame ${i}`);
+});
+
+test("limiter: one full-scale clip containing -32768 passes bit-identical (§5.8)", async () => {
+  const sink = new RecordingSink();
+  const hub = new StreamHub(sink, { sendAheadSec: 0 });
+  const values = [32_767, -32_768, 0, -32_768, 16_000, -16_000, 32_767, -32_768];
+  const input = new Uint8Array(512 * 2);
+  const view = new DataView(input.buffer);
+  for (let i = 0; i < 512; i++) view.setInt16(i * 2, values[i % values.length], true);
+  hub.playPcm(input, { target: "p1" });
+  await wait(60);
+  const session = [...hub.sessions.values()][0];
+  if (session) assert.equal(session.limit, 1, "limiter stays idle");
+  hub.close();
+  const samples = sink.samples().slice(0, 512 * 2);
+  for (let i = 0; i < 512; i++) {
+    const expected = values[i % values.length];
+    assert.equal(samples[i * 2], expected, `left frame ${i}`);
+    assert.equal(samples[i * 2 + 1], expected, `right frame ${i}`);
+  }
 });
 
 test("limiter: four full-gain sines never pin at full scale and stay smooth (§7 case 9)", async () => {

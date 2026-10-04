@@ -138,6 +138,65 @@ test("legacy endpoint: after END, a replacement BEGIN waits for the 300 ms guard
   hub.close();
 });
 
+test("legacy guard is per endpoint: another device with the same address is not delayed", async () => {
+  const a = { ip: "10.0.0.1", address: "p1/same", legacy: true, wireEpoch: "legacy" };
+  const b = { ip: "10.0.0.2", address: "p1/same", legacy: true, wireEpoch: "legacy" };
+  const sink = new StreamSink([a]);
+  const hub = new StreamHub(sink, { sendAheadSec: 0 });
+  hub.playPcm(monoPcm(1_000, 16), { target: "p1" });
+  await wait(350);
+  sink.endpoints = [a, b];
+  hub.playPcm(monoPcm(2_000, 16), { target: "p1" });
+  const beginsAt = (ip) => sink.calls.filter(([kind, e]) => kind === "begin" && e.ip === ip).length;
+  assert.equal(beginsAt("10.0.0.2"), 1, "no guard on the other device");
+  assert.equal(beginsAt("10.0.0.1"), 1, "guarded");
+  await wait(380);
+  assert.equal(beginsAt("10.0.0.1"), 2);
+  hub.close();
+});
+
+async function playedElsewhereWhileGuarded() {
+  const v2 = { ip: "10.0.0.2", address: "p1/v2", wireEpoch: "v2:1:1" };
+  const legacy = { ip: "10.0.0.1", address: "p1/legacy", legacy: true, wireEpoch: "legacy" };
+  const sink = new StreamSink([v2, legacy]);
+  const hub = new StreamHub(sink, { sendAheadSec: 0 });
+  hub.playPcm(monoPcm(1_000, 16), { target: "p1" });
+  await wait(350);
+  const playback = hub.playPcm(monoPcm(2_000, 16), { target: "p1" });
+  await wait(30); // played out on v2; the legacy endpoint is still guarded
+  const count = (kind, ip) => sink.calls.filter(([k, e]) => k === kind && e.ip === ip).length;
+  assert.equal(count("data", v2.ip), 2);
+  assert.equal(count("begin", legacy.ip), 1);
+  assert.notEqual(playback.status, "Stopped");
+  return { sink, hub, playback, v2, legacy, count };
+}
+
+test("finite source completes when its guarded endpoint disappears (no replay on return)", async () => {
+  const { sink, hub, playback, v2, legacy, count } = await playedElsewhereWhileGuarded();
+  sink.endpoints = [v2];
+  hub.reconcile();
+  assert.equal(playback.status, "Stopped");
+  assert.equal(hub.sources.size, 0);
+  await wait(350);
+  assert.equal(hub.sessions.size, 0);
+  assert.equal(hub.timer, undefined, "hub idles");
+  sink.endpoints = [v2, legacy]; // the device returns after its guard
+  hub.reconcile();
+  await wait(30);
+  assert.equal(count("begin", legacy.ip), 1, "the old cue is not replayed from frame 0");
+  hub.close();
+});
+
+test("finite source completes when its guarded endpoint stops matching the target", async () => {
+  const { sink, hub, playback, v2, legacy, count } = await playedElsewhereWhileGuarded();
+  sink.endpoints = [v2, { ...legacy, address: "p2/legacy" }];
+  hub.reconcile();
+  assert.equal(playback.status, "Stopped");
+  await wait(350);
+  assert.equal(count("begin", legacy.ip), 1);
+  hub.close();
+});
+
 test("enabling loop clears per-endpoint completion exclusions", () => {
   const endpoint = { ip: "10.0.0.1", address: "p1", port: 7700 };
   const sink = new StreamSink([endpoint]);

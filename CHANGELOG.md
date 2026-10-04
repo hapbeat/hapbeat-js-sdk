@@ -38,10 +38,16 @@
   の envelope を付けて END 直後でも待たずに次の session を始め、旧ファームの機器
   だけ v1 stream と 300 ms の END→BEGIN 待ちを維持します。再起動・lease 更新・
   判定変更では旧形式で END してから新形式で BEGIN し、superseded lease は
-  `reacquireStreamOwnership()` を呼ぶまで送信を保留します。Browser 経路では
-  helper が同じ判定と待ちを機器ごとに行うため、SDK 側の待ちは掛けません。
-- mixer は再生中の gain / pan 変更を block 内でサンプルごとに補間し、和が full
-  scale を超えた block だけ limiter（目標 0.9·FS、soft knee 0.95·FS）を掛けます。
+  `Hapbeat.reacquireStreamOwnership()`（新しい incarnation で再 PING）を呼ぶまで送信を
+  保留します。Browser 経路では helper が同じ判定と待ちを機器ごとに行うため、SDK 側の
+  待ちは掛けず、`reacquireStreamOwnership()` は警告を出して `false` を返します。
+  volume_wiper 以降が完全な `HBS2` marker でない（"HB" 等の途中までを含む）PONG は
+  旧ファームとして扱います。300 ms 待ちは endpoint（IP・port・address の組）単位で、
+  同じ address の別機器には掛かりません。待ち中の endpoint が消えた・target に一致
+  しなくなった有限 source は、その時点で完了します（機器復帰時に先頭から再生し直し
+  ません）。
+- mixer は再生中の gain / pan 変更を block 内でサンプルごとに補間し、和のピークが
+  32768 を超えた block だけ limiter（-32768 を含む full scale の clip 1 本では作動しない）（目標 0.9·FS、soft knee 0.95·FS）を掛けます。
   hard clamp だけで過大な和を処理しません（sdk-multi-stream.md §5.7–5.8）。
 - PONG の `volumeSteps` 解析を削除しました（ファームは PONG に載せておらず、
   HBS2 tail の先頭を誤読するため）。

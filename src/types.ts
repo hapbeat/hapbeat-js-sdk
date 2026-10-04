@@ -94,6 +94,11 @@ export interface Transport extends EndpointStreamSink {
   stop(eventId: string, target: string): void;
   stopAll(target: string): void;
   ping(): void;
+  /**
+   * Direct UDP transports only: a new client incarnation + PING, retaking
+   * stream leases another writer superseded. Absent where a helper owns them.
+   */
+  reacquireStreamOwnership?(): void;
   discover(timeoutMs: number): Promise<Device[]>;
   close(): Promise<void> | void;
 }

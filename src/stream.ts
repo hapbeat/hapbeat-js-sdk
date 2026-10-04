@@ -14,11 +14,13 @@ const SESSION_END_LINGER_MS = 310;
 // BEGIN there waits this long (contracts stream-session-v2.md "Legacy receiver
 // fallback"). v2 receivers order sessions themselves and get no cooldown.
 const LEGACY_END_TO_BEGIN_MS = 300;
-// Mix bus (contracts sdk-multi-stream.md §5.8): a sum within full scale passes
-// unchanged; one past it is scaled down to LIMIT_TARGET (attack within the
+// Mix bus (contracts sdk-multi-stream.md §5.8): a sum whose peak is within
+// LIMIT_THRESHOLD (the PCM16 range including -32768, so one full-scale clip
+// alone never triggers it) passes unchanged; one past it is scaled down to LIMIT_TARGET (attack within the
 // block, release by LIMIT_RELEASE_PER_CHUNK per block, ramped per sample) and a
 // soft knee above LIMIT_KNEE replaces the hard clamp for what is left over.
 const FULL_SCALE = 32767;
+const LIMIT_THRESHOLD = 32768;
 const LIMIT_TARGET = 0.9 * FULL_SCALE;
 const LIMIT_KNEE = 0.95 * FULL_SCALE;
 const LIMIT_RELEASE_PER_CHUNK = 0.05;
@@ -100,6 +102,8 @@ interface Source {
   completedEndpoints: Set<string>;
   /** Matching legacy endpoints whose session waits out the END -> BEGIN guard. */
   guardedEndpoints: Set<string>;
+  /** A finite source that has played to its end on at least one endpoint. */
+  played: boolean;
   baseFrame: number;
   nextFrame: number;
   inputSampleRate: number;
@@ -326,7 +330,7 @@ export class StreamHub {
     const playback = new PlaybackHandle(this, id, gain, pan, loop);
     return {
       id, kind, samples, target: opts.target ?? "", gain, pan, loop, key: opts.key,
-      playback, completedEndpoints: new Set(), guardedEndpoints: new Set(), baseFrame: 0,
+      playback, completedEndpoints: new Set(), guardedEndpoints: new Set(), played: false, baseFrame: 0,
       nextFrame: samples.length / STREAM_CHANNELS, inputSampleRate: sampleRate,
       inputChannels: channels,
     };
@@ -432,6 +436,13 @@ export class StreamHub {
       const active = [...this.sessions.values()].some((session) => session.cursors.has(source.id));
       source.playback.setState(active ? "Active" : "Deferred", active ? undefined : "NoResolvedEndpoint");
     }
+
+    // A guarded endpoint that expired or stopped matching left guardedEndpoints
+    // above: a finite source already played elsewhere completes now, not on that
+    // endpoint's next pump (§6.10).
+    for (const source of [...this.sources.values()]) {
+      if (source.played && !source.loop) this.completeIfUnreferenced(source.id);
+    }
   }
 
   private pump(): void {
@@ -449,7 +460,10 @@ export class StreamHub {
         session.framesSent += frames;
         for (const sourceId of finished) {
           const source = this.sources.get(sourceId);
-          if (source) source.completedEndpoints.add(key);
+          if (source) {
+            source.completedEndpoints.add(key);
+            source.played = true;
+          }
           session.cursors.delete(sourceId);
           this.completeIfUnreferenced(sourceId);
         }
@@ -551,19 +565,16 @@ export class StreamHub {
     this.sessions.delete(key);
   }
 
+  /** Keyed per endpoint (ip, port, address): another device sharing the
+   * address or IP is not delayed (§6.11). */
   private recordLegacyEnd(endpoint: StreamEndpoint): void {
-    const now = Date.now();
-    this.lastEndAt.set(`ip:${endpoint.ip}`, now);
-    this.lastEndAt.set(`address:${endpoint.address}`, now);
+    this.lastEndAt.set(endpointKey(endpoint), Date.now());
   }
 
   /** The legacy END -> BEGIN guard, for legacy endpoints only. */
   private restartCooldown(endpoint: StreamEndpoint): boolean {
     if (!endpoint.legacy) return false;
-    const latest = Math.max(
-      this.lastEndAt.get(`ip:${endpoint.ip}`) ?? 0,
-      this.lastEndAt.get(`address:${endpoint.address}`) ?? 0,
-    );
+    const latest = this.lastEndAt.get(endpointKey(endpoint)) ?? 0;
     return Date.now() - latest < LEGACY_END_TO_BEGIN_MS;
   }
 }
@@ -578,14 +589,15 @@ function sameWire(a: StreamEndpoint, b: StreamEndpoint): boolean {
 
 /**
  * Keep the summed sources in range without a hard clamp (§5.8): a block whose
- * peak is within full scale passes bit-identical; past it, a gain reduction to
+ * peak is within LIMIT_THRESHOLD passes bit-identical (+32768 then saturates to
+ * 32767); past it, a gain reduction to
  * LIMIT_TARGET / peak (attack within the block, release by
  * LIMIT_RELEASE_PER_CHUNK per block), ramped per sample, then a soft knee.
  */
 function limit(session: EndpointSession, mixed: Float64Array, frames: number): void {
   let peak = 0;
   for (let i = 0; i < mixed.length; i++) peak = Math.max(peak, Math.abs(mixed[i]));
-  const want = peak > FULL_SCALE ? LIMIT_TARGET / peak : 1;
+  const want = peak > LIMIT_THRESHOLD ? LIMIT_TARGET / peak : 1;
   const start = session.limit;
   const end = want < start ? want : Math.min(want, start + LIMIT_RELEASE_PER_CHUNK);
   session.limit = end;

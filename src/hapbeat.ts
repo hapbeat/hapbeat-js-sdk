@@ -299,6 +299,27 @@ export class Hapbeat {
     this.transport.ping();
   }
 
+  /**
+   * Retake stream ownership after a device reported this client's lease as
+   * superseded by another writer (contracts stream-session-v2.md): a new
+   * client incarnation and a fresh PING, so every v2 device issues a new lease
+   * on its matched reply and deferred streams resume. Call it once the other
+   * writer has stopped. Returns false (with a warning) on a transport that
+   * holds no device lease itself (browser: hapbeat-helper owns the leases).
+   */
+  reacquireStreamOwnership(): boolean {
+    if (!this.transport.reacquireStreamOwnership) {
+      console.warn(
+        "[hapbeat] reacquireStreamOwnership() has no effect on this transport: " +
+        "hapbeat-helper owns the device stream leases.",
+      );
+      return false;
+    }
+    this.transport.reacquireStreamOwnership();
+    this.streamHub.reconcile();
+    return true;
+  }
+
   /** Broadcast a probe and collect devices that reply within `timeoutMs`. */
   discover(timeoutMs = 1500): Promise<Device[]> {
     return this.transport.discover(timeoutMs);

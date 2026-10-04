@@ -323,10 +323,11 @@ const STREAM_LEASE_MARKER = [0x48, 0x42, 0x53, 0x32]; // "HBS2"
 
 /**
  * What follows volume_wiper:
- * - `absent`: no HBS2 marker (the PONG ends there, or other bytes follow);
- *   on a matched reply this identifies pre-v2 firmware;
- * - `malformed`: an HBS2 marker (or a cut prefix of one) with a wrong length,
- *   version, reserved field or unknown flag; it never classifies a device;
+ * - `absent`: no full 4-byte HBS2 marker (the PONG ends there, or other
+ *   bytes follow, including a cut prefix such as "HB"); on a matched reply
+ *   this identifies pre-v2 firmware;
+ * - `malformed`: the full HBS2 marker with a wrong length, version, reserved
+ *   field or unknown flag; it never classifies a device;
  * - `valid`: a 32-byte lease tail.
  */
 export type PongLeaseTail = "absent" | "malformed" | "valid";
@@ -355,9 +356,8 @@ export interface Pong {
 function parseLeaseTail(p: Uint8Array, off: number, out: Pong): void {
   const remaining = p.length - off;
   out.leaseTail = "absent";
-  if (remaining <= 0) return;
-  const markerBytes = Math.min(remaining, STREAM_LEASE_MARKER.length);
-  for (let i = 0; i < markerBytes; i++) {
+  if (remaining < STREAM_LEASE_MARKER.length) return; // not the full marker
+  for (let i = 0; i < STREAM_LEASE_MARKER.length; i++) {
     if (p[off + i] !== STREAM_LEASE_MARKER[i]) return; // other bytes follow: no marker
   }
   const dv = new DataView(p.buffer, p.byteOffset + off, remaining);

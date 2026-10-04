@@ -454,7 +454,7 @@ export abstract class UdpTransportBase implements Transport {
     if (next.leaseSuperseded && !previous?.leaseSuperseded) {
       console.warn(
         `[hapbeat] stream lease at ${ip} was superseded by another writer; streams to it are deferred. ` +
-        "Call reacquireStreamOwnership() (or reconnect) after the other writer has stopped.",
+        "Call Hapbeat.reacquireStreamOwnership() after the other writer has stopped.",
       );
     }
   }
