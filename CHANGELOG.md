@@ -52,6 +52,17 @@
 - PONG の `volumeSteps` 解析を削除しました（ファームは PONG に載せておらず、
   HBS2 tail の先頭を誤読するため）。
 
+### 修正（Fixed）
+
+- **ブロードキャスト宛先の確定が外れるようにしました**（Node / React Native、contracts
+  message-format.md §2.1）。探索（PING / CONNECT_STATUS）の送信時（1 秒に 1 回まで）に
+  インターフェースを列挙し直し、確定したサブネットが無くなった場合、または
+  `deviceTtlMs` を超えてそのサブネットから PONG が無い場合に確定を外して全サブネットへ
+  探索し直します。以前は確定が次の `connect()` まで続いたため、PC の Wi-Fi を別の
+  ネットワークへ切り替えると古いサブネットへ PING を送り続け、プロセスを再起動するまで
+  新しいネットワークの機器を見つけられませんでした。PLAY / STOP / STREAM の送信経路では
+  列挙しません。`broadcastAddr` を明示した場合は従来どおりです。
+
 ### 検証（Validation）
 
 - `npm run build`、通信・multi-stream・broadcast の 52 test が通過しました。

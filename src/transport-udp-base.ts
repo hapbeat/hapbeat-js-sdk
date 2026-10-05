@@ -58,6 +58,17 @@ function toDotted(value: number): string {
   return [24, 16, 8, 0].map((shift) => (value >>> shift) & 0xff).join(".");
 }
 
+/**
+ * Whether two routes are the same local network.
+ *
+ * Network and mask rather than the address alone, because the question is
+ * whether the network a lock was taken on still exists.
+ * Contract: hapbeat-contracts `specs/message-format.md` §2.1.
+ */
+export function sameSubnet(a: BroadcastRoute, b: BroadcastRoute): boolean {
+  return a.limited === b.limited && a.network === b.network && a.mask === b.mask;
+}
+
 /** Whether `ip` sits on this route's subnet. */
 export function routeContains(route: BroadcastRoute, ip: string): boolean {
   if (route.limited || route.mask === 0) return false;
@@ -109,6 +120,12 @@ export function computeBroadcastRoutes(subnets: readonly LocalSubnet[]): Broadca
  * (and, once the set empties, that we fall back to broadcast again).
  */
 const DEFAULT_DEVICE_TTL_MS = KEEPALIVE_MS * 3;
+/**
+ * Re-enumerating the host's interfaces is a system call, so it happens only on
+ * discovery sends and at most once per this many ms (the keep-alive period is
+ * 5 s, well above it).
+ */
+const ROUTE_REFRESH_MIN_INTERVAL_MS = 1000;
 
 // --- Stream session v2 + legacy fallback (contracts stream-session-v2.md) ---
 
@@ -248,13 +265,20 @@ export abstract class UdpTransportBase implements Transport {
   private readonly devices = new Map<string, Device>();
   private keepaliveTimer?: ReturnType<typeof setInterval>;
   /**
-   * Candidate broadcast destinations, rebuilt on every connect() — a host's
-   * interfaces change when a laptop is docked, a VPN comes up or Wi-Fi moves to
-   * another network.
+   * Candidate broadcast destinations, rebuilt on connect() and again on
+   * discovery sends (refreshRoutes) — a host's interfaces change when a laptop
+   * is docked, a VPN comes up or Wi-Fi moves to another network, and none of
+   * that closes the socket.
    */
   private routes: BroadcastRoute[] = [];
-  /** The route a device actually answered on; null until the first PONG. */
+  private routesEnumeratedAt = 0;
+  /**
+   * The route a device actually answered on; null until the first PONG, and
+   * again once the lock is released (see refreshRoutes).
+   */
   private lockedRoute: BroadcastRoute | null = null;
+  /** When a PONG last came from inside the locked route's subnet. */
+  private lockedRouteSeenAt = 0;
   /**
    * An explicit `broadcastAddr` is the caller naming the destination, so it is
    * honoured verbatim: no enumeration, no fan-out, no route locking. That
@@ -339,6 +363,7 @@ export abstract class UdpTransportBase implements Transport {
    * provokes is what pins playback to the right subnet.
    */
   private sendDiscovery(packet: Uint8Array): void {
+    this.refreshRoutes();
     // Already pinned to a subnet, or nothing enumerated to fan out over.
     if (this.lockedRoute !== null || this.routes.length === 0) {
       return this.sendBytes(packet);
@@ -349,19 +374,69 @@ export abstract class UdpTransportBase implements Transport {
   /**
    * Pin broadcasts to the subnet a device actually replied from.
    *
-   * First reply wins, and the choice lasts until the next connect(). With
-   * devices on two subnets at once this settles on whichever answered first;
-   * broadcasts do not cross subnets anyway, so the alternative is not reaching
-   * both, it is reaching neither reliably.
+   * Called for every PONG. First reply wins, and later replies from the same
+   * subnet keep the lock fresh. With devices on two subnets at once this
+   * settles on whichever answered first; broadcasts do not cross subnets
+   * anyway, so the alternative is not reaching both, it is reaching neither
+   * reliably. refreshRoutes releases the lock again.
    */
   private lockRouteFor(ip: string): void {
-    if (this.lockedRoute !== null || this.routes.length === 0) return;
+    const locked = this.lockedRoute;
+    if (locked !== null) {
+      if (routeContains(locked, ip)) this.lockedRouteSeenAt = Date.now();
+      return;
+    }
     for (const route of this.routes) {
       if (!routeContains(route, ip)) continue;
+      this.lockedRouteSeenAt = Date.now();
       this.lockedRoute = route;
       console.info(`[hapbeat] broadcasting to ${route.addr} (a device answered from ${ip}).`);
       return;
     }
+  }
+
+  /**
+   * Follow the host's networks, and let go of a lock that went stale.
+   *
+   * A lock that lasted until the next connect() broke a session for good when
+   * the PC moved to another Wi-Fi network: every PING still went to the old
+   * subnet, devices on the new one were never found, and only a restart
+   * recovered (contracts message-format.md §2.1).
+   *
+   * The lock is released when its network is no longer among the host's
+   * interfaces, or when no device has answered from it for `deviceTtlMs` — the
+   * latter catches a switch the interface list cannot show, such as a new
+   * network that reuses the old subnet number. The next PING then fans out
+   * again and the first PONG locks anew. Discovery sends only: never on the
+   * PLAY / STOP / STREAM path.
+   */
+  private refreshRoutes(): void {
+    if (!this.autoRoutes) return;
+    const now = Date.now();
+    if (now - this.routesEnumeratedAt >= ROUTE_REFRESH_MIN_INTERVAL_MS) {
+      const routes = computeBroadcastRoutes(this.localSubnets());
+      this.routesEnumeratedAt = now;
+      const addrs = routes.map((r) => r.addr);
+      if (addrs.join(",") !== this.routes.map((r) => r.addr).join(",")) {
+        console.info(`[hapbeat] local networks changed; discovery now goes to ${addrs.join(", ")}.`);
+      }
+      this.routes = routes;
+    }
+    const locked = this.lockedRoute;
+    if (locked === null) return;
+    let reason: string;
+    if (!this.routes.some((route) => sameSubnet(route, locked))) {
+      reason = "that network is gone";
+    } else if (now - this.lockedRouteSeenAt > this.deviceTtlMs) {
+      reason = `no device answered from it for ${Math.round(this.deviceTtlMs / 1000)} s`;
+    } else {
+      return;
+    }
+    this.lockedRoute = null;
+    console.info(
+      `[hapbeat] no longer broadcasting to ${locked.addr} only (${reason}); ` +
+      "probing every local network again.",
+    );
   }
 
   // --- Send failure reporting ---
@@ -505,6 +580,7 @@ export abstract class UdpTransportBase implements Transport {
 
   async connect(): Promise<void> {
     this.routes = this.autoRoutes ? computeBroadcastRoutes(this.localSubnets()) : [];
+    this.routesEnumeratedAt = Date.now();
     this.lockedRoute = null;
     this.failedDestinations.clear();
     this.renewIncarnation();

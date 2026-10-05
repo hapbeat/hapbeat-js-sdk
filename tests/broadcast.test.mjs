@@ -201,6 +201,153 @@ test("UDP transport: React Native keeps the limited broadcast", async () => {
   assert.deepEqual(t.dests(), ["255.255.255.255", "255.255.255.255"]);
 });
 
+// ── Releasing the lock (contracts message-format.md §2.1) ──────────────────
+// The lock used to last until the next connect(). After the PC moved to
+// another Wi-Fi network every PING still went to the old subnet, devices on the
+// new network were never found, and only a process restart recovered.
+
+// Drives Date.now(), the clock the transport uses for device and route TTLs.
+// console.info is silenced: lock / unlock / network-change lines are expected.
+async function withClock(fn) {
+  const realNow = Date.now;
+  const realInfo = console.info;
+  const clock = { now: 1_000_000 };
+  Date.now = () => clock.now;
+  console.info = () => {};
+  try {
+    await fn(clock);
+  } finally {
+    Date.now = realNow;
+    console.info = realInfo;
+  }
+}
+
+// Counts interface enumerations, and lets a test switch the host's networks.
+class CountingProbe extends BroadcastProbe {
+  constructor(subnets, opts) {
+    super(subnets, opts);
+    this.enumerations = 0;
+  }
+  localSubnets() {
+    this.enumerations++;
+    return this.subnets;
+  }
+}
+
+const HOME = [{ address: "192.168.0.205", netmask: "255.255.255.0" }];
+
+test("route lock: released when its network is gone", () => withClock(async (clock) => {
+  const t = new BroadcastProbe(HOME);
+  await t.connect();
+  t.lockRouteFor("192.168.0.42");
+  assert.equal(t.broadcastDestination(), "192.168.0.255");
+
+  // Wi-Fi moves to another network: the old subnet disappears.
+  t.subnets = [{ address: "192.168.11.7", netmask: "255.255.255.0" }];
+  clock.now += 2000;
+  t.sends.length = 0;
+  t.ping();
+  assert.deepEqual(t.dests(), ["192.168.11.255", "255.255.255.255"]);
+  assert.equal(t.broadcastDestination(), "255.255.255.255");
+
+  // The first device on the new network locks again.
+  t.lockRouteFor("192.168.11.30");
+  assert.equal(t.broadcastDestination(), "192.168.11.255");
+}));
+
+test("route lock: released when nobody answers for the device TTL", () => withClock(async (clock) => {
+  // The interface list cannot show a switch to a network that reuses the old
+  // subnet number, or devices that all went away: silence has to do it.
+  const t = new BroadcastProbe(TWO_SUBNETS, { deviceTtlMs: 15_000 });
+  await t.connect();
+  t.lockRouteFor("192.168.0.42");
+
+  clock.now += 15_500;
+  t.sends.length = 0;
+  t.ping();
+  assert.deepEqual(t.dests(), ["192.168.0.255", "172.17.255.255", "255.255.255.255"]);
+  assert.equal(t.broadcastDestination(), "255.255.255.255");
+}));
+
+test("route lock: PONGs from the locked subnet keep it", () => withClock(async (clock) => {
+  const t = new BroadcastProbe(TWO_SUBNETS, { deviceTtlMs: 15_000 });
+  await t.connect();
+  t.lockRouteFor("192.168.0.42");
+  for (let i = 0; i < 5; i++) {
+    clock.now += 10_000;
+    t.lockRouteFor("192.168.0.42");   // keep-alive PONG
+    t.sends.length = 0;
+    t.ping();
+    assert.deepEqual(t.dests(), ["192.168.0.255"]);
+  }
+}));
+
+test("route lock: PONGs from another subnet do not keep it", () => withClock(async (clock) => {
+  const t = new BroadcastProbe(TWO_SUBNETS, { deviceTtlMs: 15_000 });
+  await t.connect();
+  t.lockRouteFor("192.168.0.42");
+  clock.now += 10_000;
+  t.lockRouteFor("172.17.0.9");
+  assert.equal(t.broadcastDestination(), "192.168.0.255");
+  clock.now += 10_000;
+  t.sends.length = 0;
+  t.ping();
+  assert.equal(t.broadcastDestination(), "255.255.255.255");
+  assert.equal(t.dests().length, 3);
+}));
+
+test("route lock: fan-out follows a network change before any lock", () => withClock(async (clock) => {
+  const t = new BroadcastProbe(HOME);
+  await t.connect();
+  t.subnets = [{ address: "10.0.0.5", netmask: "255.255.255.0" }];
+  clock.now += 2000;
+  t.ping();
+  assert.deepEqual(t.dests(), ["10.0.0.255", "255.255.255.255"]);
+}));
+
+test("route lock: a new extra interface keeps a live lock", () => withClock(async (clock) => {
+  // Docking Ethernet while the devices are still on Wi-Fi changes nothing.
+  const t = new BroadcastProbe(HOME);
+  await t.connect();
+  t.lockRouteFor("192.168.0.42");
+  t.subnets = [...HOME, { address: "172.17.192.1", netmask: "255.255.0.0" }];
+  clock.now += 2000;
+  t.ping();
+  assert.deepEqual(t.dests(), ["192.168.0.255"]);
+}));
+
+test("route lock: enumeration is rate-limited and off the playback path", () => withClock(async (clock) => {
+  const t = new CountingProbe(TWO_SUBNETS);
+  await t.connect();
+  t.enumerations = 0;
+
+  clock.now += 500;
+  t.ping();
+  assert.equal(t.enumerations, 0);
+  clock.now += 600;
+  t.ping();
+  t.ping();
+  assert.equal(t.enumerations, 1);
+
+  // Long past the interval, playback still never enumerates.
+  clock.now += 5000;
+  for (let i = 0; i < 50; i++) t.play("kit.evt", 1, "", 0);
+  t.stop("kit.evt", "");
+  t.stopAll("");
+  assert.equal(t.enumerations, 1);
+}));
+
+test("route lock: an explicit broadcastAddr never enumerates", () => withClock(async (clock) => {
+  const t = new CountingProbe(TWO_SUBNETS, { broadcastAddr: "192.168.5.255" });
+  await t.connect();
+  clock.now += 5000;
+  t.ping();
+  t.lockRouteFor("192.168.5.9");
+  assert.equal(t.enumerations, 0);
+  assert.deepEqual(t.dests(), ["192.168.5.255"]);
+  assert.equal(t.broadcastDestination(), "192.168.5.255");
+}));
+
 test("UDP transport: send failures are reported once per destination", async () => {
   const t = new BroadcastProbe(TWO_SUBNETS);
   await t.connect();
