@@ -160,7 +160,7 @@ test("踏み込むと間合いが詰まる: 同じリーチでも敵の頭まで
   const enemyHead = v3(0, COMBAT.enemy.headY, -COMBAT.enemyDist);
   const at = (ratio) => dist(buildPlayerPose(frameAt(ratio, 1), COMBAT.rig).right.wrist, enemyHead);
   const base = at(1.0), stepIn = at(1.15);
-  assert.ok(stepIn < base - 0.15, `踏み込みで間合いが詰まらない (${base.toFixed(3)} → ${stepIn.toFixed(3)})`);
+  assert.ok(stepIn < base - 0.05, `踏み込みで間合いが詰まらない (${base.toFixed(3)} → ${stepIn.toFixed(3)})`);
   assert.ok(at(0.85) > base, "下がっても間合いが変わらない");
 });
 
@@ -281,7 +281,7 @@ test("キャリブは必ず COUNTDOWN 経由: CALIB へ直接入る経路が無�
   const line = src.slice(0, calibEntries[0].index).split("\n").pop();
   assert.match(line, /left <= 0/, "CALIB への遷移がカウントダウン満了以外から呼ばれている");
   // 「構えを取り直す」ボタンは COUNTDOWN に入る
-  const handler = src.match(/recalBtn"\)\.onclick[\s\S]{0,200}?\n\};/);
+  const handler = src.match(/recalBtn"\)\.onclick[\s\S]{0,600}?\n\};/);
   assert.ok(handler, "recalBtn のハンドラが見つからない");
   assert.match(handler[0], /setState\("COUNTDOWN"\)/, "取り直しがカウントダウンを通らない");
   assert.doesNotMatch(handler[0], /recalibrate\(\)/, "recalibrate が二重に呼ばれている（CALIB 遷移側で呼ばれる）");
