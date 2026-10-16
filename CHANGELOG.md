@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-17
+
 ### 追加（Added）
 
 - `play(id, { pan })` で左右バランスを指定できるようにしました（-1 = 左のみ / 0 = 中央 / +1 = 右のみ）。command event は PLAY パケット末尾の `pan`(f32)、clip event は source mixer で適用します（contracts §0x01, DEC-055）。
@@ -56,8 +58,6 @@
 
 - `npm run build`、通信・multi-stream・broadcast の 52 test が通過しました。
 - 実機、および React Native 実機は未検証です。
-
-## [0.4.0] - 2026-08-09
 
 Unity SDK v0.4.0 で確定した接続まわりの修正を移植しました。Node / React Native
 transport（直接 UDP）が対象です。Browser transport は hapbeat-helper 経由のため
