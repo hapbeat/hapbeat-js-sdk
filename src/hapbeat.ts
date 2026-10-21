@@ -83,6 +83,30 @@ interface PendingClipPlay {
   playback: PendingStreamPlayback;
 }
 
+/** Options for {@link Hapbeat.playClipUrl} / {@link Hapbeat.playClipFile}. The WAV carries its own format. */
+export interface ClipPlayOpts {
+  /** 0..1, default 1. */
+  gain?: number;
+  /** Left/right balance: -1 = left only, 0 = centre (default), +1 = right only. */
+  pan?: number;
+  /** Repeat until stopped. Default false. */
+  loop?: boolean;
+  /** Device-addressing target; default = the Hapbeat's `defaultTarget`. */
+  target?: string;
+}
+
+type ClipFileReader = (path: string | URL) => Promise<ArrayBuffer | Uint8Array>;
+let clipFileReader: ClipFileReader | undefined;
+
+/**
+ * @internal Registered by the Node entry point, so `playClipFile()` can read
+ * from disk without this module importing `node:fs` (which would leak into
+ * browser / React Native bundles). Not part of the public API.
+ */
+export function setClipFileReader(reader: ClipFileReader): void {
+  clipFileReader = reader;
+}
+
 export interface PlayOpts {
   gain?: number;
   target?: string;
@@ -162,6 +186,56 @@ export class Hapbeat {
       pan: opts.pan ?? 0,
       loop: opts.loop ?? false,
       target: opts.target ?? this.defaultTarget,
+    });
+  }
+
+  /**
+   * Stream a PCM16 WAV from a URL, in one line: fetch → parseWav → streamPcm.
+   * No kit or manifest needed. Works in the browser, React Native and Node 18+
+   * (global `fetch`; http(s) URLs — for a file on disk in Node use
+   * {@link playClipFile}). Each call fetches the URL again (the browser's HTTP
+   * cache applies). Rejects if the fetch fails or the file is not
+   * uncompressed 16-bit PCM WAV.
+   *
+   * ```js
+   * await hb.playClipUrl("./hit_80hz.wav", { gain: 0.6 });
+   * ```
+   */
+  async playClipUrl(url: string | URL, opts: ClipPlayOpts = {}): Promise<StreamPlayback> {
+    if (typeof fetch !== "function") {
+      throw new Error("[hapbeat] playClipUrl() needs a global fetch (Node 18+, browser, React Native)");
+    }
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`[hapbeat] clip fetch ${res.status}: ${String(url)}`);
+    return this.streamWav(parseWav(await res.arrayBuffer()), opts);
+  }
+
+  /**
+   * Stream a PCM16 WAV file from disk, in one line (Node only; same as the
+   * Python SDK's `play_clip_file`). `path` is a file path or a `file:` URL,
+   * e.g. `new URL("./hit.wav", import.meta.url)`. Each call reads the file
+   * again. Rejects if the file cannot be read or is not 16-bit PCM WAV; in
+   * the browser / React Native use {@link playClipUrl} instead.
+   *
+   * ```js
+   * await hb.playClipFile("hit_80hz.wav", { gain: 0.6 });
+   * ```
+   */
+  async playClipFile(path: string | URL, opts: ClipPlayOpts = {}): Promise<StreamPlayback> {
+    if (!clipFileReader) {
+      throw new Error("[hapbeat] playClipFile() reads from disk and is Node-only; use playClipUrl() here");
+    }
+    return this.streamWav(parseWav(await clipFileReader(path)), opts);
+  }
+
+  private streamWav(wav: WavPcm, opts: ClipPlayOpts): StreamPlayback {
+    return this.streamPcm(wav.data, {
+      sampleRate: wav.sampleRate,
+      channels: wav.channels,
+      gain: opts.gain,
+      pan: opts.pan,
+      loop: opts.loop,
+      target: opts.target,
     });
   }
 

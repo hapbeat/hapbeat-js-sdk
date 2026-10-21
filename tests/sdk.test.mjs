@@ -150,11 +150,50 @@ test("EventMap.fromManifest reads schema 2.0.0 intensity", () => {
   assert.equal(em.gainFor("unknown"), 1.0);
 });
 
+// Free UDP port on loopback (bound and released), for tests that must not
+// touch the LAN or a port another process (hapbeat-helper) may hold.
+async function freeUdpPort() {
+  const s = dgram.createSocket("udp4");
+  await new Promise((res, rej) => { s.once("error", rej); s.bind(0, "127.0.0.1", res); });
+  const { port } = s.address();
+  await new Promise((r) => s.close(r));
+  return port;
+}
+
+// 7700 if nothing holds it (bound exclusively for a moment to check), else a
+// free port. A running hapbeat-helper owns 7700; these tests must neither
+// fail because of it nor share its port (reuseAddr could take its packets).
+async function wellKnownPortOrFree() {
+  const probe = dgram.createSocket({ type: "udp4", reuseAddr: false });
+  const free = await new Promise((res) => {
+    probe.once("error", () => res(false));
+    probe.bind(7700, () => res(true));
+  });
+  if (free) {
+    await new Promise((r) => probe.close(r));
+    return 7700;
+  }
+  probe.close();
+  return freeUdpPort();
+}
+
 test("Node transport: socket open + broadcast send + close (no device needed)", async () => {
-  const hb = await connect({ appName: "WebSdkTest", keepalive: false });
+  // Sent to a fake receiver on 127.0.0.1, never to the LAN broadcast address.
+  const receiver = dgram.createSocket("udp4");
+  await new Promise((r) => receiver.bind(0, "127.0.0.1", r));
+  const got = [];
+  receiver.on("message", (msg) => got.push(msg[3]));
+  const hb = await connect({
+    appName: "WebSdkTest", keepalive: false,
+    broadcastAddr: "127.0.0.1", port: receiver.address().port,
+  });
   assert.equal(hb.play("sample-kit.sine_100hz", { gain: 0.1 }), undefined); // does not throw
   hb.stopAll();
+  await new Promise((r) => setTimeout(r, 50)); // dgram sends are async; let them leave before close
   await hb.close();
+  receiver.close();
+  assert.ok(got.includes(protocol.CMD_PLAY), "PLAY reached the loopback receiver");
+  assert.ok(got.includes(protocol.CMD_STOP_ALL), "STOP_ALL reached the loopback receiver");
 });
 
 test("Node transport: default receive bind is ephemeral, not 7700 (DEC-036)", async () => {
@@ -167,23 +206,26 @@ test("Node transport: default receive bind is ephemeral, not 7700 (DEC-036)", as
 });
 
 test("Node transport: coexists with a daemon holding 7700 (DEC-036)", async () => {
-  // Simulate hapbeat-helper owning the well-known receive port.
+  // Simulate hapbeat-helper owning the well-known receive port. When the real
+  // helper already holds 7700, the same check runs on a free port instead.
+  const wellKnown = await wellKnownPortOrFree();
   const daemon = dgram.createSocket({ type: "udp4", reuseAddr: true });
   await new Promise((res, rej) => {
     daemon.once("error", rej);
-    daemon.bind(7700, res);
+    daemon.bind(wellKnown, res);
   });
-  const t = new NodeUdpTransport({ keepalive: false });
+  const t = new NodeUdpTransport({ keepalive: false, port: wellKnown });
   await t.connect();
-  assert.notEqual(t.socket.address().port, 7700, "SDK must not fight for 7700");
+  assert.notEqual(t.socket.address().port, wellKnown, "SDK must not fight for the daemon's port");
   await t.close();
   daemon.close();
 });
 
 test("Node transport: bindPort opt-in binds the well-known port when free", async () => {
-  const t = new NodeUdpTransport({ keepalive: false, bindPort: 7700 });
+  const wellKnown = await wellKnownPortOrFree();
+  const t = new NodeUdpTransport({ keepalive: false, bindPort: wellKnown });
   await t.connect();
-  assert.equal(t.socket.address().port, 7700);
+  assert.equal(t.socket.address().port, wellKnown);
   await t.close();
 });
 

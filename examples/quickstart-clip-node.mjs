@@ -7,13 +7,11 @@
 //   node examples/quickstart-clip-node.mjs
 //
 // In your own project: npm install @hapbeat/sdk, and import from "@hapbeat/sdk".
-import { readFile } from "node:fs/promises";
-import { connect, parseWav } from "../dist/node.js";
-
-const hit = parseWav(await readFile(new URL("./hit_80hz.wav", import.meta.url)));
+import { connect } from "../dist/node.js";
 
 const hb = await connect({ appName: "QuickStart" });
-hb.streamPcm(hit.data, { sampleRate: hit.sampleRate, channels: hit.channels, gain: 0.6 });
+
+await hb.playClipFile(new URL("./hit_80hz.wav", import.meta.url), { gain: 0.6 }); // <- the one line
 
 await new Promise((r) => setTimeout(r, 1000)); // keep the socket open while the clip streams
 await hb.close();

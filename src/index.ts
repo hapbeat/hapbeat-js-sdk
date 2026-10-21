@@ -5,7 +5,7 @@
  */
 
 export { Hapbeat } from "./hapbeat.js";
-export type { PlayOpts } from "./hapbeat.js";
+export type { ClipPlayOpts, PlayOpts } from "./hapbeat.js";
 export { EventMap } from "./eventmap.js";
 export type { EventDef, KitManifest } from "./eventmap.js";
 export { parseWav } from "./wav.js";

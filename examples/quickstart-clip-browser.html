@@ -9,7 +9,7 @@
   Run from the repo root:  npm run dev
   then open http://localhost:8170/examples/quickstart-clip-browser.html
 
-  In a bundled project, import { connect, parseWav } from "@hapbeat/sdk".
+  In a bundled project, import { connect } from "@hapbeat/sdk".
 -->
 <html lang="en">
   <head>
@@ -23,16 +23,15 @@
     <button id="hit" disabled>Hit</button>
     <pre id="log"></pre>
     <script type="module">
-      import { connect, parseWav } from "@hapbeat/sdk";
+      import { connect } from "@hapbeat/sdk";
       const log = (m) => (document.getElementById("log").textContent += m + "\n");
 
       try {
-        const hit = parseWav(await (await fetch("./hit_80hz.wav")).arrayBuffer());
         const hb = await connect({ appName: "QuickStart" });
 
         const button = document.getElementById("hit");
         button.onclick = () =>
-          hb.streamPcm(hit.data, { sampleRate: hit.sampleRate, channels: hit.channels, gain: 0.6 });
+          hb.playClipUrl("./hit_80hz.wav", { gain: 0.6 }).catch((e) => log("ERROR: " + e.message)); // <- the one line
         button.disabled = false;
         log("connected to hapbeat-helper");
       } catch (e) {
