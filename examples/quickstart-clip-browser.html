@@ -1,0 +1,43 @@
+<!doctype html>
+<!--
+  Quick start (browser): one button that makes a Hapbeat buzz, with no kit and
+  no Studio deploy. The page streams hit_80hz.wav (a 0.25 s, 80 Hz pulse next
+  to this file) through hapbeat-helper, which relays it to every Hapbeat on
+  the LAN. Any PCM16 WAV of your own works the same way.
+
+  Needs: hapbeat-helper running on this PC (it owns ws://localhost:7703).
+  Run from the repo root:  npm run dev
+  then open http://localhost:8170/examples/quickstart-clip-browser.html
+
+  In a bundled project, import { connect, parseWav } from "@hapbeat/sdk".
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hapbeat quick start (clip)</title>
+    <script type="importmap">
+      { "imports": { "@hapbeat/sdk": "../dist/browser.js" } }
+    </script>
+  </head>
+  <body>
+    <button id="hit" disabled>Hit</button>
+    <pre id="log"></pre>
+    <script type="module">
+      import { connect, parseWav } from "@hapbeat/sdk";
+      const log = (m) => (document.getElementById("log").textContent += m + "\n");
+
+      try {
+        const hit = parseWav(await (await fetch("./hit_80hz.wav")).arrayBuffer());
+        const hb = await connect({ appName: "QuickStart" });
+
+        const button = document.getElementById("hit");
+        button.onclick = () =>
+          hb.streamPcm(hit.data, { sampleRate: hit.sampleRate, channels: hit.channels, gain: 0.6 });
+        button.disabled = false;
+        log("connected to hapbeat-helper");
+      } catch (e) {
+        log("ERROR: " + e.message);
+      }
+    </script>
+  </body>
+</html>
