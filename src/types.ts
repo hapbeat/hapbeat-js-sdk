@@ -1,7 +1,14 @@
 /** Shared types for the Hapbeat Web SDK. */
 
 import type { EventMap } from "./eventmap.js";
-import type { EndpointStreamSink } from "./stream.js";
+import type { DeviceCaps } from "./protocol.js";
+import type {
+  EndpointStreamSink,
+  StreamClass,
+  StreamEndpointInfo,
+  StreamLeaseState,
+  StreamLostEvent,
+} from "./stream.js";
 
 export interface Device {
   ip: string;
@@ -9,6 +16,15 @@ export interface Device {
   address?: string;
   firmwareVersion?: string;
   lastSeen: number;
+  /**
+   * Stream receiver class (Node/RN): "unknown" until the device answered this
+   * SDK's lease request. Undefined behind hapbeat-helper (browser), which owns it.
+   */
+  streamClass?: StreamClass;
+  /** Stream Gen 2 lease state (Node/RN); "none" for other classes. */
+  leaseState?: StreamLeaseState;
+  /** The device's capability report (Node/RN); absent on firmware 0.x, which has none. */
+  caps?: DeviceCaps;
 }
 
 export interface HapbeatOptions {
@@ -45,7 +61,9 @@ export interface HapbeatOptions {
    * Whether to run the keep-alive (Node/RN only): a PING every 5 s, plus
    * CONNECT_STATUS when `appName` is set. Default true. The PING is what keeps
    * unicast alive — devices answer PONG only to a PING — so turning this off
-   * makes commands fall back to broadcast once the last PONG ages out.
+   * makes commands fall back to broadcast once the last PONG ages out. It also
+   * refreshes the stream leases: without it a lease lapses 15 s after the
+   * last PING, so an app that streams should keep it on.
    */
   keepalive?: boolean;
   /**
@@ -79,6 +97,18 @@ export interface HapbeatOptions {
   clipLoader?: (ref: string) => Promise<ArrayBuffer | Uint8Array>;
   /** Clip streaming send-ahead buffer in seconds (< 0.256). Default 0.15. */
   streamSendAheadSec?: number;
+  /**
+   * Called when a Playback loses one endpoint for good: the device ran a
+   * STOP_ALL during the stream (`reason` "stopped"), or, behind hapbeat-helper,
+   * another client took the device ("displaced"). The same Playback does not
+   * come back to that endpoint; it keeps playing on its others.
+   */
+  onStreamLost?: (event: StreamLostEvent) => void;
+  /**
+   * Called when an endpoint's stream class or lease state changes, and when an
+   * endpoint first appears (see {@link Hapbeat.streamEndpoints}). Node/RN only.
+   */
+  onStreamEndpointChanged?: (info: StreamEndpointInfo) => void;
 }
 
 /**
@@ -100,5 +130,7 @@ export interface Transport extends EndpointStreamSink {
    */
   reacquireStreamOwnership?(): void;
   discover(timeoutMs: number): Promise<Device[]>;
+  /** The devices known now, without sending anything. */
+  devices?(): Device[];
   close(): Promise<void> | void;
 }

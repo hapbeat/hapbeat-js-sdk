@@ -370,12 +370,20 @@ test("openStream: live source writes canonical DATA and closes idempotently", as
   assert.equal(begin[1].address, "p1");
   assert.equal(s.status, "Active");
 
-  assert.equal(s.write(new Uint8Array(8)), true);
-  assert.equal(s.write(new Uint8Array(12)), true);
+  const input = new Uint8Array(20);
+  input.fill(0x11);
+  assert.equal(s.write(input.subarray(0, 8)), true);
+  assert.equal(s.write(input.subarray(8)), true);
   await new Promise((r) => setTimeout(r, 20));
   const data = transport.calls.filter((c) => c[0] === "data");
-  assert.equal(data.reduce((total, c) => total + c[3].length, 0), 20);
   assert.equal(data[0][2], 0, "endpoint byte offset starts at zero");
+  // The 5 written frames lead the first block; the rest of the block, and
+  // the blocks after it, are silence: an open session's DATA never stops
+  // while a live source waits for input (sdk-multi-stream.md §6.12).
+  assert.equal(data[0][3].length, 256 * 4);
+  assert.ok(data[0][3].subarray(0, 20).some((b) => b !== 0), "written frames are mixed in");
+  assert.ok(data[0][3].subarray(20).every((b) => b === 0), "then silence");
+  assert.ok(data.length >= 2, "DATA continues without new input");
 
   s.close();
   assert.equal(s.closed, true);
@@ -458,11 +466,17 @@ test("browser transport: stream_* WS messages match the helper shape", async () 
     }));
     const [endpoint] = t.streamEndpoints();
     assert.deepEqual(endpoint, { ip: "192.168.1.20", address: "p1" });
-    t.streamBeginEndpoint(endpoint);
-    t.streamDataEndpoint(endpoint, 0, new Uint8Array([1, 2, 3, 4]));
-    t.streamEndEndpoint(endpoint);
+    const wire = t.streamBeginEndpoint(endpoint);
+    t.streamDataEndpoint(endpoint, 0, new Uint8Array([1, 2, 3, 4]), wire);
+    t.streamEndEndpoint(endpoint, wire);
     const begin = sent.find((m) => m.type === "stream_begin");
     assert.equal(begin.payload.ip, endpoint.ip);
+    assert.deepEqual(begin.payload.targets, [endpoint.ip]);
+    assert.ok(begin.payload.stream_id, "every endpoint session has a stream_id");
+    assert.equal("takeover" in begin.payload, false, "the SDK never asks the helper to take a device over");
+    for (const m of sent.filter((m) => m.type.startsWith("stream_"))) {
+      assert.equal(m.payload.stream_id, begin.payload.stream_id, m.type);
+    }
     assert.equal(begin.payload.target, endpoint.address);
     assert.equal(begin.payload.sample_rate, 16000);
     assert.equal(begin.payload.channels, 2);
@@ -548,21 +562,23 @@ class RoutingProbe extends NodeUdpTransport {
   sendBytes(pkt) { this.sends.push([pkt, null]); }        // null = broadcast
   sendBytesTo(pkt, ip) { this.sends.push([pkt, ip]); }
   saw(ip, address = "player_1/pos_neck") {
-    this.handleMessage(makePong({ address }), ip);
+    this.handleMessage(makePong({ address }), ip, 7700);
   }
-  // A matched direct reply without an HBS2 tail to our latest PING: what
-  // pre-v2 firmware sends, so the device is classified legacy.
+  // A matched direct reply without an HBS2 tail to our extended PING: what
+  // Stream Gen 1 firmware sends, so the device is classified Gen 1.
   answerLegacy(ip, address = "player_1/pos_neck") {
+    this.saw(ip, address); // discovery first: extended PINGs are unicast to known devices
     const before = this.sends.length;
     this.ping();
-    const [pkt] = this.sends[before];
+    const [pkt] = this.sends.slice(before).find(([p, to]) => to === ip && p[3] === protocol.CMD_PING);
     this.sends.length = before;
     const ping = protocol.parsePacket(pkt);
+    assert.equal(ping.payload.length, 16, "the lease request is the 16-byte PING");
     const strs = new TextEncoder().encode(`dev\0${address}\x000.3.1\0`);
     const payload = new Uint8Array(16 + strs.length + 2);
     payload.set(ping.payload.subarray(0, 8), 0); // echoed timestamp
     payload.set(strs, 16);
-    this.handleMessage(protocol.buildPacket(protocol.CMD_PONG, ping.seq, payload), ip);
+    this.handleMessage(protocol.buildPacket(protocol.CMD_PONG, ping.seq, payload), ip, 7700);
   }
   dests() { return this.sends.map(([, ip]) => ip); }
 }
@@ -600,7 +616,7 @@ test("UDP transport: a device with no reported address fails open", async () => 
   const t = new RoutingProbe();
   await t.connect();
   t.handleMessage(protocol.buildPacket(protocol.CMD_PONG, 1, new Uint8Array(16)),
-    "192.168.1.10"); // bridge-form PONG: no extended address field
+    "192.168.1.10", 7700); // bridge-form PONG: no extended address field
   t.sends.length = 0;
   t.play("kit.evt", 1, "player_9", 0);
   assert.deepEqual(t.dests(), ["192.168.1.10"]);
@@ -636,16 +652,19 @@ test("UDP transport: unicast:false always broadcasts", async () => {
   assert.deepEqual(t.dests(), [null]);
 });
 
-test("UDP transport: PING stays broadcast (discovery)", async () => {
-  // Never unicast to the one device we happen to know — discovery has to keep
-  // reaching devices we have not heard from. (Which broadcast address it goes
-  // to once a device has answered is covered in broadcast.test.mjs.)
+test("UDP transport: discovery PING stays broadcast, the lease PING is unicast", async () => {
+  // Discovery has to keep reaching devices we have not heard from, so the
+  // 8-byte PING stays broadcast. The 16-byte (lease) PING goes by unicast to
+  // the known devices this app may stream to, never by broadcast
+  // (stream-session.md "Discovery lease", 1.x). (Which broadcast address it
+  // goes to once a device has answered is covered in broadcast.test.mjs.)
   const t = new RoutingProbe();
   await t.connect();
   t.saw("192.168.1.10");
   t.sends.length = 0;
   t.ping();
-  assert.deepEqual(t.dests(), [null]);
+  const sizes = t.sends.map(([pkt, ip]) => [ip, protocol.parsePacket(pkt).payload.length]);
+  assert.deepEqual(sizes, [[null, 8], ["192.168.1.10", 16]]);
 });
 
 test("UDP transport: streaming exposes exact PONG endpoints and unicasts every packet", async () => {
@@ -656,7 +675,7 @@ test("UDP transport: streaming exposes exact PONG endpoints and unicasts every p
   const [endpoint] = t.streamEndpoints();
   assert.deepEqual(endpoint, {
     ip: "192.168.1.10", address: "player_1/pos_neck", port: 7700,
-    legacy: true, wireEpoch: "legacy",
+    legacy: true, wireEpoch: "gen1", wireLineage: "gen1", streamClass: "gen1", leaseState: "none",
   });
   const wire = t.streamBeginEndpoint(endpoint);
   t.streamDataEndpoint(endpoint, 0, new Uint8Array([0, 0, 0, 0]), wire);
@@ -673,7 +692,7 @@ test("UDP transport: a new IP for the same PONG identity atomically replaces the
   // keeps it.
   assert.deepEqual(t.streamEndpoints(), [{
     ip: "192.168.1.20", address: "player_1/pos_neck", port: 7700,
-    legacy: true, wireEpoch: "legacy",
+    legacy: true, wireEpoch: "gen1", wireLineage: "gen1", streamClass: "gen1", leaseState: "none",
   }]);
 });
 
@@ -681,6 +700,6 @@ test("UDP transport: streaming has no broadcast or addressless endpoint fallback
   const t = new RoutingProbe({ unicast: false });
   await t.connect();
   assert.deepEqual(t.streamEndpoints(), []);
-  t.handleMessage(protocol.buildPacket(protocol.CMD_PONG, 1, new Uint8Array(16)), "192.168.1.10");
+  t.handleMessage(protocol.buildPacket(protocol.CMD_PONG, 1, new Uint8Array(16)), "192.168.1.10", 7700);
   assert.deepEqual(t.streamEndpoints(), []);
 });

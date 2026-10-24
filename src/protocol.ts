@@ -13,9 +13,10 @@
 export const MAGIC = 0x4842; // "HB"
 export const VERSION = 0x01;
 /**
- * Header protocol_version of STREAM_BEGIN/DATA/END in stream session v2
- * (contracts stream-session-v2.md). Every other command, and the v1 stream
- * kept for pre-v2 firmware, stays at VERSION.
+ * Header protocol_version of STREAM_BEGIN/DATA/END in Stream Gen 2 (session
+ * stream, contracts stream-session.md). Every other command, and Stream Gen 1
+ * (sessionless) kept for firmware 0.4.x and earlier, stays at VERSION. The
+ * export keeps its name (a public API; versioning.md §3.5).
  */
 export const STREAM_V2_VERSION = 0x02;
 export const HEADER_SIZE = 8;
@@ -31,6 +32,7 @@ export const CMD_PLAY = 0x01;
 export const CMD_STOP = 0x02;
 export const CMD_STOP_ALL = 0x03;
 export const CMD_PING = 0x10;
+export const CMD_CAPS_REQ = 0x12;
 export const CMD_CONNECT_STATUS = 0x20;
 export const CMD_STREAM_BEGIN = 0x30;
 export const CMD_STREAM_DATA = 0x31;
@@ -38,6 +40,7 @@ export const CMD_STREAM_END = 0x32;
 
 // Response types (device -> SDK)
 export const CMD_PONG = 0x11;
+export const CMD_CAPS = 0x13;
 export const CMD_ERROR = 0xff;
 
 const encoder = new TextEncoder();
@@ -131,9 +134,10 @@ export function buildStopAll(seq: number, target = ""): Uint8Array {
 
 /**
  * PING (0x10). Payload: timestamp(i64, microseconds), optionally followed by a
- * nonzero client_incarnation(u64). The 16-byte form asks a stream-v2 device
- * for a stream lease (contracts stream-session-v2.md "Discovery lease");
- * pre-v2 firmware ignores the extra bytes. The 8-byte form is discovery only.
+ * nonzero client_incarnation(u64). The 16-byte form asks a Stream Gen 2 device
+ * for a stream lease and is sent by unicast only (contracts stream-session.md
+ * "Discovery lease"); Stream Gen 1 firmware ignores the extra bytes. The
+ * 8-byte form is discovery only. PING is frozen: no other length is sent.
  */
 export function buildPing(seq: number, timestampUs: number, clientIncarnation?: bigint): Uint8Array {
   const p = new Uint8Array(clientIncarnation === undefined ? 8 : 16);
@@ -141,6 +145,14 @@ export function buildPing(seq: number, timestampUs: number, clientIncarnation?: 
   dv.setBigInt64(0, BigInt(Math.round(timestampUs)), true);
   if (clientIncarnation !== undefined) dv.setBigUint64(8, clientIncarnation, true);
   return buildPacket(CMD_PING, seq, p);
+}
+
+/**
+ * CAPS_REQ (0x12). Payload: caps_version(u8), the CAPS layout this reader
+ * understands (contracts message-format.md §0x12). Sent by exact unicast.
+ */
+export function buildCapsReq(seq: number, capsVersion = 1): Uint8Array {
+  return buildPacket(CMD_CAPS_REQ, seq, new Uint8Array([capsVersion & 0xff]));
 }
 
 // Audio formats for STREAM_BEGIN (contracts message-format.md §0x30).
@@ -180,7 +192,7 @@ export function buildStreamBegin(seq: number, opts: StreamBeginOptions = {}): Ui
   return buildStreamPacket(CMD_STREAM_BEGIN, seq, streamBeginBody(opts));
 }
 
-/** STREAM_BEGIN body shared by the v1 stream and stream session v2. */
+/** STREAM_BEGIN body shared by Stream Gen 1 and Stream Gen 2. */
 function streamBeginBody(opts: StreamBeginOptions): Uint8Array {
   const {
     sampleRate = 16000,
@@ -212,12 +224,12 @@ export function buildStreamEnd(seq: number): Uint8Array {
   return buildStreamPacket(CMD_STREAM_END, seq, new Uint8Array(0));
 }
 
-// --- Stream session v2 (contracts stream-session-v2.md) ---
+// --- Stream Gen 2 (contracts stream-session.md) ---
 
 export const STREAM_ENVELOPE_SIZE = 16;
 
 /**
- * Who a v2 stream packet belongs to: the device boot and the lease it issued
+ * Who a Stream Gen 2 packet belongs to: the device boot and the lease it issued
  * (from the PONG HBS2 tail), plus the sender's per-session generation.
  */
 export interface StreamSessionIdentity {
@@ -229,7 +241,7 @@ export interface StreamSessionIdentity {
   generation: number;
 }
 
-/** The 16-byte envelope every v2 stream payload begins with. */
+/** The 16-byte envelope every Stream Gen 2 payload begins with. */
 export function buildStreamEnvelope(identity: StreamSessionIdentity): Uint8Array {
   const out = new Uint8Array(STREAM_ENVELOPE_SIZE);
   const dv = new DataView(out.buffer);
@@ -239,7 +251,7 @@ export function buildStreamEnvelope(identity: StreamSessionIdentity): Uint8Array
   return out;
 }
 
-/** STREAM_BEGIN v2: envelope + the v1 BEGIN body, header protocol_version=2. */
+/** Stream Gen 2 BEGIN: envelope + the Gen 1 BEGIN body, header protocol_version=2. */
 export function buildStreamBeginV2(
   seq: number,
   identity: StreamSessionIdentity,
@@ -252,7 +264,7 @@ export function buildStreamBeginV2(
   );
 }
 
-/** STREAM_DATA v2: envelope + offset(u32) + audio bytes. */
+/** Stream Gen 2 DATA: envelope + offset(u32) + audio bytes. */
 export function buildStreamDataV2(
   seq: number,
   identity: StreamSessionIdentity,
@@ -268,7 +280,7 @@ export function buildStreamDataV2(
   );
 }
 
-/** STREAM_END v2: exactly the envelope, no body. */
+/** Stream Gen 2 END: exactly the envelope, no body. */
 export function buildStreamEndV2(seq: number, identity: StreamSessionIdentity): Uint8Array {
   return buildStreamPacket(CMD_STREAM_END, seq, buildStreamEnvelope(identity), STREAM_V2_VERSION);
 }
@@ -317,20 +329,23 @@ function readCString(buf: Uint8Array, start: number): [string, number] {
   return [decoder.decode(buf.subarray(start, end)), end + 1];
 }
 
-/** HBS2 stream lease tail of a PONG (contracts stream-session-v2.md). */
+/** HBS2 stream lease tail of a PONG (contracts stream-session.md). */
 export const STREAM_LEASE_TAIL_SIZE = 32;
 const STREAM_LEASE_MARKER = [0x48, 0x42, 0x53, 0x32]; // "HBS2"
 
 /**
- * What follows volume_wiper:
- * - `absent`: no full 4-byte HBS2 marker (the PONG ends there, or other
- *   bytes follow, including a cut prefix such as "HB"); on a matched reply
- *   this identifies pre-v2 firmware;
- * - `malformed`: the full HBS2 marker with a wrong length, version, reserved
- *   field or unknown flag; it never classifies a device;
- * - `valid`: a 32-byte lease tail.
+ * What follows volume_wiper (stream-session.md "Receiver classification", 1.x
+ * rules):
+ * - `absent`: nothing (the PONG ends at volume_wiper); on a matched reply this
+ *   identifies Stream Gen 1 (sessionless) firmware;
+ * - `ignored`: anything that is not a Stream Gen 2 tail (fewer than 32 bytes,
+ *   another extension_version, bytes not starting with HBS2, a cut marker such
+ *   as "HB"); it changes neither the class nor the lease;
+ * - `valid`: at least 32 bytes starting with HBS2 and extension_version 1. Only
+ *   the first 32 bytes are read; later bytes, the reserved field and flag bits
+ *   3-7 are ignored (a later major may use them).
  */
-export type PongLeaseTail = "absent" | "malformed" | "valid";
+export type PongLeaseTail = "absent" | "ignored" | "valid";
 
 export interface Pong {
   seq: number;
@@ -351,25 +366,23 @@ export interface Pong {
   leaseValid?: boolean;
   /** flags bit 1: another writer holds a newer ticket. */
   leaseSuperseded?: boolean;
+  /** flags bit 2: the device re-issued this ticket (it clears a superseded deferral). */
+  leaseReissued?: boolean;
 }
 
 function parseLeaseTail(p: Uint8Array, off: number, out: Pong): void {
   const remaining = p.length - off;
-  out.leaseTail = "absent";
-  if (remaining < STREAM_LEASE_MARKER.length) return; // not the full marker
-  for (let i = 0; i < STREAM_LEASE_MARKER.length; i++) {
-    if (p[off + i] !== STREAM_LEASE_MARKER[i]) return; // other bytes follow: no marker
-  }
-  const dv = new DataView(p.buffer, p.byteOffset + off, remaining);
-  if (
-    remaining !== STREAM_LEASE_TAIL_SIZE
-    || dv.getUint8(4) !== 1
-    || (dv.getUint8(5) & ~0x03) !== 0
-    || dv.getUint16(6, true) !== 0
-  ) {
-    out.leaseTail = "malformed";
+  if (remaining <= 0) {
+    out.leaseTail = "absent";
     return;
   }
+  out.leaseTail = "ignored";
+  if (remaining < STREAM_LEASE_TAIL_SIZE) return;
+  for (let i = 0; i < STREAM_LEASE_MARKER.length; i++) {
+    if (p[off + i] !== STREAM_LEASE_MARKER[i]) return;
+  }
+  const dv = new DataView(p.buffer, p.byteOffset + off, STREAM_LEASE_TAIL_SIZE);
+  if (dv.getUint8(4) !== 1) return;
   const flags = dv.getUint8(5);
   out.leaseTail = "valid";
   out.echoedClientIncarnation = dv.getBigUint64(8, true);
@@ -378,6 +391,7 @@ function parseLeaseTail(p: Uint8Array, off: number, out: Pong): void {
   out.highWaterTicket = dv.getUint32(28, true);
   out.leaseValid = (flags & 0x01) !== 0 && out.bootId !== 0n && out.leaseTicket !== 0;
   out.leaseSuperseded = (flags & 0x02) !== 0;
+  out.leaseReissued = (flags & 0x04) !== 0;
 }
 
 /**
@@ -405,6 +419,127 @@ export function parsePong(data: Uint8Array): Pong | null {
   if (off < p.length) out.volumeLevel = p[off++];
   if (off < p.length) out.volumeWiper = p[off++];
   parseLeaseTail(p, off, out);
+  return out;
+}
+
+// --- CAPS (0x13) and ERROR (0xFF), contracts message-format.md ---
+
+const CAPS_FORMATS = ["pcm16", "adpcm", "opus"];
+const CAPS_FEATURES = ["play_pan", "error_reply"];
+/** Defined value lengths of caps_version 1 (type 0x02 is a string of any length). */
+const CAPS_VALUE_SIZES: Record<number, number> = { 0x01: 1, 0x03: 1, 0x04: 1, 0x05: 4, 0x06: 1, 0x07: 1, 0x08: 4 };
+
+/**
+ * A device's capability report (CAPS, 0x13). Fields the device did not send,
+ * or sent too short, are absent. The Stream Gen is never decided from this
+ * (versioning.md §5.3): the PONG classification is.
+ */
+export interface DeviceCaps {
+  capsVersion: number;
+  /** Firmware major (versioning.md §3.2). */
+  generation?: number;
+  firmwareVersion?: string;
+  /** Stream generations the device accepts; [] for a node that takes no stream. */
+  streamGens?: number[];
+  streamFormats?: string[];
+  leaseTtlS?: number;
+  leaseSlots?: number;
+  inactivityTimeoutS?: number;
+  /** Number of motors: 1 = mono (PLAY pan ignored, stereo streams downmixed). */
+  hapticChannels?: number;
+  addressMaxLen?: number;
+  features?: string[];
+}
+
+function bitNames(value: number, names: readonly string[]): string[] {
+  return names.filter((_, index) => (value & (1 << index)) !== 0);
+}
+
+/**
+ * Parse a CAPS packet (header included), or null. TLV rules: an unknown type is
+ * skipped by its length, a known type longer than defined is read for its
+ * defined prefix and a shorter one ignored, the first long-enough entry of a
+ * type wins, an entry cut by the end of the payload is ignored, and the
+ * experimental range 0x80-0xFF is ignored like any unknown type.
+ */
+export function parseCaps(data: Uint8Array): DeviceCaps | null {
+  const pkt = parsePacket(data);
+  if (!pkt || pkt.commandType !== CMD_CAPS || pkt.payload.length < 2) return null;
+  const p = pkt.payload;
+  const caps: DeviceCaps = { capsVersion: p[0] };
+  const seen = new Set<number>();
+  let off = 2;
+  while (off + 2 <= p.length) {
+    const type = p[off];
+    const size = p[off + 1];
+    const value = p.subarray(off + 2, off + 2 + size);
+    off += 2 + size;
+    if (value.length < size || seen.has(type)) continue;
+    if (type === 0x02) {
+      seen.add(type);
+      caps.firmwareVersion = decoder.decode(value);
+      continue;
+    }
+    const need = CAPS_VALUE_SIZES[type];
+    if (need === undefined || value.length < need) continue;
+    seen.add(type);
+    switch (type) {
+      case 0x01: caps.generation = value[0]; break;
+      case 0x03: caps.streamGens = [1, 2].filter((gen) => (value[0] & (1 << (gen - 1))) !== 0); break;
+      case 0x04: caps.streamFormats = bitNames(value[0], CAPS_FORMATS); break;
+      case 0x05:
+        caps.leaseTtlS = value[0];
+        caps.leaseSlots = value[1];
+        caps.inactivityTimeoutS = value[2];
+        break;
+      case 0x06: caps.hapticChannels = value[0]; break;
+      case 0x07: caps.addressMaxLen = value[0]; break;
+      case 0x08:
+        caps.features = bitNames(new DataView(value.buffer, value.byteOffset, 4).getUint32(0, true), CAPS_FEATURES);
+        break;
+    }
+  }
+  return caps;
+}
+
+// ERROR codes (contracts message-format.md §0xFF).
+export const ERR_UNSUPPORTED_VERSION = 0x0001;
+export const ERR_UNKNOWN_COMMAND = 0x0002;
+export const ERR_MALFORMED = 0x0003;
+export const ERR_STREAM_GEN_UNSUPPORTED = 0x0010;
+export const ERR_STREAM_LEASE_INVALID = 0x0011;
+export const ERR_STREAM_SUPERSEDED = 0x0012;
+export const ERR_STREAM_NOT_STARTED = 0x0013;
+export const ERR_STREAM_TIMED_OUT = 0x0014;
+export const ERR_STREAM_STOPPED = 0x0015;
+export const ERR_STREAM_ENDED = 0x0016;
+export const ERR_STREAM_TARGET_MISMATCH = 0x0017;
+
+export interface DeviceError {
+  seq: number;
+  errorCode: number;
+  /** For people only; never decide on it. */
+  message: string;
+  /** The rejected packet's command_type and seq (1.x firmware appends them). */
+  refCommand?: number;
+  refSeq?: number;
+  /** Codes 0x0011-0x0017: the rejected packet's 16-byte envelope; otherwise empty. */
+  detail?: Uint8Array;
+}
+
+/** Parse an ERROR packet (header included), or null. */
+export function parseError(data: Uint8Array): DeviceError | null {
+  const pkt = parsePacket(data);
+  if (!pkt || pkt.commandType !== CMD_ERROR || pkt.payload.length < 3) return null;
+  const p = pkt.payload;
+  const dv = new DataView(p.buffer, p.byteOffset, p.byteLength);
+  const [message, off] = readCString(p, 2);
+  const out: DeviceError = { seq: pkt.seq, errorCode: dv.getUint16(0, true), message };
+  if (p.length >= off + 4) {
+    out.refCommand = dv.getUint8(off);
+    out.refSeq = dv.getUint16(off + 1, true);
+    out.detail = p.slice(off + 4, off + 4 + dv.getUint8(off + 3));
+  }
   return out;
 }
 

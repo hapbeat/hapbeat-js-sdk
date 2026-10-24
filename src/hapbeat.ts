@@ -17,6 +17,7 @@ import type { EventDef, EventMap } from "./eventmap.js";
 import {
   StreamHub,
   type LiveStreamHandle,
+  type StreamEndpointInfo,
   type StreamPlayback,
 } from "./stream.js";
 import { parseWav, type WavPcm } from "./wav.js";
@@ -42,6 +43,7 @@ class PendingStreamPlayback implements StreamPlayback {
 
   get status() { return this.stopped ? "Stopped" as const : this.inner?.status ?? "Deferred"; }
   get deferredReason() { return this.inner?.deferredReason; }
+  get lostReason() { return this.inner?.lostReason; }
   get gain() { return this.inner?.gain ?? this._gain; }
   set gain(value: number) {
     this._gain = clamp01(value);
@@ -135,7 +137,10 @@ export class Hapbeat {
     this.defaultTarget = options.defaultTarget ?? "";
     this.clipBase = options.clipBase ?? "";
     this.clipLoader = options.clipLoader;
-    this.streamHub = new StreamHub(transport, { sendAheadSec: options.streamSendAheadSec });
+    this.streamHub = new StreamHub(transport, {
+      sendAheadSec: options.streamSendAheadSec,
+      onStreamLost: options.onStreamLost,
+    });
   }
 
   /** Open the transport (UDP socket / WebSocket). */
@@ -305,6 +310,7 @@ export class Hapbeat {
         loop: pending.playback.loop,
         target,
         key: eventId,
+        id: pending.playback.id, // onStreamLost reports the id the caller holds
       }));
     });
     return pending.playback;
@@ -397,6 +403,32 @@ export class Hapbeat {
   /** Broadcast a probe and collect devices that reply within `timeoutMs`. */
   discover(timeoutMs = 1500): Promise<Device[]> {
     return this.transport.discover(timeoutMs);
+  }
+
+  /**
+   * The devices known now (answered within the device TTL), without sending
+   * anything. Over direct UDP each carries its stream class, lease state and,
+   * once the device answered, its capability report (`caps`).
+   */
+  devices(): Device[] {
+    return this.transport.devices?.() ?? [];
+  }
+
+  /**
+   * Per-endpoint stream state (contracts sdk-multi-stream.md §3): the stream
+   * class (`gen1` / `gen2` / `unknown`) and, for Stream Gen 2, the lease
+   * (`valid` / `unavailable` / `superseded`). A Playback deferred because of
+   * an endpoint says why in its `deferredReason`. Behind hapbeat-helper
+   * (browser) the helper owns both, so they are undefined there.
+   * `HapbeatOptions.onStreamEndpointChanged` reports changes.
+   */
+  streamEndpoints(): StreamEndpointInfo[] {
+    return this.transport.streamEndpoints().map((endpoint) => {
+      const info: StreamEndpointInfo = { ip: endpoint.ip, address: endpoint.address };
+      if (endpoint.streamClass !== undefined) info.streamClass = endpoint.streamClass;
+      if (endpoint.leaseState !== undefined) info.leaseState = endpoint.leaseState;
+      return info;
+    });
   }
 
   async close(): Promise<void> {
