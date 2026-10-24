@@ -98,12 +98,15 @@ defaultTarget?: string;    // device-addressing target; "" = every device
 onConnectionLost?: () => void;   // Browser: helper WS dropped
 connectTimeoutMs?: number;       // Browser. Default 4000.
 eventMap?: EventMap;       // tuning catalog for default gains
-keepalive?: boolean;       // PING (+CONNECT_STATUS) keep-alive (Node/RN). Default true.
+keepalive?: boolean;       // PING (+CONNECT_STATUS) keep-alive + stream lease refresh (Node/RN). Default true; keep it on when streaming.
 unicast?: boolean;         // Node/RN: unicast to PONGing devices. Default true.
 deviceTtlMs?: number;      // Node/RN: destination liveness window. Default 15000.
 clipBase?: string;         // base URL prefix (Browser) / dir path (Node) for clip WAVs
 clipLoader?: (ref: string) => Promise<ArrayBuffer | Uint8Array>;
 streamSendAheadSec?: number;     // clip send-ahead (< 0.256). Default 0.15.
+onStreamLost?: (e: { playbackId: string; ip: string; reason: string }) => void;
+                                 // a Playback lost a device for good ("stopped" = STOP_ALL, "displaced" = another helper client)
+onStreamEndpointChanged?: (e: StreamEndpointInfo) => void;   // Node/RN: class / lease changed
 ```
 
 `Hapbeat` (the facade — `src/hapbeat.ts`):
@@ -115,6 +118,9 @@ stop(eventId: string, target?: string): void
 stopAll(target?: string): void
 ping(): void
 discover(timeoutMs?: number /* = 1500 */): Promise<Device[]>
+devices(): Device[]                      // known devices now, no PING
+streamEndpoints(): StreamEndpointInfo[]  // per-device stream class and lease
+reacquireStreamOwnership(): boolean      // retake devices another app superseded (Node/RN)
 streamPcm(pcm: Uint8Array, opts?: { sampleRate?: number; channels?: number; gain?: number; pan?: number; loop?: boolean; target?: string }): StreamPlayback
 openStream(opts?: { sampleRate?: number; channels?: number; gain?: number; pan?: number; target?: string }): LiveStreamHandle
 preloadClips(): Promise<void>
@@ -126,8 +132,14 @@ close(): Promise<void>
 type PlaybackStatus = "Deferred" | "Active" | "Stopped";
 interface StreamPlayback {
   readonly id: string; readonly status: PlaybackStatus;
-  readonly deferredReason?: "NoResolvedEndpoint";
+  readonly deferredReason?: "NoResolvedEndpoint" | "UnknownClass" | "LeaseUnavailable" | "Superseded";
+  readonly lostReason?: string;   // last reason a device was lost for good
   gain: number; pan: number; loop: boolean; stop(): void;
+}
+interface StreamEndpointInfo {
+  ip: string; address: string;
+  streamClass?: "gen1" | "gen2" | "unknown";            // undefined behind hapbeat-helper
+  leaseState?: "valid" | "unavailable" | "superseded" | "none";
 }
 interface LiveStreamHandle extends StreamPlayback {
   write(pcm: Uint8Array): boolean; close(): void; readonly closed: boolean;
@@ -138,7 +150,12 @@ interface LiveStreamHandle extends StreamPlayback {
 interface PlayOpts { gain?: number; target?: string; targetTimeUs?: number; pan?: number; }
 // pan: -1 = left only, 0 = centre (default), +1 = right only.
 // Fire events apply it on-device; streamed sources apply it in the endpoint mixer.
-interface Device { ip: string; name?: string; address?: string; firmwareVersion?: string; lastSeen: number; }
+interface Device {
+  ip: string; name?: string; address?: string; firmwareVersion?: string; lastSeen: number;
+  streamClass?: "gen1" | "gen2" | "unknown"; leaseState?: "valid" | "unavailable" | "superseded" | "none";
+  caps?: DeviceCaps;   // capability report (firmware 1.x; Node/RN): generation, firmwareVersion,
+                       // streamGens, streamFormats, leaseTtlS, hapticChannels, features, ...
+}
 ```
 
 Note: `play` / `stop` / `stopAll` / `ping` are fire-and-forget. `streamPcm`
@@ -226,7 +243,15 @@ device runs.
 Sending: Node/RN unicast commands to devices that answered a recent PING and fall
 back to broadcast while none matches. Streaming has no broadcast fallback because
 DATA/END carry no target; it requires an exact PONG-reported `(IP, address)` endpoint.
-`{ unicast: false }` affects commands only. PING/CONNECT_STATUS stay broadcast.
+`{ unicast: false }` affects commands only. The discovery PING and CONNECT_STATUS stay
+broadcast; the stream lease request is unicast to the devices this app may stream to.
+
+Deferred streams: `deferredReason` is `NoResolvedEndpoint` (no device matches),
+`UnknownClass` (the device has not answered yet), `LeaseUnavailable` (no usable
+lease; renewed automatically) or `Superseded` (another app streams to it; call
+`hb.reacquireStreamOwnership()` once it stopped — never automatically). A device
+STOP_ALL during a stream drops that Playback from that device for good
+(`onStreamLost`, `lostReason`); a new Playback joins again.
 
 Browser caveat (helper WS): every stream BEGIN/DATA/END carries the exact endpoint
 IP, so per-device clip targeting is supported. `targetTimeUs` is ignored over the

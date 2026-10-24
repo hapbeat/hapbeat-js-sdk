@@ -141,7 +141,8 @@ Manifest excerpt:
 
 Clip notes:
 - WAVs must be **16-bit PCM, 16 kHz** (same as the kit-tools normalization). Stereo OK.
-- Streaming is **session-level**: one clip at a time; a new clip cancels the previous.
+- Several clips can stream at once: sources for the same device are mixed into one
+  stream, and each `Playback` reports `status` / `deferredReason` (see the README).
 - The device ring buffer is ~256 ms, so the SDK paces the stream in real time
   (tune with `streamSendAheadSec`, default 0.15).
 - **Node** honours per-device `target` for clips (in-packet address). **Browser**

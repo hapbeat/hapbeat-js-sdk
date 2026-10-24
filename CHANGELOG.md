@@ -6,6 +6,66 @@
 
 ## [Unreleased]
 
+1.x の通信の規則（DEC-096）に対応しました。対応する contracts: hapbeat-contracts
+`46f246e`（1.0.0 予定）。全製品の実機検証の後に 1.0.0 として公開します（開発中の版は
+`1.0.0-d1`）。
+
+### 追加（Added）
+
+- `Hapbeat.devices()`（PING を送らずに今の既知機体を返す）と
+  `Hapbeat.streamEndpoints()`（機体ごとの stream の世代 `gen1` / `gen2` / `unknown`
+  と lease の状態）、`HapbeatOptions.onStreamEndpointChanged` を追加しました
+  （sdk-multi-stream.md §3）。`Device` に `streamClass` / `leaseState` / `caps` が付きます。
+- 能力申告（CAPS_REQ / CAPS）を読みます。照合済みの PONG の後と、ファームの版・機体の
+  起動が変わった後に unicast で問い合わせ（500 ms 間隔で 3 回まで）、`Device.caps` に
+  入れます。SDK より新しい major の機体・hapbeat-helper を見つけたら、更新を促す警告を
+  1 回出します。
+- 機体の ERROR（0xFF）を扱います。機体の address と UDP 7700 から届き、stream の code
+  は追跡中の session の envelope と一致するものだけを受け、code ごとに lease の取り直し・
+  保留・BEGIN の再送・新しい世代での再開・機体の分類し直しをします。
+- `deferredReason` に `UnknownClass` / `LeaseUnavailable` / `Superseded` を足しました
+  （複数の機体で違うときは Superseded > LeaseUnavailable > UnknownClass）。
+- 再生中に機体で STOP_ALL が走った（ERROR `STREAM_STOPPED`）とき、その Playback は
+  その機体から外れ、戻りません（他の機体では続きます）。`HapbeatOptions.onStreamLost` と
+  `StreamPlayback.lostReason` で知らせます。Browser 経路で別のクライアントが機体を取った
+  場合（`stream_displaced`）も同じです。
+- 送り済みの音の中に新しい clip を足すと、Stream Gen 2 の機体では session を差し替え
+  （同じ lease で新しい世代）、新しい clip を遅れなく先頭から鳴らします
+  （sdk-multi-stream.md §6.14）。
+- モーターが 1 個の機体（CAPS の `haptic_channels` = 1）には pan を適用せずに混ぜます
+  （§6.15）。
+- React Native: アプリが前景に戻ったら client incarnation を作り直し、lease を取り直します。
+
+### 変更（Changed）
+
+- PONG の分類を 1.x の規則にしました。volume_wiper の後が無ければ Stream Gen 1、
+  `HBS2` で始まる 32 byte 以上（extension_version 1）なら Stream Gen 2（33 byte 目
+  以降・reserved・flag の bit 3〜7 は無視）、それ以外は無視（分類も lease も変えず、
+  機体ごとに 1 回警告）です。`HBS2` で始まらない byte を旧ファームとは見なしません。
+- `lease_reissued`（flag bit 2）の付いた照合済みの応答だけが、superseded の保留を解きます。
+  同じ incarnation で ticket が変わったら、旧い ticket で END して新しい ticket で始め直し、
+  有限の source は続きから鳴らします。
+- 探索の broadcast は 8 byte の PING にし、lease を求める 16 byte の PING は、送る見込みの
+  ある機体（`defaultTarget`・再生中の source の target に一致する機体、session を終えて
+  15 s 以内の機体）へ unicast で 5 s（lease TTL の 1/3）以内ごとに送ります。新しい source が
+  分類前の機体に一致したときは、すぐに送ります。
+- Stream Gen 2 の session は、最初の 3 回の DATA の前と、以後 500 ms ごとに同じ BEGIN を
+  再送します（その時点の機体の address を載せます）。Stream Gen 1 には再送しません。
+- 入力の無い live source は無音として DATA を送り続けます（機体の 5 s の timeout で
+  session が終わらないように）。
+- 3 s 以上 DATA を送れなかった（プロセスの停止など）Stream Gen 2 の session は、END して
+  新しい世代で始め直します。溜まった分を一度に送りません。
+- lease の取り直し・timeout・ticket の変更で session を張り直すとき、有限の source は
+  cursor の続きから鳴らします（frame 0 に戻りません）。
+- 世代番号を使い切った lease では、警告を 1 回出して incarnation を作り直します。
+- Browser 経路: endpoint session ごとに `stream_id` を付け、`targets` を載せます。
+  `takeover` は付けません。`stream_ack`（`deferred` / `no_target` は 2 s 後に新しい
+  `stream_id` で試し直し、`no_session` はすぐ始め直し）・`stream_displaced`・
+  `stream_lost` を扱います。
+- 内部の名前とログを Stream Gen 1 / Gen 2 に揃えました（公開の `protocol` の export 名は
+  変えていません）。
+- `package.json` の version を `1.0.0-d1` にしました。
+
 ## [0.4.0] - 2026-10-17
 
 ### 追加（Added）

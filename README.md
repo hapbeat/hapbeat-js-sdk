@@ -123,6 +123,47 @@ The handle is returned immediately (Deferred while its first WAV load is pending
 so it can be adjusted or stopped before loading finishes. The ordinary `hb.play(id)`
 remains fire-and-forget.
 
+A live source with no new input is sent as silence (the device would otherwise end
+the stream after 5 s). Stop or close it when it is done.
+
+## Playback status and stream endpoints
+
+Every source handle (`streamPcm`, `playStream`, `openStream`) reports where it is:
+
+| `status` | meaning |
+|---|---|
+| `Active` | streaming to at least one matching device (or waiting out a firmware 0.4.x device's 300 ms restart guard) |
+| `Deferred` | nothing to stream to yet; `deferredReason` says why |
+| `Stopped` | stopped, finished, or every endpoint was lost for good (`lostReason`) |
+
+| `deferredReason` | meaning | what to do |
+|---|---|---|
+| `NoResolvedEndpoint` | no known device matches the target | check the target / power on the device |
+| `UnknownClass` | the device has not answered this SDK's stream request yet | wait (it is asked at once) |
+| `LeaseUnavailable` | the device gave no usable stream lease (or a node that takes no stream) | wait; it is renewed automatically |
+| `Superseded` | another application started a newer stream on the device | `hb.reacquireStreamOwnership()` once the other app has stopped |
+
+When matching devices disagree, the reason is reported in the order Superseded >
+LeaseUnavailable > UnknownClass. A device that runs a STOP_ALL during a stream (or,
+behind hapbeat-helper, another client taking the device) removes that Playback from
+that device for good; `onStreamLost` tells you, and a new `play` / `streamPcm` joins it
+again:
+
+```ts
+const hb = await connect({
+  onStreamLost: ({ playbackId, ip, reason }) => console.log(playbackId, "lost", ip, reason),
+  onStreamEndpointChanged: (e) => console.log(e.ip, e.streamClass, e.leaseState),
+});
+hb.streamEndpoints(); // [{ ip, address, streamClass: "gen2", leaseState: "valid" }, ...]
+hb.devices();         // known devices (no PING sent), with streamClass and caps
+```
+
+`streamClass` is `gen2` (firmware 0.5.0 and later), `gen1` (0.4.x, still streamed in
+its own format) or `unknown`; `leaseState` is `valid` / `unavailable` / `superseded`
+for `gen2` and `none` otherwise. Behind hapbeat-helper (browser) the helper owns
+both, so they are undefined there. A device with one motor (`caps.hapticChannels`
+= 1) gets streams without pan, since it plays left + right together.
+
 ## Discovery & targeting
 
 ```ts
@@ -153,6 +194,12 @@ APs hold broadcast frames until their next DTIM beacon (100–300 ms) whenever
 any client on the AP is power-saving, which is heard as late haptics and
 stuttering streams; unicast is not batched that way. The 5-second keep-alive
 PING is what keeps this table current, so leave `keepalive` on.
+
+Streams also need a lease from each device. The broadcast PING only finds devices;
+the lease request goes by unicast to the devices this app may stream to (those
+matching `defaultTarget` or a playing source's target) every 5 s, and at once when a
+source needs one. With `keepalive: false` leases lapse 15 s after the last request,
+so keep it on in an app that streams.
 
 Streaming never broadcasts: `STREAM_DATA` and `STREAM_END` have no target field,
 so the SDK creates one wire session per exact PONG-reported `(IP, address)` endpoint.
