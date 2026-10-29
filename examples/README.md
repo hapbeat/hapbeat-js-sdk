@@ -9,6 +9,7 @@ Runnable references, smallest first.
 |---|---|---|---|
 | [`quickstart-clip-node.mjs`](./quickstart-clip-node.mjs) | Node, start here | **no kit needed**: `connect()` → `parseWav()` → `streamPcm()` streams the bundled [`hit_80hz.wav`](./hit_80hz.wav) | a Hapbeat on the LAN (no kit) |
 | [`quickstart-clip-browser.html`](./quickstart-clip-browser.html) | Browser, start here | the same clip from one button, over the helper WebSocket | `hapbeat-helper` running + HTTP server (no kit) |
+| [`quickstart-clip-app/`](./quickstart-clip-app/) | Browser, your own app | the same page for a folder where you ran `npm install @hapbeat/sdk` (importmap to `./node_modules/...`) | `hapbeat-helper` running + HTTP server (no kit) |
 | [`node-minimal.mjs`](./node-minimal.mjs) | Node | `connect()` → `play(id)` → `close()` over UDP | a Hapbeat on the LAN + a deployed kit (for sound) |
 | [`browser-minimal.html`](./browser-minimal.html) | Browser | the same call over the helper WebSocket | `hapbeat-helper` running + HTTP server |
 | [`react-native/`](./react-native/) | Android/iOS app | helper-free direct UDP from the phone, command + streaming | `react-native-udp` + `fast-text-encoding`, a Hapbeat on the LAN |
