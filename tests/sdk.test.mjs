@@ -146,8 +146,8 @@ test("EventMap.fromManifest reads schema 2.0.0 clip_gain", () => {
     schema_version: "2.0.0",
     events: { "sample-kit.sine_100hz": { clip: "sine_100hz.wav", parameters: { clip_gain: 0.42 } } },
   });
-  assert.equal(em.gainFor("sample-kit.sine_100hz"), 0.42);
-  assert.equal(em.gainFor("unknown"), 1.0);
+  assert.equal(em.clipGainFor("sample-kit.sine_100hz"), 0.42);
+  assert.equal(em.clipGainFor("unknown"), 1.0);
 });
 
 // Free UDP port on loopback (bound and released), for tests that must not

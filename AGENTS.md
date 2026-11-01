@@ -151,10 +151,10 @@ finishes, so it remains controllable during the load. `discover`, `connect`,
 
 ```ts
 EventMap.fromManifest(manifest: KitManifest): EventMap      // a parsed kit manifest (schema 2.0.0)
-EventMap.fromGains(gains: Record<string, number>): EventMap // { eventId: clipGain } by hand
+EventMap.fromClipGains(clipGains: Record<string, number>): EventMap // { eventId: clipGain } by hand
 new EventMap(events?: Record<string, EventDef> | Map<string, EventDef>)
 
-// instance: get(id) gainFor(id) has(id) ids() size
+// instance: get(id) clipGainFor(id) has(id) ids() size
 ```
 
 ```ts

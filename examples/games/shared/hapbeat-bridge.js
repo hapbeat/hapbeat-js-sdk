@@ -94,8 +94,10 @@ export class ArcadeBridge {
    * central event-content map (the single tuning surface; see event-content.js).
    * @param {string} name  key in CONTENT
    * @param {{gain?:number, pan?:number, haptic?:boolean, audio?:boolean}} opts
-   *   gain overrides the event's base intensity; per-call haptic/audio default
-   *   true and are AND-ed with the master switch.
+   *   gain overrides the synth spec's base gain (synth haptic + audio); a kit clip
+   *   gets only this call gain (default 1) — its material strength is the
+   *   manifest clip_gain. per-call haptic/audio default true and are AND-ed with
+   *   the master switch.
    */
   fire(name, opts = {}) {
     const ev = CONTENT[name];
@@ -119,7 +121,9 @@ export class ArcadeBridge {
           console.warn(`[arcade] haptic stream failed: ${e?.message ?? e}`);
         }
       };
-      if (this.router?.ready) this.router.haptic(name, { pan, gain }, synth);
+      // Kit clip: only the call's app gain; the synth spec gain would double the
+      // material strength the manifest clip_gain already carries (DEC-103).
+      if (this.router?.ready) this.router.haptic(name, { pan, gain: opts.gain ?? 1 }, synth);
       else synth();
     }
     // AUDIO: a decoded audio file via the router when present, else the AudioBank synth.

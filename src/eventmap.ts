@@ -43,9 +43,9 @@ export class EventMap {
   }
 
   /** Build from a simple `{ eventId: clipGain }` mapping (no kit manifest). */
-  static fromGains(gains: Record<string, number>): EventMap {
+  static fromClipGains(clipGains: Record<string, number>): EventMap {
     const m = new Map<string, EventDef>();
-    for (const [eventId, clipGain] of Object.entries(gains)) {
+    for (const [eventId, clipGain] of Object.entries(clipGains)) {
       m.set(eventId, { eventId, clipGain, loop: false, streaming: false, note: "" });
     }
     return new EventMap(m);
@@ -76,7 +76,7 @@ export class EventMap {
   }
 
   /** Clip gain for an event (its manifest `clip_gain`), or 1.0. */
-  gainFor(eventId: string): number {
+  clipGainFor(eventId: string): number {
     return this.events.get(eventId)?.clipGain ?? 1.0;
   }
 
