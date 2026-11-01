@@ -157,7 +157,7 @@ class PlaybackHandle implements StreamPlayback {
   get deferredReason(): DeferredReason | undefined { return this._deferredReason; }
   get gain(): number { return this._gain; }
   set gain(value: number) {
-    this._gain = Math.max(0, value);
+    this._gain = appGainOf(value);
     this.hub.setSourceProperty(this.id, "gain", sourceGain(this.clipGain, this._gain));
   }
   get pan(): number { return this._pan; }
@@ -335,7 +335,7 @@ export class StreamHub {
   ): Source {
     if (this.closed) throw new Error("StreamHub is closed");
     const id = `stream-${++this.nextId}`;
-    const appGain = Math.max(0, opts.gain ?? 1);
+    const appGain = appGainOf(opts.gain);
     const clipGain = clampClipGain(opts.clipGain);
     const pan = clamp(opts.pan ?? 0, -1, 1);
     const loop = forceNoLoop ? false : Boolean(opts.loop);
@@ -671,7 +671,15 @@ function clampClipGain(clipGain: number | undefined): number {
   return clamp(clipGain ?? 1, 0, 1);
 }
 
+/** App gain: >= 0 with no upper limit; missing is 1, negative or NaN is 0. */
+export function appGainOf(gain: number | undefined): number {
+  const value = gain ?? 1;
+  return value > 0 ? value : 0;
+}
+
 /** The value a source's PCM is scaled by: clamp(clip_gain × app_gain, 0, 1). */
 export function sourceGain(clipGain: number, appGain: number): number {
-  return clamp(clipGain * appGain, 0, 1);
+  const product = clipGain * appGain;
+  // A NaN / infinite product (NaN input, 0 × Infinity, ...) sends 0 (contracts kit-format.md).
+  return Number.isFinite(product) ? clamp(product, 0, 1) : 0;
 }

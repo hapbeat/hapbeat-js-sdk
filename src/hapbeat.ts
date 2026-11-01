@@ -20,13 +20,12 @@ import {
   StreamHub,
   type LiveStreamHandle,
   type StreamPlayback,
+  appGainOf,
   sourceGain,
 } from "./stream.js";
 import { parseWav, type WavPcm } from "./wav.js";
 import type { Device, HapbeatOptions, Transport } from "./types.js";
 
-/** App gain: >= 0, no upper limit (only the final product is clamped to 0..1). */
-const appGainOf = (g: number | undefined): number => Math.max(0, g ?? 1.0);
 const clampPan = (pan: number): number => (pan < -1 ? -1 : pan > 1 ? 1 : pan);
 let nextPendingPlaybackId = 0;
 

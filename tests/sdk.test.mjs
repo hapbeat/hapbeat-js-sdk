@@ -347,6 +347,33 @@ test("strength: PLAY gain = clamp(clip_gain × gain, 0, 1)", () => {
   assert.ok(Math.abs(sent("k.strong", 1.5 * 0.5) - 0.6) < 1e-9);
 });
 
+test("strength: a NaN or infinite product sends 0", () => {
+  const eventMap = EventMap.fromManifest({
+    events: {
+      "k.half": { clip: "a.wav", parameters: { clip_gain: 0.5 } },
+      "k.zero": { clip: "z.wav", parameters: { clip_gain: 0 } },
+      "k.nan": { clip: "n.wav", parameters: { clip_gain: Number.NaN } },
+    },
+  });
+  const transport = new FakeTransport();
+  const hb = new Hapbeat(transport, { eventMap });
+  const sent = (id, gain) => {
+    transport.calls.length = 0;
+    hb.play(id, { gain });
+    return transport.calls[0][2];
+  };
+  assert.equal(sent("k.half", Number.NaN), 0, "NaN app gain is 0");
+  assert.equal(sent("k.zero", Infinity), 0, "0 × Infinity is NaN -> 0");
+  assert.equal(sent("k.half", Infinity), 0, "an infinite product is 0");
+  assert.equal(sent("k.nan", 1), 0, "NaN clip_gain -> 0");
+  const pb = hb.streamPcm(new Uint8Array(64), { gain: Number.NaN, target: "p1" });
+  assert.equal(pb.gain, 0);
+  assert.equal(hb.streamHub.sources.get(pb.id).gain, 0);
+  pb.gain = Infinity;
+  assert.equal(hb.streamHub.sources.get(pb.id).gain, 0);
+  void hb.close();
+});
+
 test("strength: clip events scale the source PCM by clip_gain × gain; the handle keeps the app gain", async () => {
   const eventMap = EventMap.fromManifest({
     schema_version: "2.0.0",

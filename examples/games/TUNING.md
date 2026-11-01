@@ -6,7 +6,7 @@
 
 各ゲームが鳴らす触覚イベントの一覧。**最終的な触覚・音はユーザーが [`shared/event-content.js`](./shared/event-content.js) で一括調整する前提**（現状はプレースホルダ）。
 
-- **既定 gain** … `events.js` の `gain`（manifest の `clip_gain` と整合）。`hb.play(id)` の基準値。
+- **既定 gain** … 合成の触覚の基準の強さ（`event-content.js` の `haptic.gain`）。合成で鳴らす時だけに使う。Kit の clip を鳴らす時の素材の強さは manifest の `clip_gain` で、呼ぶ時の gain がそれに掛かる。
 - **実 gain** … ゲーム実行時に渡す値。`固定` か、状況で動的にスケールするもの。
 - **clip** … デバイスにインストールされる触覚波形（プレースホルダ）。`ch` は元 WAV のチャンネル数 / `ms` は長さ。
 
@@ -48,5 +48,6 @@
 - **hot_pulse**: `warmth = 1 - 距離/range`、`gain = lerp(0.15, 1.0, warmth^1.1)`、`間隔 = lerp(600ms, 90ms, warmth^1.3)`（`games/hotcold.js`）
 - **rhythm_hit**: Perfect(±60ms)=0.6 / Good(±130ms)=0.4（`games/rhythm.js` `press`）
 
-スケールの上下限・カーブを変えたい場合は各 `games/*.js` の該当箇所、基準強度を変えたい場合は
-`events.js` の `gain` と manifest の `clip_gain` を両方合わせる。
+スケールの上下限・カーブを変えたい場合は各 `games/*.js` の該当箇所、基準強度を変えたい場合は、
+合成の触覚は `event-content.js` の `haptic.gain`、Kit の clip は manifest の `clip_gain`（Studio で調整）を変える。
+Kit の clip に合成の `gain` は掛からない（Kit の clip = manifest の `clip_gain` × 呼ぶ時の gain）ので、両方に同じ値を入れる必要は無い。
