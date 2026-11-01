@@ -35,8 +35,8 @@ ESM-only (`"type": "module"`). The **browser** path also needs the helper daemon
 import { connect } from "@hapbeat/sdk";
 
 const hb = await connect({ appName: "MyApp" }); // opens the UDP socket + keep-alive
-hb.play("sample-kit.sine_100hz", { gain: 0.3 });           // fire by event id (gain 0..1)
-hb.play("sample-kit.sine_100hz");                          // gain omitted → kit/EventMap baseline
+hb.play("sample-kit.sine_100hz", { gain: 0.3 });           // fire by event id (gain = app gain, >= 0)
+hb.play("sample-kit.sine_100hz");                          // gain omitted → 1 (the kit's clip_gain as authored)
 hb.stopAll();
 await hb.close();
 ```
@@ -79,7 +79,7 @@ import { connect, EventMap } from "@hapbeat/sdk";
 
 const manifest = await fetch("/my-kit/my-kit-manifest.json").then((r) => r.json());
 const hb = await connect({ eventMap: EventMap.fromManifest(manifest) });
-hb.play("sample-kit.sine_100hz"); // uses the manifest's intensity for this event
+hb.play("sample-kit.sine_100hz"); // uses the manifest's clip_gain for this event
 ```
 
 ## command vs clip — two modes, one `play(id)`
@@ -92,6 +92,10 @@ The kit manifest decides the mode per event; your code never changes:
 | `stream_events` | **clip** | SDK loads the event's WAV (`clipBase` + `clipLoader`) and **streams** it over the wire | no |
 
 - No `eventMap` → everything is command mode (gain defaults to `1.0`).
+- Strength: the SDK sends `clamp(clip_gain × gain, 0, 1)`. `clip_gain` is the
+  material's strength from the manifest (`parameters.clip_gain`, 0..1, default 1);
+  `gain` is your app gain (>= 0, may exceed 1) and multiplies it — it never
+  replaces it. Clip events apply the same value to the source PCM.
 - Clip WAVs are PCM16 mono or stereo. The SDK normalizes every source to 16 kHz
   stereo before endpoint mixing.
 

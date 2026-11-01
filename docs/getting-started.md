@@ -80,14 +80,14 @@ npm install react-native-udp fast-text-encoding
 See `examples/react-native/` for a runnable Android demo. Verified on a physical
 Android device (RN 0.86, Hermes / New Architecture).
 
-## Keep intensities out of firing code
+## Keep material strengths out of firing code
 
 ```ts
 import { connect, EventMap } from "@hapbeat/sdk";
 
 const manifest = await fetch("/my-kit/my-kit-manifest.json").then((r) => r.json());
 const hb = await connect({ eventMap: EventMap.fromManifest(manifest) });
-hb.play("sample-kit.sine_100hz");   // fires at the manifest's authored intensity
+hb.play("sample-kit.sine_100hz");   // fires at the manifest's authored clip_gain
 ```
 
 ## Targeting
@@ -134,8 +134,8 @@ Manifest excerpt:
 ```jsonc
 {
   "schema_version": "2.0.0",
-  "events":        { "sample-kit.sine_100hz":  { "clip": "sine_100hz.wav",  "parameters": { "intensity": 0.5 } } },
-  "stream_events": { "rumble.loop": { "clip": "rumble_loop.wav", "parameters": { "intensity": 0.6 } } }
+  "events":        { "sample-kit.sine_100hz":  { "clip": "sine_100hz.wav",  "parameters": { "clip_gain": 0.5 } } },
+  "stream_events": { "rumble.loop": { "clip": "rumble_loop.wav", "parameters": { "clip_gain": 0.6 } } }
 }
 ```
 

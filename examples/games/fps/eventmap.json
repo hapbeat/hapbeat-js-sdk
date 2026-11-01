@@ -1,5 +1,5 @@
 {
-  "_README": "つなぎ（EventMap）— 論理イベント → 触覚 Kit の eventId + 再生調整。kitEvent は demo-kit/fps-kit/fps-kit-manifest.json の stream_events/events のキーと一致。kitEvent は配列にすると毎回ランダムで選ぶ（足音のバリエーション用）。mode: clip(ホストが WAV を stream・既定) / fire(デバイス内蔵 clip)。gain は manifest intensity に掛かる倍率。directional=true の触覚は弾の方位で L/R パン。音声ファイルは event-content.js の audio.file 側。",
+  "_README": "つなぎ（EventMap）— 論理イベント → 触覚 Kit の eventId + 再生調整。kitEvent は demo-kit/fps-kit/fps-kit-manifest.json の stream_events/events のキーと一致。kitEvent は配列にすると毎回ランダムで選ぶ（足音のバリエーション用）。mode: clip(ホストが WAV を stream・既定) / fire(デバイス内蔵 clip)。gain は manifest の clip_gain に掛かる倍率。directional=true の触覚は弾の方位で L/R パン。音声ファイルは event-content.js の audio.file 側。",
   "fps_enemy_shot":  { "kitEvent": "fps-kit.shot-enemy",  "mode": "clip", "gain": 1.0, "loop": false, "target": "", "directional": true },
   "fps_player_hit":  { "kitEvent": "fps-kit.damage",      "mode": "clip", "gain": 1.0, "loop": false, "target": "", "directional": true },
   "fps_player_shot": { "kitEvent": "fps-kit.shot-player", "mode": "clip", "gain": 1.0, "loop": false, "target": "" },

@@ -9,7 +9,7 @@
  * Design notes
  * - The manifest is parsed by the SDK's own `EventMap.fromManifest` (schema 2.0.0).
  *   We NEVER invent a manifest schema — Studio owns it. This class only reads it
- *   (which kitEvents have clips + their intensity/filename) and routes.
+ *   (which kitEvents have clips + their clip_gain/filename) and routes.
  * - Haptic clips are loaded with the SDK's exported `parseWav` and streamed via the
  *   bridge's existing `streamPcm` (which paces through the SDK ClipStreamer). For
  *   `directional` events the clip's mono PCM is panned L/R (equal-power) exactly
@@ -119,7 +119,7 @@ export class ContentRouter {
       const id = pick(ready); // random variant (e.g. footstep-0 / footstep-1)
       const wav = this.hapticPcm.get(id);
       const def = this.kit.get(id);
-      const gain = clamp01((b.gain ?? 1) * (opts.gain ?? 1) * (def?.intensity ?? 1));
+      const gain = clamp01((b.gain ?? 1) * (opts.gain ?? 1) * (def?.clipGain ?? 1));
       const pan = b.directional ? clampPan(opts.pan ?? 0) : 0;
       this.bridge.streamPcm(this._panClip(wav, pan, gain), { channels: 2, sampleRate: wav.sampleRate, gain: 1, target: opts.target ?? b.target });
       return true;

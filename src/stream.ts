@@ -64,6 +64,10 @@ export interface StreamPlayback {
   readonly id: string;
   readonly status: PlaybackStatus;
   readonly deferredReason?: DeferredReason;
+  /**
+   * App gain (>= 0, no upper limit). The source PCM is scaled by
+   * `clamp(clipGain × gain, 0, 1)` (contracts kit-format.md "強さの式").
+   */
   gain: number;
   pan: number;
   loop: boolean;
@@ -80,7 +84,10 @@ export interface LiveStreamHandle extends StreamPlayback {
 export interface StreamPlayOptions {
   sampleRate?: number;
   channels?: number;
+  /** App gain (>= 0, no upper limit; default 1). */
   gain?: number;
+  /** Material strength (the kit manifest `clip_gain`, 0..1; default 1 = no kit). */
+  clipGain?: number;
   pan?: number;
   loop?: boolean;
   target?: string;
@@ -94,6 +101,7 @@ interface Source {
   kind: SourceKind;
   samples: number[];
   target: string;
+  /** Effective PCM scale: clamp(clipGain × app gain, 0, 1). */
   gain: number;
   pan: number;
   loop: boolean;
@@ -136,6 +144,7 @@ class PlaybackHandle implements StreamPlayback {
     protected readonly hub: StreamHub,
     readonly id: string,
     gain: number,
+    private readonly clipGain: number,
     pan: number,
     loop: boolean,
   ) {
@@ -148,8 +157,8 @@ class PlaybackHandle implements StreamPlayback {
   get deferredReason(): DeferredReason | undefined { return this._deferredReason; }
   get gain(): number { return this._gain; }
   set gain(value: number) {
-    this._gain = clamp(value, 0, 1);
-    this.hub.setSourceProperty(this.id, "gain", this._gain);
+    this._gain = Math.max(0, value);
+    this.hub.setSourceProperty(this.id, "gain", sourceGain(this.clipGain, this._gain));
   }
   get pan(): number { return this._pan; }
   set pan(value: number) {
@@ -174,12 +183,13 @@ class LivePlaybackHandle extends PlaybackHandle implements LiveStreamHandle {
     hub: StreamHub,
     id: string,
     gain: number,
+    clipGain: number,
     pan: number,
     loop: boolean,
     private readonly sampleRate: number,
     private readonly channels: number,
   ) {
-    super(hub, id, gain, pan, loop);
+    super(hub, id, gain, clipGain, pan, loop);
   }
 
   get closed(): boolean { return this.status === "Stopped"; }
@@ -224,7 +234,8 @@ export class StreamHub {
     const live = new LivePlaybackHandle(
       this,
       source.id,
-      source.gain,
+      source.playback.gain,
+      clampClipGain(opts.clipGain),
       source.pan,
       source.loop,
       sampleRate,
@@ -324,12 +335,13 @@ export class StreamHub {
   ): Source {
     if (this.closed) throw new Error("StreamHub is closed");
     const id = `stream-${++this.nextId}`;
-    const gain = clamp(opts.gain ?? 1, 0, 1);
+    const appGain = Math.max(0, opts.gain ?? 1);
+    const clipGain = clampClipGain(opts.clipGain);
     const pan = clamp(opts.pan ?? 0, -1, 1);
     const loop = forceNoLoop ? false : Boolean(opts.loop);
-    const playback = new PlaybackHandle(this, id, gain, pan, loop);
+    const playback = new PlaybackHandle(this, id, appGain, clipGain, pan, loop);
     return {
-      id, kind, samples, target: opts.target ?? "", gain, pan, loop, key: opts.key,
+      id, kind, samples, target: opts.target ?? "", gain: sourceGain(clipGain, appGain), pan, loop, key: opts.key,
       playback, completedEndpoints: new Set(), guardedEndpoints: new Set(), played: false, baseFrame: 0,
       nextFrame: samples.length / STREAM_CHANNELS, inputSampleRate: sampleRate,
       inputChannels: channels,
@@ -652,4 +664,14 @@ function saturatePcm16(value: number): number {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+/** clip_gain is 0..1; unknown (no kit) is 1 (contracts kit-format.md "強さの式"). */
+function clampClipGain(clipGain: number | undefined): number {
+  return clamp(clipGain ?? 1, 0, 1);
+}
+
+/** The value a source's PCM is scaled by: clamp(clip_gain × app_gain, 0, 1). */
+export function sourceGain(clipGain: number, appGain: number): number {
+  return clamp(clipGain * appGain, 0, 1);
 }

@@ -1,8 +1,10 @@
 /**
  * High-level Hapbeat facade — the level-1 "fire" surface.
  *
- * Transport-agnostic: it resolves per-event default gain from the optional
- * EventMap, clamps it, and hands semantic commands to a Transport. The same
+ * Transport-agnostic: it multiplies the call's `gain` (app gain) by the
+ * event's clip gain from the optional EventMap, sends
+ * `clamp(clipGain × gain, 0, 1)` (contracts kit-format.md "強さの式"), and
+ * hands semantic commands to a Transport. The same
  * facade works over UDP (Node) and over the helper WebSocket (browser).
  *
  * Two playback modes, branched purely by the EventMap (= the kit manifest):
@@ -18,11 +20,13 @@ import {
   StreamHub,
   type LiveStreamHandle,
   type StreamPlayback,
+  sourceGain,
 } from "./stream.js";
 import { parseWav, type WavPcm } from "./wav.js";
 import type { Device, HapbeatOptions, Transport } from "./types.js";
 
-const clamp01 = (g: number): number => (g < 0 ? 0 : g > 1 ? 1 : g);
+/** App gain: >= 0, no upper limit (only the final product is clamped to 0..1). */
+const appGainOf = (g: number | undefined): number => Math.max(0, g ?? 1.0);
 const clampPan = (pan: number): number => (pan < -1 ? -1 : pan > 1 ? 1 : pan);
 let nextPendingPlaybackId = 0;
 
@@ -35,7 +39,7 @@ class PendingStreamPlayback implements StreamPlayback {
   private _loop: boolean;
 
   constructor(gain: number, pan: number, loop: boolean, private readonly onStop: () => void) {
-    this._gain = clamp01(gain);
+    this._gain = appGainOf(gain);
     this._pan = clampPan(pan);
     this._loop = loop;
   }
@@ -44,7 +48,7 @@ class PendingStreamPlayback implements StreamPlayback {
   get deferredReason() { return this.inner?.deferredReason; }
   get gain() { return this.inner?.gain ?? this._gain; }
   set gain(value: number) {
-    this._gain = clamp01(value);
+    this._gain = appGainOf(value);
     if (this.inner) this.inner.gain = this._gain;
   }
   get pan() { return this.inner?.pan ?? this._pan; }
@@ -85,7 +89,7 @@ interface PendingClipPlay {
 
 /** Options for {@link Hapbeat.playClipUrl} / {@link Hapbeat.playClipFile}. The WAV carries its own format. */
 export interface ClipPlayOpts {
-  /** 0..1, default 1. */
+  /** App gain: >= 0, no upper limit, default 1. The sent strength is clamped to 0..1. */
   gain?: number;
   /** Left/right balance: -1 = left only, 0 = centre (default), +1 = right only. */
   pan?: number;
@@ -108,6 +112,11 @@ export function setClipFileReader(reader: ClipFileReader): void {
 }
 
 export interface PlayOpts {
+  /**
+   * App gain: >= 0, no upper limit, default 1. Multiplied by the event's
+   * clip gain (manifest `clip_gain`); the sent value is
+   * `clamp(clipGain × gain, 0, 1)`.
+   */
   gain?: number;
   target?: string;
   targetTimeUs?: number;
@@ -149,11 +158,11 @@ export class Hapbeat {
    * Play a haptic event by id. The EventMap decides the mode:
    *  - fire event → PLAY command (device plays its installed clip)
    *  - clip event → the SDK streams the event's WAV over UDP
-   * `gain` overrides the per-event default; otherwise the manifest intensity is used.
+   * `gain` (app gain) multiplies the manifest `clip_gain`; it never replaces it.
    */
   play(eventId: string, opts: PlayOpts = {}): void {
     const def = this.eventMap?.get(eventId);
-    const gain = clamp01(opts.gain ?? def?.intensity ?? 1.0);
+    const gain = sourceGain(def?.clipGain ?? 1.0, appGainOf(opts.gain));
     const target = opts.target ?? this.defaultTarget;
     if (def?.streaming) {
       void this.playStream(eventId, opts);
@@ -182,7 +191,7 @@ export class Hapbeat {
     return this.streamHub.playPcm(pcm, {
       sampleRate: opts.sampleRate ?? 16000,
       channels: opts.channels ?? 1,
-      gain: clamp01(opts.gain ?? 1.0),
+      gain: appGainOf(opts.gain),
       pan: opts.pan ?? 0,
       loop: opts.loop ?? false,
       target: opts.target ?? this.defaultTarget,
@@ -256,7 +265,7 @@ export class Hapbeat {
     return this.streamHub.openLive({
       sampleRate: opts.sampleRate ?? 16000,
       channels: opts.channels ?? 1,
-      gain: clamp01(opts.gain ?? 1.0),
+      gain: appGainOf(opts.gain),
       pan: opts.pan ?? 0,
       target: opts.target ?? this.defaultTarget,
     });
@@ -272,7 +281,8 @@ export class Hapbeat {
       console.warn(`[hapbeat] "${eventId}" is not a stream event`);
       return null;
     }
-    const gain = clamp01(opts.gain ?? def.intensity ?? 1.0);
+    const gain = appGainOf(opts.gain);
+    const clipGain = def.clipGain ?? 1.0;
     const target = opts.target ?? this.defaultTarget;
     const pan = opts.pan ?? 0;
     const cached = this.clipCache.get(eventId);
@@ -281,6 +291,7 @@ export class Hapbeat {
         sampleRate: cached.sampleRate,
         channels: cached.channels,
         gain,
+        clipGain,
         pan,
         loop: def.loop,
         target,
@@ -301,6 +312,7 @@ export class Hapbeat {
         sampleRate: pcm.sampleRate,
         channels: pcm.channels,
         gain: pending.playback.gain,
+        clipGain,
         pan: pending.playback.pan,
         loop: pending.playback.loop,
         target,

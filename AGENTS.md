@@ -36,9 +36,9 @@ device endpoint.
 ## Core model: fire vs tuning, linked by event id
 
 - **Fire side** (your code): *when/where* to play — `play` / `stop` / `stopAll`.
-- **Tuning side** (`EventMap` = the kit manifest): *what/how strong* — intensity,
-  loop, command-vs-clip, which WAV.
-- They are linked only by **event id**. Keep intensities out of firing code; put
+- **Tuning side** (`EventMap` = the kit manifest): *what/how strong* — clip gain
+  (`clip_gain`), loop, command-vs-clip, which WAV.
+- They are linked only by **event id**. Keep material strengths out of firing code; put
   them in the kit (authored in Hapbeat Studio). Event id and wire format are
   defined by **hapbeat-contracts** (kit manifest schema 2.0.0) — follow it, don't
   redefine.
@@ -55,8 +55,8 @@ npm install @hapbeat/sdk
 import { connect } from "@hapbeat/sdk";
 
 const hb = await connect({ appName: "MyApp" }); // opens the UDP socket + keep-alive
-hb.play("sample-kit.sine_100hz", { gain: 0.3 });           // gain 0..1; fire by event id
-hb.play("sample-kit.sine_100hz");                          // gain omitted -> EventMap/kit baseline
+hb.play("sample-kit.sine_100hz", { gain: 0.3 });           // gain = app gain (>= 0); fire by event id
+hb.play("sample-kit.sine_100hz");                          // gain omitted -> 1 (the kit's clip_gain as authored)
 hb.stopAll();
 await hb.close();
 ```
@@ -97,7 +97,7 @@ group?: number;            // group id this sender targets
 defaultTarget?: string;    // device-addressing target; "" = every device
 onConnectionLost?: () => void;   // Browser: helper WS dropped
 connectTimeoutMs?: number;       // Browser. Default 4000.
-eventMap?: EventMap;       // tuning catalog for default gains
+eventMap?: EventMap;       // tuning catalog for clip gains (manifest clip_gain)
 keepalive?: boolean;       // PING (+CONNECT_STATUS) keep-alive (Node/RN). Default true.
 unicast?: boolean;         // Node/RN: unicast to PONGing devices. Default true.
 deviceTtlMs?: number;      // Node/RN: destination liveness window. Default 15000.
@@ -151,7 +151,7 @@ finishes, so it remains controllable during the load. `discover`, `connect`,
 
 ```ts
 EventMap.fromManifest(manifest: KitManifest): EventMap      // a parsed kit manifest (schema 2.0.0)
-EventMap.fromGains(gains: Record<string, number>): EventMap // { eventId: gain } by hand
+EventMap.fromGains(gains: Record<string, number>): EventMap // { eventId: clipGain } by hand
 new EventMap(events?: Record<string, EventDef> | Map<string, EventDef>)
 
 // instance: get(id) gainFor(id) has(id) ids() size
@@ -161,13 +161,13 @@ new EventMap(events?: Record<string, EventDef> | Map<string, EventDef>)
 import { connect, EventMap } from "@hapbeat/sdk";
 const manifest = await fetch("/my-kit/my-kit-manifest.json").then((r) => r.json());
 const hb = await connect({ eventMap: EventMap.fromManifest(manifest) });
-hb.play("sample-kit.sine_100hz"); // uses the manifest's intensity for this event
+hb.play("sample-kit.sine_100hz"); // uses the manifest's clip_gain for this event
 ```
 
-`EventDef`: `eventId`, `intensity`, `loop`, `deviceWiper?`, `streaming`, `clip?`,
+`EventDef`: `eventId`, `clipGain`, `loop`, `deviceWiper?`, `streaming`, `clip?`,
 `note`. The manifest has two buckets: `events` (command mode) and `stream_events`
 (clip mode → `streaming: true`). The JS `EventMap` is **manifest-only** — it carries
-per-event default intensity/clip; it does **not** have a per-call haptic-file overlay
+per-event clip gain (`clipGain`, from `parameters.clip_gain`) and clip; it does **not** have a per-call haptic-file overlay
 or a targeting layer (the Python SDK's `HapticFile` has those; in JS pass `target`
 at the call site or via `defaultTarget`).
 
@@ -241,7 +241,10 @@ helper (immediate playback only).
   Hapbeat LAN's NIC has the route.
 - **Nothing buzzes but `discover` finds the device** → the event id is not in the
   deployed kit (#1 cause), or `target` doesn't match (try `""`).
-- **`gain` is absolute 0..1** and is clamped on the SDK side.
+- **Strength = `clamp(clip_gain × gain, 0, 1)`.** `clip_gain` is the kit's material
+  strength (manifest `parameters.clip_gain`, 0..1, default 1); `gain` is the app
+  gain (>= 0, may exceed 1) and multiplies it, never replaces it. Only the product
+  is clamped. A `StreamPlayback.gain` change is also an app gain (× clip_gain).
 - **Lifecycle**: always `await hb.close()` — it tells the device the app left and
   stops all logical sources and closes endpoint sessions.
 - **clipBase + clipLoader**: clip mode needs `clipBase` pointing at the WAVs (Node:

@@ -39,7 +39,7 @@ export interface HapbeatOptions {
   onConnectionLost?: () => void;
   /** Browser transport: ms to wait for the helper WS to open before giving up. Default 4000. */
   connectTimeoutMs?: number;
-  /** Optional tuning catalog used to resolve default gains by event id. */
+  /** Optional tuning catalog used to resolve each event's clip gain (manifest `clip_gain`) by id. */
   eventMap?: EventMap;
   /**
    * Whether to run the keep-alive (Node/RN only): a PING every 5 s, plus

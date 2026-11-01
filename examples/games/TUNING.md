@@ -6,7 +6,7 @@
 
 各ゲームが鳴らす触覚イベントの一覧。**最終的な触覚・音はユーザーが [`shared/event-content.js`](./shared/event-content.js) で一括調整する前提**（現状はプレースホルダ）。
 
-- **既定 gain** … `events.js` の `gain`（manifest の `intensity` と整合）。`hb.play(id)` の基準値。
+- **既定 gain** … `events.js` の `gain`（manifest の `clip_gain` と整合）。`hb.play(id)` の基準値。
 - **実 gain** … ゲーム実行時に渡す値。`固定` か、状況で動的にスケールするもの。
 - **clip** … デバイスにインストールされる触覚波形（プレースホルダ）。`ch` は元 WAV のチャンネル数 / `ms` は長さ。
 
@@ -49,4 +49,4 @@
 - **rhythm_hit**: Perfect(±60ms)=0.6 / Good(±130ms)=0.4（`games/rhythm.js` `press`）
 
 スケールの上下限・カーブを変えたい場合は各 `games/*.js` の該当箇所、基準強度を変えたい場合は
-`events.js` の `gain` と manifest の `intensity` を両方合わせる。
+`events.js` の `gain` と manifest の `clip_gain` を両方合わせる。

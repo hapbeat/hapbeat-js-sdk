@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### 変更（Changed）
+
+- 素材の強さの名前を `intensity` から `clip_gain` に変えました（DEC-103）。manifest は `parameters.clip_gain` を読み、`EventDef.intensity` は `EventDef.clipGain` になります。送る強さは `clamp(clip_gain × gain, 0, 1)` で、呼ぶ時の `gain`（アプリの倍率）は `clip_gain` を置き換えず掛けます。`gain` と `StreamPlayback.gain` は 0 以上で上限を設けず、0〜1 にするのは積だけです。
+
 ## [0.4.0] - 2026-10-17
 
 ### 追加（Added）

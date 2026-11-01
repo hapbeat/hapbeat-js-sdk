@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as protocol from "../dist/protocol.js";
-import { EventMap, Hapbeat, parseWav } from "../dist/index.js";
+import { EventMap, Hapbeat, parseWav, StreamHub } from "../dist/index.js";
 import { connect, NodeUdpTransport } from "../dist/node.js";
 import * as dgram from "node:dgram";
 
@@ -141,10 +141,10 @@ test("parsePong extended", () => {
   assert.equal(pong.volumeLevel, 100);
 });
 
-test("EventMap.fromManifest reads schema 2.0.0 intensity", () => {
+test("EventMap.fromManifest reads schema 2.0.0 clip_gain", () => {
   const em = EventMap.fromManifest({
     schema_version: "2.0.0",
-    events: { "sample-kit.sine_100hz": { clip: "sine_100hz.wav", parameters: { intensity: 0.42 } } },
+    events: { "sample-kit.sine_100hz": { clip: "sine_100hz.wav", parameters: { clip_gain: 0.42 } } },
   });
   assert.equal(em.gainFor("sample-kit.sine_100hz"), 0.42);
   assert.equal(em.gainFor("unknown"), 1.0);
@@ -270,8 +270,8 @@ test("parseWav reads PCM16; rejects non-WAV", () => {
 test("EventMap.fromManifest marks stream_events as clip mode", () => {
   const em = EventMap.fromManifest({
     schema_version: "2.0.0",
-    events: { "k.hit": { clip: "sine_100hz.wav", parameters: { intensity: 0.4 } } },
-    stream_events: { "k.loop": { clip: "loop.wav", parameters: { intensity: 0.6 } } },
+    events: { "k.hit": { clip: "sine_100hz.wav", parameters: { clip_gain: 0.4 } } },
+    stream_events: { "k.loop": { clip: "loop.wav", parameters: { clip_gain: 0.6 } } },
   });
   assert.equal(em.get("k.hit").streaming, false);
   assert.equal(em.get("k.loop").streaming, true);
@@ -281,8 +281,8 @@ test("EventMap.fromManifest marks stream_events as clip mode", () => {
 test("facade play() branches fire vs clip from the manifest", async () => {
   const eventMap = EventMap.fromManifest({
     schema_version: "2.0.0",
-    events: { "k.hit": { clip: "sine_100hz.wav", parameters: { intensity: 0.4 } } },
-    stream_events: { "k.stream": { clip: "loop.wav", parameters: { intensity: 0.6 } } },
+    events: { "k.hit": { clip: "sine_100hz.wav", parameters: { clip_gain: 0.4 } } },
+    stream_events: { "k.stream": { clip: "loop.wav", parameters: { clip_gain: 0.6 } } },
   });
   const wav = makeWav({ sampleRate: 16000, channels: 1, samples: new Array(320).fill(1000) }); // 20ms
   const transport = new FakeTransport();
@@ -294,12 +294,13 @@ test("facade play() branches fire vs clip from the manifest", async () => {
   });
 
   // fire event → PLAY command, no streaming
-  hb.play("k.hit", { gain: 0.3 });
-  assert.deepEqual(transport.calls[0], ["play", "k.hit", 0.3, "", 0]);
+  // (sent gain = clip_gain 0.4 × gain 0.5)
+  hb.play("k.hit", { gain: 0.5 });
+  assert.deepEqual(transport.calls[0], ["play", "k.hit", 0.2, "", 0]);
 
   // pan reaches the transport for fire events.
-  hb.play("k.hit", { gain: 0.3, pan: 1 });
-  assert.deepEqual(transport.calls[1], ["play", "k.hit", 0.3, "", 1]);
+  hb.play("k.hit", { gain: 0.5, pan: 1 });
+  assert.deepEqual(transport.calls[1], ["play", "k.hit", 0.2, "", 1]);
 
   // clip event → async load, then one canonical endpoint session.
   hb.play("k.stream");
@@ -312,6 +313,86 @@ test("facade play() branches fire vs clip from the manifest", async () => {
   await new Promise((r) => setTimeout(r, 330));
   assert.ok(transport.calls.some((c) => c[0] === "end"), "streamEnd called after drain");
   await hb.close();
+});
+
+// Strength formula (contracts kit-format.md "強さの式"): the sent value is
+// clamp(clip_gain × app_gain, 0, 1); the call's gain multiplies, never replaces.
+test("strength: PLAY gain = clamp(clip_gain × gain, 0, 1)", () => {
+  const eventMap = EventMap.fromManifest({
+    schema_version: "2.0.0",
+    events: {
+      "k.half": { clip: "a.wav", parameters: { clip_gain: 0.5 } },
+      "k.strong": { clip: "b.wav", parameters: { clip_gain: 0.8 } },
+      "k.plain": { clip: "c.wav" },
+    },
+  });
+  const transport = new FakeTransport();
+  const hb = new Hapbeat(transport, { eventMap });
+  const sent = (id, gain) => {
+    transport.calls.length = 0;
+    hb.play(id, gain === undefined ? {} : { gain });
+    return transport.calls[0][2];
+  };
+  assert.equal(sent("k.half", 1), 0.5);
+  assert.equal(sent("k.half"), 0.5, "gain omitted = 1 -> clip_gain as authored");
+  assert.equal(sent("k.half", 2), 1.0, "app gain above 1 reaches full scale");
+  assert.equal(sent("k.strong", 2), 1.0, "only the product is clamped");
+  assert.equal(sent("k.half", 0), 0);
+  assert.equal(sent("k.half", -1), 0, "negative app gain is 0");
+  assert.equal(sent("k.plain", 1.5), 1.0, "no clip_gain in the manifest -> 1");
+  assert.equal(sent("k.unknown", 1.5), 1.0, "no kit entry -> clip_gain 1");
+  assert.equal(sent("k.unknown", 0.25), 0.25);
+  // The JS EventMap has no per-item gain; a binding's gain is part of the
+  // call's app gain (item 1.5 × call 0.5) and still multiplies clip_gain 0.8.
+  assert.ok(Math.abs(sent("k.strong", 1.5 * 0.5) - 0.6) < 1e-9);
+});
+
+test("strength: clip events scale the source PCM by clip_gain × gain; the handle keeps the app gain", async () => {
+  const eventMap = EventMap.fromManifest({
+    schema_version: "2.0.0",
+    stream_events: { "k.s": { clip: "s.wav", parameters: { clip_gain: 0.5 } } },
+  });
+  const wav = makeWav({ sampleRate: 16000, channels: 1, samples: new Array(320).fill(1000) });
+  const firstSample = async (gain) => {
+    const transport = new FakeTransport();
+    const hb = new Hapbeat(transport, { eventMap, clipLoader: async () => wav, streamSendAheadSec: 0.05 });
+    const playback = hb.playStream("k.s", gain === undefined ? {} : { gain });
+    await new Promise((r) => setTimeout(r, 60));
+    const data = transport.calls.find((c) => c[0] === "data");
+    assert.ok(data, "streamData called");
+    const value = new DataView(data[3].buffer, data[3].byteOffset).getInt16(0, true);
+    await hb.close();
+    return { value, playback };
+  };
+  assert.equal((await firstSample(1)).value, 500, "clip_gain 0.5 × 1");
+  const doubled = await firstSample(2);
+  assert.equal(doubled.value, 1000, "clip_gain 0.5 × 2 -> full material");
+  assert.equal(doubled.playback.gain, 2, "the handle keeps the app gain unclamped");
+  assert.equal((await firstSample(0)).value, 0);
+});
+
+test("strength: a playback gain change multiplies clip_gain (does not replace it)", () => {
+  const sink = new FakeTransport();
+  const hub = new StreamHub(sink);
+  const pb = hub.playPcm(new Uint8Array(64), { target: "p1", clipGain: 0.8, gain: 1 });
+  const source = () => hub.sources.get(pb.id);
+  assert.ok(Math.abs(source().gain - 0.8) < 1e-9);
+  pb.gain = 2;
+  assert.equal(source().gain, 1, "0.8 × 2 is clamped to 1");
+  pb.gain = 0.5;
+  assert.ok(Math.abs(source().gain - 0.4) < 1e-9);
+  pb.gain = -3;
+  assert.equal(pb.gain, 0);
+  assert.equal(source().gain, 0);
+  hub.close();
+});
+
+test("strength: Kit-less streams treat clip_gain as 1", () => {
+  const hb = new Hapbeat(new FakeTransport());
+  const pb = hb.streamPcm(new Uint8Array(64), { gain: 1.5, target: "p1" });
+  assert.equal(pb.gain, 1.5);
+  assert.equal(hb.streamHub.sources.get(pb.id).gain, 1.0);
+  void hb.close();
 });
 
 test("stop cancels a clip source that is still loading", async () => {
