@@ -44,7 +44,7 @@ class BroadcastProbe extends NodeUdpTransport {
   localSubnets() { return this.subnets; }
   sendBytesTo(pkt, ip, bestEffort = false) { this.sends.push([ip, bestEffort]); }
   dests() { return this.sends.map(([ip]) => ip); }
-  saw(ip) { this.handleMessage(makePong(), ip); }
+  saw(ip) { this.handleMessage(makePong(), ip, 7700); }
 }
 
 const TWO_SUBNETS = [
@@ -141,7 +141,7 @@ test("UDP transport: a PONG pins the broadcast fallback to that subnet", async (
   // Once it ages out, the fallback broadcast now goes to the right subnet
   // instead of 255.255.255.255.
   t.sends.length = 0;
-  t.devices.clear();
+  t.knownDevices.clear();
   t.play("kit.evt", 1, "", 0);
   assert.deepEqual(t.dests(), ["192.168.0.255"]);
 });

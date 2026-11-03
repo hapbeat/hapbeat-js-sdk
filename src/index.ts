@@ -16,10 +16,17 @@ export type {
   EndpointStreamSink,
   LiveStreamHandle,
   PlaybackStatus,
+  StreamClass,
   StreamEndpoint,
+  StreamEndpointInfo,
+  StreamHubOptions,
+  StreamLeaseState,
+  StreamLostEvent,
   StreamPlayback,
   StreamPlayOptions,
+  StreamSessionEvent,
 } from "./stream.js";
+export type { DeviceCaps, DeviceError } from "./protocol.js";
 export type { Device, HapbeatOptions, Transport } from "./types.js";
 // Re-export the wire layer as a namespace. Written as import+export (not
 // `export * as protocol`) so React Native's Metro/babel can transform it

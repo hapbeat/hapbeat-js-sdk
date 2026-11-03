@@ -46,7 +46,7 @@ export class NodeUdpTransport extends UdpTransportBase {
           // deaf to PONGs — the exact bug the Unity SDK and hapbeat-helper
           // each had to fix.
           sock.on("error", (e) => console.warn("[hapbeat] udp error:", e.message));
-          sock.on("message", (msg, rinfo) => this.handleMessage(msg, rinfo.address));
+          sock.on("message", (msg, rinfo) => this.handleMessage(msg, rinfo.address, rinfo.port));
           sock.setBroadcast(true);
           this.socket = sock;
           resolve();

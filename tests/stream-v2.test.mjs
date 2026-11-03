@@ -1,15 +1,17 @@
-// Stream session v2 + legacy fallback (contracts stream-session-v2.md) and
-// the mixer contract (sdk-multi-stream.md §5.7-5.9, §7). Fake transports only:
+// Stream Gen 2 + the Gen 1 fallback (contracts stream-session.md) and the
+// mixer contract (sdk-multi-stream.md §5.7-5.9, §7). Fake transports only:
 // nothing here opens a socket or reaches a device.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as protocol from "../dist/protocol.js";
-import { Hapbeat, NodeUdpTransport } from "../dist/node.js";
+import { Hapbeat } from "../dist/node.js";
 import { BrowserWsTransport } from "../dist/transport-browser.js";
 import { StreamHub } from "../dist/stream.js";
+import {
+  Probe, makePong, leaseTail, envelopeOf, monoPcm, begins, ends, generations, wait,
+} from "./helpers/udp-probe.mjs";
 
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const hex = (bytes) => Buffer.from(bytes).toString("hex");
 
 // ── Wire format ────────────────────────────────────────────────────────────
@@ -24,7 +26,7 @@ const V2_FIXTURE = {
   end: "42480232341210000807060504030201070000002a000000",
 };
 
-test("v2 stream packets match the contracts fixture byte for byte", () => {
+test("Gen 2 stream packets match the contracts fixture byte for byte", () => {
   const { identity, seq } = V2_FIXTURE;
   assert.equal(hex(protocol.buildStreamEnvelope(identity)), V2_FIXTURE.envelope);
   assert.equal(hex(protocol.buildStreamBeginV2(seq, identity, {
@@ -38,7 +40,7 @@ test("v2 stream packets match the contracts fixture byte for byte", () => {
   assert.equal(hex(protocol.buildStreamEndV2(seq, identity)), V2_FIXTURE.end);
 });
 
-test("v1 stream (legacy firmware) keeps header version 1, no envelope, empty END", () => {
+test("Gen 1 stream (firmware 0.4.x) keeps header version 1, no envelope, empty END", () => {
   const begin = protocol.buildStreamBegin(1, { channels: 2, target: "p1" });
   assert.equal(begin[2], 0x01);
   assert.equal(protocol.parsePacket(begin).payload.length, 12 + 3);
@@ -56,35 +58,7 @@ test("extended PING is 16 bytes: timestamp then client incarnation", () => {
   assert.equal(protocol.parsePacket(protocol.buildPing(5, 1)).payload.length, 8);
 });
 
-function leaseTail({
-  incarnation, bootId = 0xb007n, ticket = 3, flags = 1, highWater = 0,
-  version = 1, reserved = 0, length = 32, marker = "HBS2",
-}) {
-  const out = new Uint8Array(Math.max(length, 32));
-  const view = new DataView(out.buffer);
-  out.set(new TextEncoder().encode(marker), 0);
-  view.setUint8(4, version);
-  view.setUint8(5, flags);
-  view.setUint16(6, reserved, true);
-  view.setBigUint64(8, incarnation, true);
-  view.setBigUint64(16, bootId, true);
-  view.setUint32(24, ticket, true);
-  view.setUint32(28, highWater, true);
-  return out.subarray(0, length);
-}
-
-function makePong({ seq = 0, timestamp = 0n, address = "p1", name = "dev", tail } = {}) {
-  const strs = new TextEncoder().encode(`${name}\0${address}\x000.4.1\0`);
-  const extra = tail ?? new Uint8Array(0);
-  const payload = new Uint8Array(16 + strs.length + 2 + extra.length);
-  new DataView(payload.buffer).setBigInt64(0, timestamp, true);
-  payload.set(strs, 16);
-  payload.set([5, 9], 16 + strs.length); // volume_level, volume_wiper
-  payload.set(extra, 16 + strs.length + 2);
-  return protocol.buildPacket(protocol.CMD_PONG, seq, payload);
-}
-
-test("parsePong: HBS2 tail valid / absent / malformed", () => {
+test("parsePong (1.x rules): valid / absent / ignored", () => {
   const valid = protocol.parsePong(makePong({ timestamp: 7n, tail: leaseTail({ incarnation: 9n, flags: 3, highWater: 4 }) }));
   assert.equal(valid.leaseTail, "valid");
   assert.equal(valid.volumeLevel, 5);
@@ -95,74 +69,33 @@ test("parsePong: HBS2 tail valid / absent / malformed", () => {
   assert.equal(valid.highWaterTicket, 4);
   assert.equal(valid.leaseValid, true);
   assert.equal(valid.leaseSuperseded, true);
+  assert.equal(valid.leaseReissued, false);
 
   assert.equal(protocol.parsePong(makePong()).leaseTail, "absent");
-  assert.equal(protocol.parsePong(makePong({ tail: new Uint8Array([1, 2, 3]) })).leaseTail, "absent");
-  // Only the full HBS2 marker is a marker: a cut prefix is "no marker" (legacy).
-  for (const length of [1, 2, 3]) {
-    assert.equal(protocol.parsePong(makePong({ tail: leaseTail({ incarnation: 1n, length }) })).leaseTail, "absent");
+  // Bytes that do not start with HBS2, and a cut marker, are ignored now
+  // (0.x read them as Stream Gen 1).
+  assert.equal(protocol.parsePong(makePong({ tail: new Uint8Array([1, 2, 3]) })).leaseTail, "ignored");
+  for (const length of [1, 2, 3, 4, 31]) {
+    assert.equal(protocol.parsePong(makePong({ tail: leaseTail({ incarnation: 1n, length }) })).leaseTail, "ignored", `${length}`);
   }
-  const malformed = [
-    leaseTail({ incarnation: 1n, length: 31 }),
-    leaseTail({ incarnation: 1n, length: 4 }), // the bare marker
-    leaseTail({ incarnation: 1n, version: 2 }),
-    leaseTail({ incarnation: 1n, flags: 4 }),
+  assert.equal(protocol.parsePong(makePong({ tail: leaseTail({ incarnation: 1n, version: 2 }) })).leaseTail, "ignored");
+  // A later major may use the reserved field and flag bits 3-7, or append
+  // bytes after the 32: still a Stream Gen 2 tail.
+  for (const tail of [
+    leaseTail({ incarnation: 1n, flags: 1 | 8 }),
     leaseTail({ incarnation: 1n, reserved: 1 }),
-  ];
-  for (const tail of malformed) {
-    assert.equal(protocol.parsePong(makePong({ tail })).leaseTail, "malformed");
+    leaseTail({ incarnation: 1n, length: 40 }),
+  ]) {
+    const pong = protocol.parsePong(makePong({ tail }));
+    assert.equal(pong.leaseTail, "valid");
+    assert.equal(pong.leaseValid, true);
   }
+  assert.equal(protocol.parsePong(makePong({ tail: leaseTail({ incarnation: 1n, flags: 1 | 4 }) })).leaseReissued, true);
   const zeroTicket = protocol.parsePong(makePong({ tail: leaseTail({ incarnation: 1n, ticket: 0 }) }));
   assert.equal(zeroTicket.leaseValid, false);
 });
 
 // ── Per-device class and lease ─────────────────────────────────────────────
-
-class Probe extends NodeUdpTransport {
-  constructor(opts = {}) { super({ keepalive: false, ...opts }); this.sends = []; }
-  async openSocket() {}
-  closeSocket() {}
-  localSubnets() { return []; }
-  sendBytesTo(pkt, ip) { this.sends.push([new Uint8Array(pkt), ip]); }
-  /** Send a PING and return what a device would correlate on. */
-  pingNow() {
-    const before = this.sends.length;
-    this.ping();
-    const pkt = protocol.parsePacket(this.sends[before][0]);
-    this.sends.length = before;
-    const view = new DataView(pkt.payload.buffer, pkt.payload.byteOffset, 16);
-    return { seq: pkt.seq, timestamp: view.getBigInt64(0, true), incarnation: view.getBigUint64(8, true) };
-  }
-  /** A matched direct reply from a stream-v2 device. */
-  replyV2(ip, ping, { address = "p1", bootId = 0xb007n, ticket = 3, flags = 1, incarnation } = {}) {
-    this.handleMessage(makePong({
-      seq: ping.seq, timestamp: ping.timestamp, address,
-      tail: leaseTail({ incarnation: incarnation ?? ping.incarnation, bootId, ticket, flags }),
-    }), ip);
-  }
-  /** A matched direct reply from pre-v2 firmware (no tail). */
-  replyLegacy(ip, ping, address = "p1") {
-    this.handleMessage(makePong({ seq: ping.seq, timestamp: ping.timestamp, address }), ip);
-  }
-  epoch(ip) { return this.streamEndpoints().find((e) => e.ip === ip)?.wireEpoch; }
-  streamPackets() {
-    return this.sends
-      .map(([pkt, ip]) => ({ pkt: parsePacketAnyVersion(pkt), raw: pkt, ip }))
-      .filter(({ raw }) => raw[3] >= protocol.CMD_STREAM_BEGIN && raw[3] <= protocol.CMD_STREAM_END);
-  }
-}
-
-// parsePacket accepts header version 1 only; stream v2 packets are read here.
-function parsePacketAnyVersion(raw) {
-  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
-  const length = view.getUint16(6, true);
-  return { version: raw[2], cmd: raw[3], seq: view.getUint16(4, true), payload: raw.subarray(8, 8 + length) };
-}
-
-function envelopeOf(packet) {
-  const view = new DataView(packet.payload.buffer, packet.payload.byteOffset, 16);
-  return { bootId: view.getBigUint64(0, true), ticket: view.getUint32(8, true), generation: view.getUint32(12, true) };
-}
 
 async function connected() {
   const t = new Probe();
@@ -170,45 +103,53 @@ async function connected() {
   return t;
 }
 
-test("class: a matched reply without a tail selects legacy, with a valid tail v2", async () => {
+test("class: a matched reply without a tail selects Gen 1, with a valid tail Gen 2", async () => {
   const t = await connected();
-  const ping = t.pingNow();
-  t.replyLegacy("10.0.0.1", ping, "p1");
-  t.replyV2("10.0.0.2", ping, { address: "p2" });
+  t.replyLegacy("10.0.0.1", t.pingNow("10.0.0.1", "p1"), "p1");
+  t.replyV2("10.0.0.2", t.pingNow("10.0.0.2", "p2"), { address: "p2" });
   const byIp = Object.fromEntries(t.streamEndpoints().map((e) => [e.ip, e]));
   assert.equal(byIp["10.0.0.1"].legacy, true);
-  assert.equal(byIp["10.0.0.1"].wireEpoch, "legacy");
+  assert.equal(byIp["10.0.0.1"].wireEpoch, "gen1");
+  assert.equal(byIp["10.0.0.1"].streamClass, "gen1");
   assert.equal(byIp["10.0.0.2"].legacy, false);
-  assert.equal(byIp["10.0.0.2"].wireEpoch, "v2:45063:3");
+  assert.equal(byIp["10.0.0.2"].wireEpoch, "gen2:45063:3:0");
+  assert.equal(byIp["10.0.0.2"].streamClass, "gen2");
+  assert.equal(byIp["10.0.0.2"].leaseState, "valid");
 });
 
-test("class: unsolicited, unmatched and malformed-HBS2 replies never classify", async () => {
+test("class: unsolicited, unmatched and unreadable-tail replies never classify", async () => {
   const t = await connected();
-  const ping = t.pingNow();
-  t.handleMessage(makePong({ address: "p1" }), "10.0.0.1"); // unsolicited (timestamp 0)
+  const ping = t.pingNow("10.0.0.1", "p1");
+  t.handleMessage(makePong({ address: "p1" }), "10.0.0.1", 7700); // unsolicited (timestamp 0)
   assert.equal(t.epoch("10.0.0.1"), "deferred");
-  t.handleMessage(makePong({ seq: ping.seq + 1, timestamp: ping.timestamp, address: "p1" }), "10.0.0.1");
+  t.handleMessage(makePong({ seq: ping.seq + 1, timestamp: ping.timestamp, address: "p1" }), "10.0.0.1", 7700);
   assert.equal(t.epoch("10.0.0.1"), "deferred");
-  t.handleMessage(makePong({ seq: ping.seq, timestamp: ping.timestamp + 1n, address: "p1" }), "10.0.0.1");
+  t.handleMessage(makePong({ seq: ping.seq, timestamp: ping.timestamp + 1n, address: "p1" }), "10.0.0.1", 7700);
   assert.equal(t.epoch("10.0.0.1"), "deferred");
+  // A matched reply from another ip than the one the PING went to.
+  t.handleMessage(makePong({ seq: ping.seq, timestamp: ping.timestamp, address: "p1", name: "other" }), "10.0.0.9", 7700);
+  assert.equal(t.epoch("10.0.0.9"), "deferred");
   t.handleMessage(makePong({
     seq: ping.seq, timestamp: ping.timestamp, address: "p1",
     tail: leaseTail({ incarnation: ping.incarnation, version: 9 }),
-  }), "10.0.0.1");
+  }), "10.0.0.1", 7700);
   assert.equal(t.epoch("10.0.0.1"), "deferred");
   // An unknown device defers: no BEGIN is sent.
-  const [endpoint] = t.streamEndpoints();
+  const endpoint = t.streamEndpoints().find((e) => e.ip === "10.0.0.1");
+  assert.equal(endpoint.deferredReason, "UnknownClass");
   assert.equal(t.streamBeginEndpoint(endpoint), false);
   assert.equal(t.streamPackets().length, 0);
 });
 
-test("lease: an invalid or superseded lease defers and is never treated as legacy", async () => {
+test("lease: an invalid or superseded lease defers and is never treated as Gen 1", async () => {
   const t = await connected();
   t.replyV2("10.0.0.1", t.pingNow(), { flags: 0 });
   assert.equal(t.epoch("10.0.0.1"), "deferred");
   assert.equal(t.streamEndpoints()[0].legacy, false);
+  assert.equal(t.streamEndpoints()[0].deferredReason, "LeaseUnavailable");
   t.replyV2("10.0.0.1", t.pingNow(), { flags: 1 | 2 });
   assert.equal(t.epoch("10.0.0.1"), "deferred");
+  assert.equal(t.streamEndpoints()[0].deferredReason, "Superseded");
   // A later periodic reply of the same incarnation does not take over.
   t.replyV2("10.0.0.1", t.pingNow(), { flags: 1, ticket: 4 });
   assert.equal(t.epoch("10.0.0.1"), "deferred");
@@ -216,7 +157,7 @@ test("lease: an invalid or superseded lease defers and is never treated as legac
   t.reacquireStreamOwnership();
   const ping = t.pingNow();
   t.replyV2("10.0.0.1", ping, { flags: 1, ticket: 5 });
-  assert.equal(t.epoch("10.0.0.1"), "v2:45063:5");
+  assert.equal(t.epoch("10.0.0.1"), "gen2:45063:5:0");
 });
 
 test("lease: a late old-boot PONG never reverts a newer lease; unsolicited PONG keeps it", async () => {
@@ -225,16 +166,16 @@ test("lease: a late old-boot PONG never reverts a newer lease; unsolicited PONG 
   const newer = t.pingNow();
   t.replyV2("10.0.0.1", newer, { bootId: 2n, ticket: 1 });
   t.replyV2("10.0.0.1", older, { bootId: 1n, ticket: 9 });
-  assert.equal(t.epoch("10.0.0.1"), "v2:2:1");
-  t.handleMessage(makePong({ address: "p1" }), "10.0.0.1");
-  assert.equal(t.epoch("10.0.0.1"), "v2:2:1");
+  assert.equal(t.epoch("10.0.0.1"), "gen2:2:1:0");
+  t.handleMessage(makePong({ address: "p1" }), "10.0.0.1", 7700);
+  assert.equal(t.epoch("10.0.0.1"), "gen2:2:1:0");
   // A reply echoing a previous incarnation is discarded.
   t.reacquireStreamOwnership();
   t.replyV2("10.0.0.1", t.pingNow(), { incarnation: older.incarnation });
   assert.equal(t.epoch("10.0.0.1"), "deferred");
 });
 
-test("v2 transport: envelope on BEGIN/DATA/END, a fresh generation per session, exact unicast", async () => {
+test("Gen 2 transport: envelope on BEGIN/DATA/END, a fresh generation per session, exact unicast", async () => {
   const t = await connected();
   t.replyV2("10.0.0.1", t.pingNow(), { bootId: 0x0102030405060708n, ticket: 7 });
   const [endpoint] = t.streamEndpoints();
@@ -243,33 +184,22 @@ test("v2 transport: envelope on BEGIN/DATA/END, a fresh generation per session, 
   t.streamEndEndpoint(endpoint, first);
   const second = t.streamBeginEndpoint(endpoint); // immediately, no cooldown
   const packets = t.streamPackets();
+  // The first DATA carries a repeated BEGIN in front of it (Sender requirement 2).
   assert.deepEqual(packets.map(({ pkt }) => [pkt.version, pkt.cmd]), [
-    [2, protocol.CMD_STREAM_BEGIN], [2, protocol.CMD_STREAM_DATA],
+    [2, protocol.CMD_STREAM_BEGIN], [2, protocol.CMD_STREAM_BEGIN], [2, protocol.CMD_STREAM_DATA],
     [2, protocol.CMD_STREAM_END], [2, protocol.CMD_STREAM_BEGIN],
   ]);
-  assert.deepEqual(packets.map(({ ip }) => ip), ["10.0.0.1", "10.0.0.1", "10.0.0.1", "10.0.0.1"]);
-  assert.deepEqual(packets.slice(0, 3).map(({ pkt }) => envelopeOf(pkt).generation), [1, 1, 1]);
-  assert.equal(envelopeOf(packets[3].pkt).generation, 2);
+  assert.ok(packets.every(({ ip }) => ip === "10.0.0.1"));
+  assert.deepEqual(packets.slice(0, 4).map(({ pkt }) => envelopeOf(pkt).generation), [1, 1, 1, 1]);
+  assert.equal(envelopeOf(packets[4].pkt).generation, 2);
   assert.equal(envelopeOf(packets[0].pkt).bootId, 0x0102030405060708n);
-  assert.equal(packets[2].pkt.payload.length, 16);
+  assert.equal(packets[3].pkt.payload.length, 16);
   assert.equal(second.identity.generation, 2);
 });
 
 // ── StreamHub over the transport ───────────────────────────────────────────
 
-function monoPcm(value, frames) {
-  const data = new Uint8Array(frames * 2);
-  const view = new DataView(data.buffer);
-  for (let frame = 0; frame < frames; frame++) view.setInt16(frame * 2, value, true);
-  return data;
-}
-
-const begins = (t, ip) => t.streamPackets().filter(({ pkt, ip: to }) =>
-  pkt.cmd === protocol.CMD_STREAM_BEGIN && (ip === undefined || to === ip));
-const ends = (t, ip) => t.streamPackets().filter(({ pkt, ip: to }) =>
-  pkt.cmd === protocol.CMD_STREAM_END && (ip === undefined || to === ip));
-
-test("v2 endpoint: a new session begins right after END (no 300 ms wait)", async () => {
+test("Gen 2 endpoint: a new session begins right after END (no 300 ms wait)", async () => {
   const t = await connected();
   t.replyV2("10.0.0.1", t.pingNow());
   const hub = new StreamHub(t, { sendAheadSec: 0 });
@@ -277,16 +207,14 @@ test("v2 endpoint: a new session begins right after END (no 300 ms wait)", async
   await wait(350); // finished + linger -> END
   assert.equal(ends(t).length, 1);
   hub.playPcm(monoPcm(2_000, 16), { target: "p1" });
-  assert.equal(begins(t).length, 2, "BEGIN is immediate on a v2 endpoint");
-  assert.deepEqual(begins(t).map(({ pkt }) => envelopeOf(pkt).generation), [1, 2]);
+  assert.deepEqual(generations(begins(t)), [1, 2], "BEGIN is immediate on a Gen 2 endpoint");
   hub.close();
 });
 
-test("legacy guard applies to the legacy device only; a v2 device beside it is immediate", async () => {
+test("Gen 1 guard applies to the Gen 1 device only; a Gen 2 device beside it is immediate", async () => {
   const t = await connected();
-  const ping = t.pingNow();
-  t.replyLegacy("10.0.0.1", ping, "p1/a");
-  t.replyV2("10.0.0.2", ping, { address: "p1/b" });
+  t.replyLegacy("10.0.0.1", t.pingNow("10.0.0.1", "p1/a"), "p1/a");
+  t.replyV2("10.0.0.2", t.pingNow("10.0.0.2", "p1/b"), { address: "p1/b" });
   const hub = new StreamHub(t, { sendAheadSec: 0 });
   hub.playPcm(monoPcm(1_000, 16), { target: "p1" });
   assert.equal(begins(t, "10.0.0.1")[0].pkt.version, 1);
@@ -297,12 +225,12 @@ test("legacy guard applies to the legacy device only; a v2 device beside it is i
   assert.equal(ends(t, "10.0.0.2").length, 1);
 
   const playback = hub.playPcm(monoPcm(2_000, 16), { target: "p1" });
-  assert.equal(begins(t, "10.0.0.2").length, 2);
-  // The legacy END is at most ~40 ms old here, so its BEGIN waits.
+  assert.deepEqual(generations(begins(t, "10.0.0.2")), [1, 2]);
+  // The Gen 1 END is at most ~40 ms old here, so its BEGIN waits.
   assert.equal(begins(t, "10.0.0.1").length, 1);
   assert.equal(playback.status, "Active");
   await wait(320);
-  assert.equal(begins(t, "10.0.0.1").length, 2);
+  assert.equal(begins(t, "10.0.0.1").length, 2, "Gen 1 BEGIN is never repeated");
   hub.close();
 });
 
@@ -312,16 +240,16 @@ test("class change: the session ends in its old format before the next BEGIN", a
   const hub = new StreamHub(t, { sendAheadSec: 0.01 });
   hub.playPcm(monoPcm(1_000, 16_000), { target: "p1" });
   await wait(20);
-  t.replyV2("10.0.0.1", t.pingNow()); // firmware updated to v2
+  t.replyV2("10.0.0.1", t.pingNow()); // firmware updated to Stream Gen 2
   hub.reconcile();
   const kinds = t.streamPackets().map(({ pkt }) => `${pkt.cmd}/${pkt.version}`);
   const endAt = kinds.indexOf(`${protocol.CMD_STREAM_END}/1`);
-  const v2BeginAt = kinds.indexOf(`${protocol.CMD_STREAM_BEGIN}/2`);
-  assert.ok(endAt > 0 && v2BeginAt > endAt, kinds.join(","));
+  const gen2BeginAt = kinds.indexOf(`${protocol.CMD_STREAM_BEGIN}/2`);
+  assert.ok(endAt > 0 && gen2BeginAt > endAt, kinds.join(","));
   await wait(20);
-  const afterBegin = t.streamPackets().slice(v2BeginAt + 1);
+  const afterBegin = t.streamPackets().slice(gen2BeginAt + 1);
   assert.ok(afterBegin.length > 0);
-  assert.ok(afterBegin.every(({ pkt }) => pkt.version === 2), "no v1 DATA after the switch");
+  assert.ok(afterBegin.every(({ pkt }) => pkt.version === 2), "no Gen 1 DATA after the switch");
   hub.close();
 });
 
@@ -358,6 +286,7 @@ test("superseded lease: DATA stops at once and the source defers", async () => {
   const count = t.streamPackets().length;
   assert.equal(t.streamPackets().at(-1).pkt.cmd, protocol.CMD_STREAM_END);
   assert.equal(playback.status, "Deferred");
+  assert.equal(playback.deferredReason, "Superseded");
   await wait(30);
   assert.equal(t.streamPackets().length, count, "nothing more is sent");
   hub.close();
@@ -369,13 +298,16 @@ test("Hapbeat.reacquireStreamOwnership(): a new incarnation retakes a superseded
   const first = t.pingNow();
   t.replyV2("10.0.0.1", first, { flags: 1 | 2 });
   assert.equal(t.epoch("10.0.0.1"), "deferred");
+  t.sends.length = 0;
   assert.equal(hb.reacquireStreamOwnership(), true);
-  const sent = t.sends.map(([pkt]) => protocol.parsePacket(pkt)).filter((p) => p?.commandType === protocol.CMD_PING);
+  const sent = t.sends.filter(([pkt]) => pkt[3] === protocol.CMD_PING);
   assert.equal(sent.length, 1, "re-PINGs at once");
+  assert.deepEqual(sent.map(([pkt, ip]) => [ip, protocol.parsePacket(pkt).payload.length]), [["10.0.0.1", 16]],
+    "by unicast only");
   const ping = t.pingNow();
   assert.notEqual(ping.incarnation, first.incarnation);
   t.replyV2("10.0.0.1", ping, { flags: 1, ticket: 5 });
-  assert.equal(t.epoch("10.0.0.1"), "v2:45063:5");
+  assert.equal(t.epoch("10.0.0.1"), "gen2:45063:5:0");
   await hb.close();
 });
 
@@ -395,9 +327,8 @@ test("Hapbeat.reacquireStreamOwnership() is a reported no-op on the helper trans
 
 test("no stream packet is ever broadcast", async () => {
   const t = await connected();
-  const ping = t.pingNow();
-  t.replyLegacy("10.0.0.1", ping, "p1/a");
-  t.replyV2("10.0.0.2", ping, { address: "p1/b" });
+  t.replyLegacy("10.0.0.1", t.pingNow("10.0.0.1", "p1/a"), "p1/a");
+  t.replyV2("10.0.0.2", t.pingNow("10.0.0.2", "p1/b"), { address: "p1/b" });
   const hub = new StreamHub(t, { sendAheadSec: 0.01 });
   hub.playPcm(monoPcm(1_000, 64), { target: "" });
   await wait(30);
@@ -427,8 +358,10 @@ const ROUTING = {
 
 test("routing fixture: one session per endpoint, BEGIN carries the full address", async () => {
   const t = await connected();
-  const ping = t.pingNow();
-  for (const device of ROUTING.devices) t.replyV2(device.ip, ping, { address: device.address });
+  // Each device has its own (random) boot id, so their leases never collide.
+  ROUTING.devices.forEach((device, index) => {
+    t.replyV2(device.ip, t.pingNow(device.ip, device.address), { address: device.address, bootId: BigInt(index + 1) });
+  });
   const hub = new StreamHub(t, { sendAheadSec: 0.01 });
   const playbacks = ROUTING.sources.map((source) =>
     [source, hub.playPcm(monoPcm(1_000, 64), { target: source.target })]);
@@ -439,7 +372,7 @@ test("routing fixture: one session per endpoint, BEGIN carries the full address"
   for (const session of ROUTING.sessions) {
     const ip = ROUTING.devices.find((device) => device.id === session.endpoint).ip;
     const sent = begins(t, ip);
-    assert.equal(sent.length, 1, session.endpoint);
+    assert.deepEqual(generations(sent), [1], session.endpoint); // one session (repeats are the same tuple)
     const body = sent[0].pkt.payload.subarray(16 + 12);
     assert.equal(new TextDecoder().decode(body), `${session.begin_target}\0`);
   }

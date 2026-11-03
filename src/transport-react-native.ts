@@ -7,9 +7,14 @@
  *
  * `react-native-udp` is an OPTIONAL peer dependency — install it in the RN app.
  * This file is imported only by the React Native entry point, so Node/browser
- * bundles never pull it in.
+ * bundles never pull it (or `react-native`) in.
+ *
+ * Coming back to the foreground renews the client incarnation and asks for new
+ * stream leases at once (contracts stream-session.md "Incarnation and
+ * takeover": a fresh incarnation on foreground resume).
  */
 
+import { AppState } from "react-native";
 import dgram from "react-native-udp";
 
 import { UdpTransportBase } from "./transport-udp-base.js";
@@ -17,6 +22,8 @@ import type { HapbeatOptions } from "./types.js";
 
 export class ReactNativeUdpTransport extends UdpTransportBase {
   private socket?: ReturnType<typeof dgram.createSocket>;
+  private appStateSubscription?: { remove(): void };
+  private appState?: string;
 
   constructor(options: HapbeatOptions = {}) {
     super(options);
@@ -43,10 +50,11 @@ export class ReactNativeUdpTransport extends UdpTransportBase {
           sock.on("message", (msg, rinfo) =>
             // Normalize to a plain Uint8Array (react-native-udp delivers a Buffer
             // whose byteOffset may be non-zero) before protocol parsing.
-            this.handleMessage(Uint8Array.from(msg), rinfo.address),
+            this.handleMessage(Uint8Array.from(msg), rinfo.address, rinfo.port),
           );
           sock.setBroadcast(true);
           this.socket = sock;
+          this.watchAppState();
           resolve();
         });
       };
@@ -71,7 +79,20 @@ export class ReactNativeUdpTransport extends UdpTransportBase {
     });
   }
 
+  /** background / inactive -> active: the app resumed. */
+  private watchAppState(): void {
+    this.appStateSubscription?.remove();
+    this.appState = AppState.currentState;
+    this.appStateSubscription = AppState.addEventListener("change", (next) => {
+      const previous = this.appState;
+      this.appState = next;
+      if (next === "active" && previous !== undefined && previous !== "active") this.resumeFromBackground();
+    });
+  }
+
   protected closeSocket(): void {
+    this.appStateSubscription?.remove();
+    this.appStateSubscription = undefined;
     try {
       this.socket?.close();
     } catch {
