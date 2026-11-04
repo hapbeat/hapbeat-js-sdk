@@ -1,16 +1,20 @@
 name: Publish to npm
 
 # Publishes @hapbeat/sdk on a version tag. Runs the test suite as a gate, then
-# builds dist/ and publishes. Uses an npm automation token stored as the repo
-# secret NPM_TOKEN.
+# builds dist/ and publishes with npm Trusted Publishing (OIDC): no token, and
+# provenance is generated automatically for this public repo and public package.
 #
-# One-time setup (do once, BEFORE the first tag):
-#   1. Create the @hapbeat scope/org on npm (free for public packages), or
-#      switch the package name to unscoped "hapbeat" (also free as of 2026-06-01).
-#   2. Create an npm "Automation" access token and add it to this repo:
-#      Settings -> Secrets and variables -> Actions -> New secret: NPM_TOKEN.
-#   3. (Optional) Once the GitHub repo is PUBLIC, add `--provenance` to the
-#      publish step for supply-chain attestation (provenance needs a public repo).
+# One-time setup on npmjs.com, at most 2 days before the first tag (a new
+# configuration expires unless it completes a successful publish within 2 days):
+#   @hapbeat/sdk -> Settings -> Trusted Publisher -> GitHub Actions
+#     Organization or user: hapbeat
+#     Repository:           hapbeat-js-sdk
+#     Workflow filename:    publish.yml
+#     Environment name:     (empty)
+#     Allowed actions:      include `npm publish`
+#   All fields are case-sensitive. npm does not check them when you save; a wrong
+#   value only shows as a failed publish. package.json repository.url must match.
+# https://docs.npmjs.com/trusted-publishers
 #
 # DO NOT tag until the SDK is verified on a real Hapbeat device (Node path) and,
 # for the browser transport, against a running hapbeat-helper.
@@ -25,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write   # reserved for --provenance once the repo is public
+      id-token: write   # npm Trusted Publishing
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -37,10 +41,11 @@ jobs:
         run: |
           npm run build
           node --test
+      # Trusted Publishing needs npm 11.5.1 or later; Node 22 ships with npm 10.
+      - name: Update npm
+        run: npm install -g npm@11
       - name: Publish
         run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # 公開直後に devtools-site の release feed を再生成させる (DEC-053)。
       # feed は「実際に npm に上がっている版」を載せる仕様なので、publish の
