@@ -4,7 +4,7 @@
 形式は [Keep a Changelog](https://keepachangelog.com/) に、バージョン付けは
 [Semantic Versioning](https://semver.org/) に従います。
 
-## [Unreleased]
+## [1.0.0] - 2026-11-06
 
 1.x の通信の規則（DEC-096）に対応しました。対応する contracts: hapbeat-contracts
 `46f246e`（1.0.0 予定）。全製品の実機検証の後に 1.0.0 として公開します（開発中の版は
@@ -283,6 +283,7 @@ hapbeat-helper 経由のため、送信経路は helper 側が決めます。
 - サンプル: `examples/node-minimal.mjs`、`examples/browser-minimal.html`、および
   `examples/games/` 配下のブラウザ触覚デモ集。
 
+[1.0.0]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.4.0...v1.0.0
 [0.3.0]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/hapbeat/hapbeat-js-sdk/compare/v0.1.0...v0.2.0
