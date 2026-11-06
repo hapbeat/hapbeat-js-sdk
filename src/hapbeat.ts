@@ -383,7 +383,12 @@ export class Hapbeat {
     }
     if (target === undefined) this.streamHub.stopAll();
     else this.streamHub.stopTarget(target);
-    this.transport.stopAll(target ?? this.defaultTarget);
+    const deviceTarget = target ?? this.defaultTarget;
+    // STOP_ALL ends the stream session of every device it reaches: end ours
+    // there now (END), so the next stream begins a new generation instead of
+    // joining one the device has stopped (sdk-multi-stream.md §6.13).
+    this.streamHub.endForStopAll(deviceTarget);
+    this.transport.stopAll(deviceTarget);
   }
 
   ping(): void {

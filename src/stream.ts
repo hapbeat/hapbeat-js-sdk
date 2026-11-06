@@ -80,7 +80,11 @@ export interface StreamEndpoint {
   /** Undefined behind hapbeat-helper, which owns the wire format per device. */
   streamClass?: StreamClass;
   leaseState?: StreamLeaseState;
-  /** Why a session cannot begin here now (set while wireEpoch defers). */
+  /**
+   * Why a new session cannot begin here now: set while wireEpoch defers, and
+   * while a Stream Gen 2 lease waits for its refresh (a running session on the
+   * same wireEpoch continues).
+   */
   deferredReason?: DeferredReason;
   /** CAPS haptic_channels: 1 = one motor, so pan is not applied (§6.15). */
   hapticChannels?: number;
@@ -124,9 +128,11 @@ export interface EndpointStreamSink {
   /**
    * Begin one endpoint session. Returns the sink's wire state for it, handed
    * back on every DATA / END of that session, or `false` when the session
-   * cannot begin now (its sources stay deferred).
+   * cannot begin now (its sources stay deferred). `continuing`: the next
+   * generation of a session that is running now (re-splice, §6.14); the
+   * device holds that lease alive, so it needs no recent lease reply.
    */
-  streamBeginEndpoint(endpoint: StreamEndpoint): unknown;
+  streamBeginEndpoint(endpoint: StreamEndpoint, continuing?: boolean): unknown;
   streamDataEndpoint(endpoint: StreamEndpoint, offset: number, data: Uint8Array, wire?: unknown): void;
   streamEndEndpoint(endpoint: StreamEndpoint, wire?: unknown): void;
   /** Targets the hub may stream to now (sources Deferred or Active). */
@@ -135,6 +141,12 @@ export interface EndpointStreamSink {
   requestLeases?(endpoints: readonly StreamEndpoint[]): void;
   /** Device-side outcome of a session the sink began. */
   setSessionListener?(listener: (event: StreamSessionEvent) => void): void;
+  /**
+   * Called when an endpoint's class or lease changed (a matched lease reply):
+   * the hub reconciles at once, so a deferred source starts without waiting
+   * for its next tick.
+   */
+  setEndpointListener?(listener: () => void): void;
 }
 
 export interface StreamPlayback {
@@ -227,6 +239,8 @@ interface EndpointSession {
 
 /** What a replaced session leaves for the next one on the same endpoint. */
 interface ParkedSession {
+  /** The device address of the endpoint it was parked for. */
+  address: string;
   lineage?: string;
   cursors: Map<string, number>;
   gains: Map<string, [number, number]>;
@@ -322,6 +336,9 @@ export class StreamHub {
     this.onStreamLost = opts.onStreamLost;
     sink.setStreamInterest?.(() => [...this.sources.values()].map((source) => source.target));
     sink.setSessionListener?.((event) => this.onSessionEvent(event));
+    sink.setEndpointListener?.(() => {
+      if (this.sources.size) this.reconcile();
+    });
   }
 
   playPcm(pcm: Uint8Array, opts: StreamPlayOptions = {}): StreamPlayback {
@@ -393,6 +410,36 @@ export class StreamHub {
 
   stopAll(): void {
     for (const id of [...this.sources.keys()]) this.stop(id);
+  }
+
+  /**
+   * The app is sending STOP_ALL to `target`: it ends the session of every
+   * device it matches (stream-session.md Receiver ordering). End ours there
+   * now, with END, instead of letting them linger: a source started within
+   * the linger would send DATA of a generation the device has stopped, every
+   * packet rejected with STREAM_STOPPED. The next source begins a new
+   * session, so a new Playback plays as usual (sdk-multi-stream.md §6.13). A
+   * source still in such a session (another target, not covered by the stop)
+   * leaves that endpoint for good, as STREAM_STOPPED would make it; so do the
+   * cursors parked there. Returns the number of sessions ended.
+   */
+  endForStopAll(target: string): number {
+    if (this.closed) return 0;
+    let ended = 0;
+    for (const [key, session] of [...this.sessions]) {
+      if (!protocol.addressMatches(target, session.endpoint.address)) continue;
+      this.endSession(key, session);
+      this.loseEndpoint(key, session.endpoint.ip, session.cursors.keys(), "stopped");
+      ended++;
+    }
+    for (const [key, parked] of [...this.parked]) {
+      if (!protocol.addressMatches(target, parked.address)) continue;
+      this.parked.delete(key);
+      this.loseEndpoint(key, key.split("\0")[0], parked.cursors.keys(), "stopped");
+    }
+    this.reconcileNow();
+    this.schedule(0);
+    return ended;
   }
 
   open(): void { this.closed = false; }
@@ -654,7 +701,7 @@ export class StreamHub {
       if (queuedMs < RESPLICE_MIN_QUEUED_MS) continue;
       const rewind = Math.min(session.framesSent, Math.round(queuedMs / 1000 * STREAM_SAMPLE_RATE));
       this.sink.streamEndEndpoint(session.endpoint, session.wire);
-      const wire = this.sink.streamBeginEndpoint(session.endpoint);
+      const wire = this.sink.streamBeginEndpoint(session.endpoint, true);
       if (wire === false) {
         // The lease moved on meanwhile: the sources continue in the next session.
         this.parked.set(key, parkOf(session));
@@ -833,19 +880,19 @@ export class StreamHub {
     const [key, session] = entry;
     const reason = event.reason ?? event.kind;
     if (event.kind === "stopped") {
-      for (const sourceId of session.cursors.keys()) {
-        const source = this.sources.get(sourceId);
-        if (!source) continue;
-        source.stoppedEndpoints.add(key);
-        if (source.kind === "finite") source.played = true;
-        source.playback.setLost(reason);
-        this.onStreamLost?.({ playbackId: source.id, ip: session.endpoint.ip, reason });
-      }
       // No linger: another Playback joining it would send DATA of the stopped
       // generation and be stopped again.
       this.endSession(key, session, { sendEnd: false });
+      this.loseEndpoint(key, session.endpoint.ip, session.cursors.keys(), reason);
     } else {
-      this.endSession(key, session, { sendEnd: false, park: true });
+      // A destination hapbeat-helper deferred, or a stream it rejected, never
+      // started on the device: there is nothing to continue, so the cursors
+      // are not kept. A finite source that played to its end elsewhere then
+      // completes instead of waiting for this device (helper-streaming.md
+      // "Replies to the client"); after the backoff the endpoint is tried
+      // again, a still-playing finite source joining it at frame 0.
+      const started = reason !== "deferred" && reason !== "error";
+      this.endSession(key, session, { sendEnd: false, park: started });
       if (reason === "deferred" || reason === "superseded" || reason === "error") {
         this.backoff.set(key, {
           until: Date.now() + HELPER_DEFER_BACKOFF_MS,
@@ -855,6 +902,22 @@ export class StreamHub {
     }
     this.reconcileNow();
     this.schedule(0);
+  }
+
+  /**
+   * STOP_ALL (or another client taking the device) ended `key`'s session:
+   * these sources leave that endpoint for good, a finite one counted as played
+   * there (§6.13).
+   */
+  private loseEndpoint(key: string, ip: string, sourceIds: Iterable<string>, reason: string): void {
+    for (const sourceId of [...sourceIds]) {
+      const source = this.sources.get(sourceId);
+      if (!source) continue;
+      source.stoppedEndpoints.add(key);
+      if (source.kind === "finite") source.played = true;
+      source.playback.setLost(reason);
+      this.onStreamLost?.({ playbackId: source.id, ip, reason });
+    }
   }
 
   private trimLive(source: Source): void {
@@ -918,6 +981,7 @@ function addCursor(session: EndpointSession, sourceId: string, cursor: number, j
 
 function parkOf(session: EndpointSession): ParkedSession {
   return {
+    address: session.endpoint.address,
     lineage: session.endpoint.wireLineage,
     cursors: new Map(session.cursors),
     gains: new Map(session.gains),

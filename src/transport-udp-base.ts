@@ -132,6 +132,14 @@ const LEASE_CHECK_MS = 1000;
 /** On-demand extended PINGs (a new source, an error) go to one ip at most this often. */
 const LEASE_REQUEST_MIN_GAP_MS = 500;
 /**
+ * The device lets an unused lease expire one TTL after its last extended PING.
+ * A new session begins only under a lease confirmed within the TTL less this
+ * margin (the PING's travel time); an older one waits for the next matched
+ * reply, asked for every LEASE_REQUEST_MIN_GAP_MS while a source waits. A
+ * running session keeps its lease alive on the device and is not affected.
+ */
+const LEASE_FRESH_MARGIN_MS = 1000;
+/**
  * An extended PING is unicast, but a reply may still be late; a pending
  * request is kept this long, then ages out.
  */
@@ -170,6 +178,8 @@ interface EndpointStreamState {
    * again, so a late PONG cannot roll the device back to an older boot.
    */
   lastAcceptedTimestampUs: bigint;
+  /** Date.now() when that reply was accepted: how long ago the device last confirmed the lease. */
+  acceptedAt: number;
 }
 
 interface PendingPing {
@@ -290,6 +300,7 @@ function evaluatePongLease(
       leaseSuperseded: keepSuperseded ? true : Boolean(pong.leaseSuperseded),
       clientIncarnation: pending.clientIncarnation,
       lastAcceptedTimestampUs: pong.timestamp,
+      acceptedAt: 0, // set when the reply is applied
     };
   }
 
@@ -307,6 +318,7 @@ function evaluatePongLease(
     leaseSuperseded: false,
     clientIncarnation: pending.clientIncarnation,
     lastAcceptedTimestampUs: pong.timestamp,
+    acceptedAt: 0, // set when the reply is applied
   };
 }
 
@@ -393,6 +405,7 @@ export abstract class UdpTransportBase implements Transport {
   private readonly reportedEndpoints = new Map<string, string>();
   private streamInterest?: () => readonly string[];
   private sessionListener?: (event: StreamSessionEvent) => void;
+  private endpointListener?: () => void;
 
   constructor(options: HapbeatOptions = {}) {
     this.port = options.port ?? DEFAULT_UDP_PORT;
@@ -595,6 +608,7 @@ export abstract class UdpTransportBase implements Transport {
         );
       }
     } else if (decision !== null) {
+      decision.acceptedAt = Date.now();
       this.noteStreamClass(ip, existing, decision);
     }
     const state = decision !== null && decision !== "ignored" ? decision : existing;
@@ -616,6 +630,8 @@ export abstract class UdpTransportBase implements Transport {
       this.sendLeasePing(ip, extra);
     }
     this.emitEndpointChanges();
+    // A deferred source may start now (a new class or a refreshed lease).
+    if (decision !== null && decision !== "ignored") this.endpointListener?.();
   }
 
   /** Log a class change, a lease newly superseded by another writer, and one taken back, once. */
@@ -899,6 +915,10 @@ export abstract class UdpTransportBase implements Transport {
     this.sessionListener = listener;
   }
 
+  setEndpointListener(listener: () => void): void {
+    this.endpointListener = listener;
+  }
+
   /**
    * An endpoint this app may stream to: it matches the target of a Deferred
    * or Active Playback or the default target ("" matches every device), or a
@@ -914,6 +934,17 @@ export abstract class UdpTransportBase implements Transport {
 
   private leaseTtlMs(extra: EndpointExtra | undefined): number {
     return (extra?.caps?.leaseTtlS || DEFAULT_LEASE_TTL_S) * 1000;
+  }
+
+  /**
+   * Whether a Gen 2 lease was confirmed recently enough for a new session:
+   * within the device's lease TTL less LEASE_FRESH_MARGIN_MS. The device lets
+   * an unused lease expire one TTL after its last extended PING; a BEGIN under
+   * it is answered with STREAM_LEASE_INVALID and costs the start of the cue.
+   */
+  private leaseFresh(state: EndpointStreamState, extra: EndpointExtra | undefined): boolean {
+    const ttl = this.leaseTtlMs(extra);
+    return Date.now() - state.acceptedAt < ttl - Math.min(LEASE_FRESH_MARGIN_MS, ttl / 2);
   }
 
   /**
@@ -967,7 +998,7 @@ export abstract class UdpTransportBase implements Transport {
       if (state.cls === "gen1") continue;
       this.streamStates.set(ip, {
         cls: "unknown", bootId: 0n, ticket: 0, leaseValid: false, leaseSuperseded: false,
-        clientIncarnation: 0n, lastAcceptedTimestampUs: state.lastAcceptedTimestampUs,
+        clientIncarnation: 0n, lastAcceptedTimestampUs: state.lastAcceptedTimestampUs, acceptedAt: 0,
       });
     }
     this.emitEndpointChanges();
@@ -1031,7 +1062,10 @@ export abstract class UdpTransportBase implements Transport {
         };
         if (state?.cls === "gen1") endpoint.wireLineage = "gen1";
         else if (state?.cls === "gen2") endpoint.wireLineage = `gen2:${state.bootId}`;
-        const reason = this.deferredReason(state);
+        // A lease too old for a new session keeps its wireEpoch (a running
+        // session goes on) but says why a new one waits.
+        const stale = state?.cls === "gen2" && this.leaseUsable(state) && !this.leaseFresh(state, extra);
+        const reason = this.deferredReason(state) ?? (stale ? "LeaseUnavailable" : undefined);
         if (reason) endpoint.deferredReason = reason;
         if (extra?.caps?.hapticChannels !== undefined) endpoint.hapticChannels = extra.caps.hapticChannels;
         return endpoint;
@@ -1074,12 +1108,18 @@ export abstract class UdpTransportBase implements Transport {
    * Begin a session in the device's current format. Gen 2: a fresh generation
    * under its lease, never reused; exhaustion warns once and renews the
    * incarnation for a new ticket. Returns false (sources defer) when the device
-   * cannot stream now or its state moved on since `endpoint` was listed.
+   * cannot stream now or its state moved on since `endpoint` was listed, and
+   * for a new session (not `continuing` a running one) while its lease waits
+   * for a refresh (see leaseFresh), which is asked for at once.
    */
-  streamBeginEndpoint(endpoint: StreamEndpoint): StreamWire | false {
+  streamBeginEndpoint(endpoint: StreamEndpoint, continuing = false): StreamWire | false {
     const state = this.streamStates.get(endpoint.ip);
     const extra = this.extraFor(endpoint.ip);
     if (!this.isStreamable(state) || this.wireEpoch(state, extra) !== endpoint.wireEpoch) return false;
+    if (state.cls === "gen2" && !continuing && !this.leaseFresh(state, extra)) {
+      this.requestLease(endpoint.ip, extra);
+      return false;
+    }
     if (state.cls === "gen1") {
       this.sendBytesTo(protocol.buildStreamBegin(this.nextSeq(), { ...BEGIN_BODY, target: endpoint.address }), endpoint.ip);
       return { format: "gen1" };

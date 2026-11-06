@@ -4,6 +4,32 @@
 形式は [Keep a Changelog](https://keepachangelog.com/) に、バージョン付けは
 [Semantic Versioning](https://semver.org/) に従います。
 
+## [1.0.1] - 未リリース（開発中は `1.0.1-d1`）
+
+### 修正（Fixed）
+
+- `stopAll()` の直後に始めた clip・stream が鳴りませんでした。`stopAll()` は source を
+  止めて STOP_ALL を送りますが、機体の session を 0.31 s 残していたので、その間に始めた
+  source は、機体が STOP_ALL で終えた世代の session に入り、DATA がすべて ERROR
+  `STREAM_STOPPED` で断られ、その Playback は Stopped になっていました。STOP_ALL が届く
+  機体の session を、STOP_ALL の前に END してすぐ閉じるようにしました。次の source は
+  新しい世代（Browser 経路では新しい `stream_id`）で始まります（sdk-multi-stream.md
+  §6.13）。`stopAll(target)` で止めなかった別の target の source は、その機体からは外れ
+  （`onStreamLost` で `stopped`）、他の機体で続きます。
+- Node・React Native: 15 s 以上 lease の更新が無かった後の最初の stream が、先頭の約
+  160 ms を失っていました。機体は、使っていない lease を最後の拡張 PING から 15 s で
+  失効させますが、SDK は古い lease のまま BEGIN と send-ahead を送っていました。lease の
+  応答を受けた時刻を記録し、新しい session は、lease が TTL − 1 s（既定 14 s）より古ければ
+  取り直しの応答を待ってから先頭から始めます。その間の Playback は
+  `Deferred`（`LeaseUnavailable`）で、lease の要求は 500 ms ごとに送り、応答を受けたら
+  すぐ始めます（次の tick を待ちません）。再生中の session と、その中の差し替え
+  （re-splice）はそのまま続けます。
+- Browser 経路: hapbeat-helper が `stream_ack` の `deferred`（または `error`）で始めなかった
+  機体の分の cursor を残していたので、準備のできた機体で最後まで鳴った one-shot が、
+  準備のできない機体を待って Deferred / Active のまま終わりませんでした。始まらなかった
+  機体の cursor は残さず、one-shot は鳴った機体で終われば完了します（helper-streaming.md
+  「Replies to the client」）。
+
 ## [1.0.0] - 2026-11-06
 
 1.x の通信の規則（DEC-096）に対応しました。対応する contracts: hapbeat-contracts
