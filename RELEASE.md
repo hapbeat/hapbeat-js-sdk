@@ -34,12 +34,23 @@ Only then proceed.
 # bump "version" in package.json (e.g. 0.1.0)
 git commit -am "release: v0.1.0"
 git tag v0.1.0
-git push origin master --tags
+git push origin master
+git push origin v0.1.0
 ```
 
 The tag push runs `publish.yml`: `npm ci` -> build -> `node --test` (gate) ->
 `npm publish --access public`. `prepublishOnly` also rebuilds `dist/` so a
 manual publish can't ship a stale build.
+
+Push the tag by name, separately from the branch. Do not use `git push --tags`:
+it sends every local tag, and GitHub creates no push event (so `publish.yml`
+does not start) when more than three tags arrive in one push
+([GitHub Docs](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#push)).
+If the workflow did not start for a tag, run it by hand on that tag:
+
+```bash
+gh workflow run publish.yml --repo hapbeat/hapbeat-js-sdk --ref v0.1.0
+```
 
 ### Manual fallback
 
