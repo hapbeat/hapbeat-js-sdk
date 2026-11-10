@@ -42,8 +42,8 @@ The tag push runs `publish.yml`: `npm ci` -> build -> `node --test` (gate) ->
 `npm publish --access public`. `prepublishOnly` also rebuilds `dist/` so a
 manual publish can't ship a stale build.
 
-Push the tag by name, separately from the branch. Do not use `git push --tags`:
-it sends every local tag, and GitHub creates no push event (so `publish.yml`
+Push the tag by name, separately from the branch, and never with the `--tags`
+option: it sends every local tag, and GitHub creates no push event (so `publish.yml`
 does not start) when more than three tags arrive in one push
 ([GitHub Docs](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#push)).
 If the workflow did not start for a tag, run it by hand on that tag:
